@@ -21,7 +21,7 @@ from chemmanager.workers.protomer_generator import estimate_protomer_populations
 
 logger = logging.getLogger(__name__)
 
-INT_FNS_NEED_PKASOLVER = frozenset({"LOGD74", "CNS_MPO"})
+INT_FNS_NEED_PKASOLVER = frozenset({"LOGD74", "LOGS74", "CNS_MPO"})
 
 
 def int_fns_need_pkasolver(int_fns) -> bool:
@@ -68,17 +68,34 @@ def most_basic_pka_from_states(states: list) -> float | None:
     return max(float(s.pka) for s in states)
 
 
-def logd74_from_microstates(states: list, clogp: float) -> float:
+def neutral_fraction_from_states(states: list, ph: float = 7.4) -> float:
     """
-    Octanol-water log D at pH 7.4 from RDKit cLogP and pkasolver microstate populations.
+    Mole fraction of net-neutral protomer states at ``ph`` (0–1).
 
-    Neutral fraction is the sum of protomer-state mole percents with net formal charge zero
-    (same HH-style model as :func:`estimate_protomer_populations_from_states`).
+    Uses the same HH-style protomer populations as :func:`estimate_protomer_populations_from_states`.
     """
-    pops = estimate_protomer_populations_from_states(states, 7.4)
+    pops = estimate_protomer_populations_from_states(states, ph)
     neutral = 0.0
     for _smi, pct, m in pops:
         if m is not None and rdmolops.GetFormalCharge(m) == 0:
             neutral += pct
-    neutral_frac = max(neutral / 100.0, 1e-15)
-    return clogp + math.log10(neutral_frac)
+    return max(neutral / 100.0, 1e-15)
+
+
+def logd74_from_microstates(states: list, clogp: float) -> float:
+    """
+    Octanol-water log D at pH 7.4 from RDKit cLogP and pkasolver microstate populations.
+
+    log D = log P + log10(f_neutral) for the usual partition model.
+    """
+    return clogp + math.log10(neutral_fraction_from_states(states, 7.4))
+
+
+def logs74_from_microstates(states: list, log_s_intrinsic: float) -> float:
+    """
+    Approximate aqueous log10(S / mol L⁻¹) at pH 7.4 from intrinsic log S and ionization.
+
+    Uses log S_aq ≈ log S_intrinsic − log10(f_neutral) so ionized fractions (more soluble)
+    increase total solubility vs the neutral intrinsic baseline (ESOL).
+    """
+    return log_s_intrinsic - math.log10(neutral_fraction_from_states(states, 7.4))

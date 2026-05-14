@@ -1,9 +1,13 @@
-"""Medicinal-chemistry helpers used by descriptor jobs (Lipinski, CNS MPO-style scores).
+"""Medicinal-chemistry helpers used by descriptor jobs (Lipinski, CNS MPO-style scores, solubility).
 
 The CNS MPO piecewise desirability curves follow Wager et al., ACS Chem. Neurosci. 2010, Table 1
 (PMC3368654). When pkasolver microstates are available (see ``pkasolver_descriptor_support``),
-cLogD7.4 and the MPO pKa term use those predictions; otherwise cLogD and pKa fall back to simple
-RDKit-based heuristics. Log D7.4 as a table column always uses pkasolver when available.
+cLogD7.4, LogS 7.4, and the MPO pKa / cLogD terms use those predictions; otherwise cLogD and pKa
+fall back to simple RDKit-based heuristics. LogD 7.4 and LogS 7.4 table columns require pkasolver.
+
+**LogS intrinsic** uses the original Delaney ESOL equation (log10 mol L⁻¹). **LogS 7.4** augments
+that intrinsic value with an ionization correction from the same neutral fraction at pH 7.4 as
+the LogD descriptor (approximate; same HH protomer caveats as the protomer tool).
 """
 
 from __future__ import annotations
@@ -11,13 +15,16 @@ from __future__ import annotations
 import math
 
 from rdkit import Chem
-from rdkit.Chem import Descriptors, Lipinski, inchi, rdMolDescriptors
+from rdkit.Chem import Crippen, Descriptors, Lipinski, inchi, rdMolDescriptors
 
 from chemmanager.pkasolver_descriptor_support import (
     logd74_from_microstates,
+    logs74_from_microstates,
     microstates_for_mol,
     most_basic_pka_from_states,
 )
+
+_AROM_ATOM_QUERY = Chem.MolFromSmarts("a")
 
 
 def _mono_dec(x: float, x_good: float, x_bad: float) -> float:
@@ -76,16 +83,49 @@ def _clogd7_heuristic(clogp: float, pka_bh_plus: float) -> float:
     return clogp - math.log10(1.0 + 10.0 ** (pka_bh_plus - 7.4))
 
 
+def _aromatic_proportion(mol: Chem.Mol) -> float:
+    """Aromatic heavy atoms / total heavy atoms (Delaney ESOL aromatic proportion)."""
+    n = mol.GetNumAtoms()
+    if n <= 0 or _AROM_ATOM_QUERY is None:
+        return 0.0
+    return len(mol.GetSubstructMatches(_AROM_ATOM_QUERY)) / float(n)
+
+
+def esol_logS_intrinsic(mol: Chem.Mol) -> float:
+    """
+    ESOL intrinsic log10(S / mol L⁻¹); Delaney J. Chem. Inf. Comput. Sci. 2004 (original coefficients).
+
+    Neutral/intrinsic aqueous solubility estimate for screening, not a measured S0.
+    """
+    mw = float(Descriptors.MolWt(mol))
+    logp = float(Crippen.MolLogP(mol))
+    rotors = float(Lipinski.NumRotatableBonds(mol))
+    ap = _aromatic_proportion(mol)
+    return 0.16 - 0.63 * logp - 0.0062 * mw + 0.066 * rotors - 0.74 * ap
+
+
 def logd74_value(mol: Chem.Mol, states: list | None = None) -> float:
     """
-    Log D7.4 from RDKit cLogP and pkasolver microstates (required).
+    LogD 7.4 from RDKit cLogP and pkasolver microstates (required).
 
     Raises ``ValueError`` if microstates are missing so the descriptor layer can show N/A.
     """
     st = states if states is not None else microstates_for_mol(mol)
     if not st:
         raise ValueError("pkasolver microstates unavailable")
-    return logd74_from_microstates(st, float(Descriptors.MolLogP(mol)))
+    return logd74_from_microstates(st, float(Crippen.MolLogP(mol)))
+
+
+def logs74_value(mol: Chem.Mol, states: list | None = None) -> float:
+    """
+    Approximate aqueous log10(S / mol L⁻¹) at pH 7.4 from ESOL intrinsic log S and pkasolver states.
+
+    Raises ``ValueError`` if microstates are missing so the descriptor layer can show N/A.
+    """
+    st = states if states is not None else microstates_for_mol(mol)
+    if not st:
+        raise ValueError("pkasolver microstates unavailable")
+    return logs74_from_microstates(st, esol_logS_intrinsic(mol))
 
 
 def cns_mpo_score(mol: Chem.Mol, states: list | None = None) -> float:
@@ -95,7 +135,7 @@ def cns_mpo_score(mol: Chem.Mol, states: list | None = None) -> float:
     If ``states`` is omitted, pkasolver is attempted once per call; pass precomputed microstates
     from a shared row context when computing multiple pkasolver-backed columns for one molecule.
     """
-    clogp = float(Descriptors.MolLogP(mol))
+    clogp = float(Crippen.MolLogP(mol))
     st = states if states is not None else microstates_for_mol(mol)
     if st:
         pka_mb = most_basic_pka_from_states(st)

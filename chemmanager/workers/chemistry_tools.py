@@ -31,8 +31,10 @@ from ..config import load_config
 from ..confs_codec import format_confs_table_cell, mol_from_packed_confs_cell, pack_confs_cell
 from ..medchem_descriptors import (
     cns_mpo_score,
+    esol_logS_intrinsic,
     lipinski_violations,
     logd74_value,
+    logs74_value,
     mol_formula,
     mol_inchi_key,
     ro5_pass,
@@ -84,6 +86,10 @@ def descriptor_callable_for_int_fn(i_f, smarts_cache, row_ctx=None):
         return lambda m: ro5_pass(m) if m is not None else "No"
     if i_f == "LOGD74":
         return lambda m: logd74_value(m, ctx.get("pkasolver_states"))
+    if i_f == "LOGS_ESOL":
+        return lambda m: esol_logS_intrinsic(m) if m is not None else 0.0
+    if i_f == "LOGS74":
+        return lambda m: logs74_value(m, ctx.get("pkasolver_states"))
     if i_f == "CNS_MPO":
         return lambda m: cns_mpo_score(m, ctx.get("pkasolver_states")) if m is not None else 0.0
     if i_f == "QED":

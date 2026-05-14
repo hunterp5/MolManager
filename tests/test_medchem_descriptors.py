@@ -11,8 +11,10 @@ from rdkit import Chem
 
 from chemmanager.medchem_descriptors import (
     cns_mpo_score,
+    esol_logS_intrinsic,
     lipinski_violations,
     logd74_value,
+    logs74_value,
     mol_formula,
     mol_inchi_key,
     ro5_pass,
@@ -61,12 +63,14 @@ def test_descriptor_dispatch_custom_ids(_mock_ms: object) -> None:
     assert descriptor_callable_for_int_fn("RO5_VIOLATIONS", cache)(mol) == 0
     assert descriptor_callable_for_int_fn("RO5_PASS", cache)(mol) == "Yes"
     assert isinstance(descriptor_callable_for_int_fn("CNS_MPO", cache)(mol), float)
+    assert isinstance(descriptor_callable_for_int_fn("LOGS_ESOL", cache)(mol), float)
 
 
 def test_int_fns_need_pkasolver() -> None:
     assert int_fns_need_pkasolver(("MolWt", "LOGD74"))
+    assert int_fns_need_pkasolver(("LOGS74",))
     assert int_fns_need_pkasolver(("CNS_MPO",))
-    assert not int_fns_need_pkasolver(("QED", "MolWt"))
+    assert not int_fns_need_pkasolver(("QED", "MolWt", "LOGS_ESOL"))
 
 
 def test_logd74_value_requires_microstates() -> None:
@@ -74,3 +78,17 @@ def test_logd74_value_requires_microstates() -> None:
     assert mol is not None
     with pytest.raises(ValueError):
         logd74_value(mol, [])
+
+
+def test_logs74_value_requires_microstates() -> None:
+    mol = Chem.MolFromSmiles("O")
+    assert mol is not None
+    with pytest.raises(ValueError):
+        logs74_value(mol, [])
+
+
+def test_esol_intrinsic_ethanol() -> None:
+    mol = Chem.MolFromSmiles("CCO")
+    assert mol is not None
+    s = esol_logS_intrinsic(mol)
+    assert -2.0 < s < 2.0
