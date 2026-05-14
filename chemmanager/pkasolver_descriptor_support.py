@@ -1,4 +1,13 @@
-"""pkasolver-backed microstate prediction for descriptor columns (no Qt dependency in callables)."""
+"""pkasolver-backed microstate prediction for descriptor columns (no Qt dependency in callables).
+
+Uses **pkasolver** (Mayr et al., Front. Chem. 2022, doi:10.3389/fchem.2022.866585) with the same
+**Dimorphite-DL** integration as ``pka_predictor`` (Ropp et al., J. Cheminform. 2019,
+doi:10.1186/s13321-019-0336-9). Plain-text citations: ``chemmanager.science_citations``.
+
+Neutral fractions at a given pH come from ``estimate_protomer_populations_from_states`` in
+``protomer_generator`` (independent-site HH over microstates; see that module and
+``science_citations.LOGD_LOGS_ION``).
+"""
 
 from __future__ import annotations
 

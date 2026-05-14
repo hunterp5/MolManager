@@ -1,13 +1,20 @@
 """Medicinal-chemistry helpers used by descriptor jobs (Lipinski, CNS MPO-style scores, solubility).
 
-The CNS MPO piecewise desirability curves follow Wager et al., ACS Chem. Neurosci. 2010, Table 1
-(PMC3368654). When pkasolver microstates are available (see ``pkasolver_descriptor_support``),
-cLogD7.4, LogS 7.4, and the MPO pKa / cLogD terms use those predictions; otherwise cLogD and pKa
-fall back to simple RDKit-based heuristics. LogD 7.4 and LogS 7.4 table columns require pkasolver.
+Canonical citations (plain text, copy-paste friendly) live in ``chemmanager.science_citations``.
 
-**LogS intrinsic** uses the original Delaney ESOL equation (log10 mol L⁻¹). **LogS 7.4** augments
-that intrinsic value with an ionization correction from the same neutral fraction at pH 7.4 as
-the LogD descriptor (approximate; same HH protomer caveats as the protomer tool).
+* **CNS MPO** — Wager et al., ACS Chem. Neurosci. 2010 (doi:10.1021/cn100008c); Table 1 / PMC3368654.
+* **ESOL intrinsic log S** — Delaney, J. Chem. Inf. Comput. Sci. 2004 (doi:10.1021/ci034243r).
+* **pkasolver microstates** — Mayr et al., Front. Chem. 2022 (doi:10.3389/fchem.2022.866585); GitHub mayrf/pkasolver.
+* **Dimorphite-DL** (inside pkasolver) — Ropp et al., J. Cheminform. 2019 (doi:10.1186/s13321-019-0336-9).
+
+When pkasolver microstates are available (``pkasolver_descriptor_support``), LogD 7.4, LogS 7.4, and the
+CNS MPO cLogD / pKa legs use those predictions plus RDKit ``Crippen.MolLogP``; otherwise cLogD / pKa fall back
+to simple heuristics. LogD 7.4 and LogS 7.4 columns require pkasolver. Neutral fractions at pH 7.4 reuse the
+same Henderson–Hasselbalch protomer pooling as ``estimate_protomer_populations_from_states`` (independent
+sites; approximate).
+
+**LogS intrinsic** uses the original Delaney ESOL equation (log10 mol L⁻¹). **LogS 7.4** augments that with
+−log10(f_neutral) from pkasolver populations (same f_neutral as LogD 7.4).
 """
 
 from __future__ import annotations

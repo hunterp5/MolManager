@@ -1,4 +1,12 @@
-"""Generate protomer sets from pkasolver microstate pKas (approximate populations at a target pH)."""
+"""Generate protomer sets from pkasolver microstate pKas (approximate populations at a target pH).
+
+Microstate pKas: **pkasolver** (Mayr et al., Front. Chem. 2022, doi:10.3389/fchem.2022.866585;
+https://github.com/mayrf/pkasolver). Enumeration path matches the pKa predictor (Dimorphite-DL;
+Ropp et al., J. Cheminform. 2019, doi:10.1186/s13321-019-0336-9).
+
+Population math: independent-site Henderson–Hasselbalch pooling over those microstates (same
+neutral-fraction idea as LogD 7.4 / LogS 7.4 descriptors; approximate). See ``science_citations``.
+"""
 
 from __future__ import annotations
 

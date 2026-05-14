@@ -1,17 +1,20 @@
 from __future__ import annotations
 
+from PyQt5.QtCore import Qt
 from PyQt5.QtWidgets import (
     QCheckBox,
     QComboBox,
     QDialog,
     QDialogButtonBox,
     QGroupBox,
+    QLabel,
     QScrollArea,
     QTabWidget,
     QVBoxLayout,
     QWidget,
 )
 
+from ...science_citations import descriptor_dialog_footer_html
 from .scope import selection_scope_checked
 
 
@@ -43,6 +46,12 @@ class PropertyDialog(QDialog):
 
         desc_box = QGroupBox("2. Descriptor Categories")
         d_box_lyt = QVBoxLayout(desc_box)
+        ref_lbl = QLabel(descriptor_dialog_footer_html())
+        ref_lbl.setWordWrap(True)
+        ref_lbl.setTextFormat(Qt.RichText)
+        ref_lbl.setOpenExternalLinks(True)
+        ref_lbl.setStyleSheet("color: palette(mid);")
+        d_box_lyt.addWidget(ref_lbl)
         self.tabs = QTabWidget()
 
         categories = {

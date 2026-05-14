@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from PyQt5.QtCore import Qt
 from PyQt5.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -18,6 +19,7 @@ from PyQt5.QtWidgets import (
 
 from rdkit import Chem
 
+from ...science_citations import protomer_dialog_footer_html
 from ...utils import parse_molecule_from_cell_text
 from ...workers import ProtomerGeneratorSignals, ProtomerGeneratorWorker
 from .scope import selection_scope_checked
@@ -90,9 +92,13 @@ class ProtomerGeneratorDialog(QDialog):
         root.addLayout(ph_row)
 
         hint = QLabel(
-            "% values are a rough HH-style sum over pkasolver microstates (independent sites; not Epik-grade)."
+            "<p><small>% values are a rough HH-style sum over pkasolver microstates "
+            "(independent sites; not Epik-grade).</small></p>"
+            + protomer_dialog_footer_html()
         )
         hint.setWordWrap(True)
+        hint.setTextFormat(Qt.RichText)
+        hint.setOpenExternalLinks(True)
         hint.setStyleSheet("color: palette(mid); font-size: 11px;")
         root.addWidget(hint)
 

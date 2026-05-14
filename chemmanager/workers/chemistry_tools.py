@@ -1,4 +1,10 @@
-"""Descriptor, conformer, and custom calculator workers."""
+"""Descriptor, conformer, and custom calculator workers.
+
+Fingerprint columns use RDKit implementations. The **2D pharmacophore (Gobbi)** on-bits column uses
+``rdkit.Chem.Pharm2D`` with ``Gobbi_Pharm2D`` (Gobbi & Poppinger, *Perspect. Drug Discov. Des.* 1998).
+Drug-likeness columns that invoke ``medchem_descriptors`` / **pkasolver** cite
+``chemmanager.science_citations`` and the worker module docstrings there.
+"""
 
 import json
 import logging

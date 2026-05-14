@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from PyQt5.QtCore import Qt
 from PyQt5.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -15,6 +16,7 @@ from PyQt5.QtWidgets import (
 
 from rdkit import Chem
 
+from ...science_citations import pka_dialog_footer_html
 from ...utils import parse_molecule_from_cell_text
 from ...workers import PKaPredictorSignals, PKaPredictorWorker
 from .scope import selection_scope_checked
@@ -97,6 +99,13 @@ class PKaPredictorDialog(QDialog):
         btn_row.addWidget(self.predict_btn)
         btn_row.addStretch()
         root.addLayout(btn_row)
+
+        ref_lbl = QLabel(pka_dialog_footer_html())
+        ref_lbl.setWordWrap(True)
+        ref_lbl.setTextFormat(Qt.RichText)
+        ref_lbl.setOpenExternalLinks(True)
+        ref_lbl.setStyleSheet("color: palette(mid);")
+        root.addWidget(ref_lbl)
 
         self._pka_signals = PKaPredictorSignals(self.parent_app)
         self._pka_signals.finished.connect(self._on_batch_finished)

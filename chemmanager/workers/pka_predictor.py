@@ -1,4 +1,15 @@
-"""Background pKa prediction using pkasolver (mayrf/pkasolver)."""
+"""Background pKa prediction using pkasolver (mayrf/pkasolver).
+
+**pkasolver** — graph neural network microstate pKas: Mayr, F.; Wieder, M.; Wieder, O.; Langer, T.
+*Improving Small Molecule pKa Prediction Using Transfer Learning With Graph Neural Networks.*
+Front. Chem. 2022, 10, 866585. https://doi.org/10.3389/fchem.2022.866585
+Code: https://github.com/mayrf/pkasolver
+
+**Dimorphite-DL** (protonation-state enumeration inside pkasolver): Ropp, P. J.; et al.
+*J. Cheminform.* 2019, 11, 14. https://doi.org/10.1186/s13321-019-0336-9
+
+Shorter copy-paste block: ``chemmanager.science_citations.PKASOLVER`` and ``.DIMORPHITE_DL``.
+"""
 
 from __future__ import annotations
 
