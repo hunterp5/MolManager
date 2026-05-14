@@ -1,0 +1,40 @@
+"""User-facing tool names and recurring status copy (single place to tweak wording)."""
+
+TOOLS_ARROW_RENDER_2D = "Tools → Render 2D"
+TOOL_RENDER_2D = "Render 2D"
+TOOL_RGROUP_DECOMP = "R Group Decomposition"
+TOOL_CALCULATOR = "Calculator"
+
+STRUCTURE_PENDING_HINT = (
+    "No 2D structure yet.\n"
+    f"Use {TOOLS_ARROW_RENDER_2D} to draw."
+)
+
+STATUS_READY_RENDER_2D = f"Ready — use {TOOLS_ARROW_RENDER_2D} to refresh or redraw 2D images."
+
+LOADING_DETAIL_AFTER_FILE_READ = (
+    "File read; building table…\n"
+    "2D structure images are drawn automatically when the table is ready."
+)
+LOADING_DETAIL_READING_DISK = (
+    "Reading file from disk…\n"
+    "2D structure images are drawn automatically after the table is built."
+)
+LOADING_DETAIL_APPEND = (
+    "Reading file from disk…\n"
+    "New rows are appended; 2D images refresh automatically when import finishes."
+)
+
+DISCONNECT_FRAGMENTS_HELP = (
+    "Split salts and multi-component entries, keep the largest fragment as the working molecule,\n"
+    "and update SMILES / Fragments. The Structure column is redrawn from that largest fragment only "
+    "(salt is never depicted there)."
+)
+
+
+def loaded_session_status(rows_n: int) -> str:
+    return f"Loaded session ({rows_n} rows) — {TOOLS_ARROW_RENDER_2D} for images."
+
+
+def loaded_sql_status(nrows: int) -> str:
+    return f"Loaded {nrows} row(s) from SQL."

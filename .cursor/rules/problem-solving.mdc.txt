@@ -1,0 +1,7 @@
+---
+alwaysApply: true
+---
+
+-Ensure that problems are fixed at the cause, not the symptom
+-Keep responses brief and direct and avoid unecessary explanation.
+-Adhere to common coding paradigms

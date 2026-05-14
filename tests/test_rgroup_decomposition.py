@@ -1,0 +1,31 @@
+"""Unit tests for R-group decomposition table assembly."""
+
+from chemmanager.workers.rgroup_decomposition import (
+    _assemble_table_rows,
+    _collect_rg_columns,
+    _rgroup_decomp_failure_message,
+)
+
+
+def test_collect_rg_columns_orders_core_then_r_groups():
+    rows = [{"R2": "b", "Core": "c"}, {"R1": "a", "Core": "c2"}]
+    assert _collect_rg_columns(rows) == ["Core", "R1", "R2"]
+
+
+def test_rgroup_failure_message_prepare_core():
+    msg = _rgroup_decomp_failure_message(
+        RuntimeError("Invariant Violation\nCould not prepare at least one core\n...")
+    )
+    assert "could not prepare" in msg.lower() or "core" in msg.lower()
+
+
+def test_assemble_table_rows_aligns_unmatched():
+    oids = [10, 11, 12]
+    rg_rows = [{"Core": "C1", "R1": "x"}, {"Core": "C2", "R1": "y"}]
+    unmatched = [1]
+    col_keys = ["Core", "R1"]
+    out = _assemble_table_rows(oids, rg_rows, unmatched, col_keys, "P")
+    assert len(out) == 3
+    assert out[0][0] == 10 and out[0][1]["P_Core"] == "C1" and out[0][1]["P_R1"] == "x"
+    assert out[1][0] == 11 and out[1][1]["P_Core"] == "N/A" and out[1][1]["P_R1"] == "N/A"
+    assert out[2][0] == 12 and out[2][1]["P_Core"] == "C2" and out[2][1]["P_R1"] == "y"

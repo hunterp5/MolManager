@@ -1,0 +1,174 @@
+"""Modeless dialog listing queued and running background tool jobs."""
+
+from __future__ import annotations
+
+from typing import TYPE_CHECKING, Any
+
+from PyQt5.QtCore import Qt
+from PyQt5.QtWidgets import (
+    QAbstractItemView,
+    QDialog,
+    QHBoxLayout,
+    QHeaderView,
+    QMessageBox,
+    QPushButton,
+    QTableWidget,
+    QTableWidgetItem,
+    QVBoxLayout,
+)
+
+if TYPE_CHECKING:
+    from .main_window import ChemicalTableApp
+
+
+class ProcessesDialog(QDialog):
+    def __init__(self, parent: ChemicalTableApp | None = None):
+        super().__init__(parent)
+        self._app: Any = parent
+        self.setWindowTitle("Processes")
+        self.resize(640, 420)
+        self.setModal(False)
+        self.setWindowModality(Qt.NonModal)
+
+        root = QVBoxLayout(self)
+
+        self._table = QTableWidget(0, 3)
+        self._table.setHorizontalHeaderLabels(["Status", "Job ID", "Title"])
+        self._table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeToContents)
+        self._table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeToContents)
+        self._table.horizontalHeader().setSectionResizeMode(2, QHeaderView.Stretch)
+        self._table.setSelectionBehavior(QAbstractItemView.SelectRows)
+        self._table.setSelectionMode(QAbstractItemView.SingleSelection)
+        self._table.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        root.addWidget(self._table, 1)
+
+        row = QHBoxLayout()
+        self._btn_cancel = QPushButton("Cancel")
+        self._btn_cancel.setToolTip(
+            "Apply to the selected row: stop a running job (cooperative), end Render 2D, "
+            "or remove a queued job from the line without running it."
+        )
+        self._btn_clear = QPushButton("Clear queue")
+        self._btn_clear.setToolTip("Remove all jobs waiting to run (does not stop the current job).")
+        self._btn_refresh = QPushButton("Refresh")
+        row.addWidget(self._btn_cancel)
+        row.addWidget(self._btn_clear)
+        row.addStretch()
+        row.addWidget(self._btn_refresh)
+        root.addLayout(row)
+
+        self._btn_cancel.clicked.connect(self._on_cancel)
+        self._btn_clear.clicked.connect(self._on_clear_queue)
+        self._btn_refresh.clicked.connect(self._reload)
+        self._table.itemSelectionChanged.connect(self._update_cancel_enabled)
+
+        hub = getattr(self._app, "background_activity", None)
+        if hub is not None:
+            hub.changed.connect(self._reload)
+
+        self._reload()
+
+    def _selection_meta(self) -> dict | None:
+        sel = self._table.selectedIndexes()
+        if not sel:
+            return None
+        r = sel[0].row()
+        it = self._table.item(r, 0)
+        if it is None:
+            return None
+        m = it.data(Qt.UserRole)
+        return m if isinstance(m, dict) else None
+
+    def _update_cancel_enabled(self) -> None:
+        m = self._selection_meta()
+        if m is None:
+            self._btn_cancel.setEnabled(False)
+            return
+        if m.get("kind") == "render2d":
+            hub = getattr(self._app, "background_activity", None)
+            self._btn_cancel.setEnabled(bool(hub.render2d_batch_active()) if hub is not None else False)
+        elif m.get("kind") == "pq_running":
+            self._btn_cancel.setEnabled(bool(m.get("cancellable")))
+        elif m.get("kind") == "pq_queued":
+            self._btn_cancel.setEnabled(True)
+        else:
+            self._btn_cancel.setEnabled(False)
+
+    def _reload(self) -> None:
+        hub = getattr(self._app, "background_activity", None)
+        if hub is None:
+            return
+        prev = self._selection_meta()
+        rows, metas = hub.processes_view_rows()
+
+        self._table.setRowCount(len(rows))
+        for i, ((st, jid, title), meta) in enumerate(zip(rows, metas)):
+            it0 = QTableWidgetItem(st)
+            it0.setData(Qt.UserRole, meta)
+            self._table.setItem(i, 0, it0)
+            self._table.setItem(i, 1, QTableWidgetItem(jid))
+            self._table.setItem(i, 2, QTableWidgetItem(title))
+
+        if prev:
+            for i in range(self._table.rowCount()):
+                it0 = self._table.item(i, 0)
+                cur = it0.data(Qt.UserRole) if it0 else None
+                if isinstance(cur, dict) and isinstance(prev, dict) and self._meta_matches_row(prev, cur):
+                    self._table.selectRow(i)
+                    break
+
+        self._update_cancel_enabled()
+
+    @staticmethod
+    def _meta_matches_row(prev: dict, cur: dict) -> bool:
+        if prev.get("kind") != cur.get("kind"):
+            return False
+        if prev.get("kind") == "render2d":
+            return True
+        return prev.get("job_id") == cur.get("job_id")
+
+    def _on_cancel(self) -> None:
+        m = self._selection_meta()
+        app = self._app
+        pq = getattr(app, "process_queue", None)
+        if not m:
+            QMessageBox.information(self, "Cancel", "Select a process in the table first.")
+            return
+        kind = m.get("kind")
+        if kind == "render2d":
+            if hasattr(app, "cancel_render_2d_batch") and app.cancel_render_2d_batch():
+                app.status_label.setText("Render 2D cancelled.")
+            else:
+                QMessageBox.information(self, "Cancel", "Render 2D is not active.")
+        elif kind == "pq_running":
+            run = pq.snapshot().get("running") if pq else None
+            if not run or run.get("job_id") != m.get("job_id"):
+                QMessageBox.information(self, "Cancel", "That job is no longer running.")
+            elif pq.cancel_running():
+                app.status_label.setText("Cancelling…")
+            else:
+                QMessageBox.information(
+                    self,
+                    "Cancel",
+                    "This job cannot be cancelled cooperatively, or a cancel was already requested.",
+                )
+        elif kind == "pq_queued":
+            jid = m.get("job_id") or ""
+            if pq and pq.remove_queued_job(jid):
+                app.status_label.setText(f"Removed queued job ({jid}).")
+            else:
+                QMessageBox.information(self, "Cancel", "That job is no longer in the queue.")
+        else:
+            QMessageBox.information(self, "Cancel", "Unknown row type.")
+        self._reload()
+
+    def _on_clear_queue(self) -> None:
+        hub = getattr(self._app, "background_activity", None)
+        if hub is None:
+            return
+        n = hub.clear_queued_jobs()
+        if n:
+            QMessageBox.information(self, "Clear queue", f"Removed {n} queued job(s).")
+        else:
+            QMessageBox.information(self, "Clear queue", "The queue was already empty.")
+        self._reload()
