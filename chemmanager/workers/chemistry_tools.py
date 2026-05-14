@@ -28,6 +28,13 @@ else:
         return int(sum(fp))
 
 from ..config import load_config
+from ..medchem_descriptors import (
+    cns_mpo_score,
+    lipinski_violations,
+    mol_formula,
+    mol_inchi_key,
+    ro5_pass,
+)
 from ..confs_codec import format_confs_table_cell, mol_from_packed_confs_cell, pack_confs_cell
 from ..safe_calc import eval_custom_calc_expression
 from ..utils import mol_to_canonical_smiles, parse_molecule_from_cell_text
@@ -64,6 +71,16 @@ def descriptor_callable_for_int_fn(i_f, smarts_cache):
     """Return ``callable(mol)`` for one internal descriptor id (shared by thread and process workers)."""
     if i_f == "SMILES":
         return lambda m: mol_to_canonical_smiles(m) if m is not None else ""
+    if i_f == "INCHIKEY":
+        return lambda m: mol_inchi_key(m) if m is not None else ""
+    if i_f == "MOLFORMULA":
+        return lambda m: mol_formula(m) if m is not None else ""
+    if i_f == "RO5_VIOLATIONS":
+        return lambda m: lipinski_violations(m) if m is not None else 0
+    if i_f == "RO5_PASS":
+        return lambda m: ro5_pass(m) if m is not None else "No"
+    if i_f == "CNS_MPO":
+        return lambda m: cns_mpo_score(m) if m is not None else 0.0
     if i_f == "QED":
         return lambda m: QED.qed(m)
     if i_f.startswith("Count_"):

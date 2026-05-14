@@ -48,10 +48,15 @@ class PropertyDialog(QDialog):
         categories = {
             "Drug-likeness": {
                 "SMILES String": "SMILES",
+                "InChI Key": "INCHIKEY",
+                "Molecular formula": "MOLFORMULA",
                 "QED Score": "QED",
                 "Mol Weight": "MolWt",
                 "LogP": "MolLogP",
                 "TPSA": "TPSA",
+                "Ro5 violations": "RO5_VIOLATIONS",
+                "Ro5 pass": "RO5_PASS",
+                "CNS MPO score": "CNS_MPO",
                 "Molar Refractivity": "MolMR",
                 "Fraction CSP3": "FractionCSP3",
                 "Labute ASA": "LabuteASA",
