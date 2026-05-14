@@ -53,6 +53,7 @@ class PropertyDialog(QDialog):
                 "QED Score": "QED",
                 "Mol Weight": "MolWt",
                 "LogP": "MolLogP",
+                "Log D7.4": "LOGD74",
                 "TPSA": "TPSA",
                 "Ro5 violations": "RO5_VIOLATIONS",
                 "Ro5 pass": "RO5_PASS",

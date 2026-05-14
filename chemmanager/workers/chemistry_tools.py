@@ -28,14 +28,16 @@ else:
         return int(sum(fp))
 
 from ..config import load_config
+from ..confs_codec import format_confs_table_cell, mol_from_packed_confs_cell, pack_confs_cell
 from ..medchem_descriptors import (
     cns_mpo_score,
     lipinski_violations,
+    logd74_value,
     mol_formula,
     mol_inchi_key,
     ro5_pass,
 )
-from ..confs_codec import format_confs_table_cell, mol_from_packed_confs_cell, pack_confs_cell
+from ..pkasolver_descriptor_support import int_fns_need_pkasolver, microstates_for_mol
 from ..safe_calc import eval_custom_calc_expression
 from ..utils import mol_to_canonical_smiles, parse_molecule_from_cell_text
 from .fingerprint_similarity import _rdk_fp_onbits
@@ -67,8 +69,9 @@ def _descriptor_int_fns_include_pharm2d(int_fns) -> bool:
     return any(isinstance(f, str) and f.startswith("FP_Pharm2D") for f in int_fns)
 
 
-def descriptor_callable_for_int_fn(i_f, smarts_cache):
+def descriptor_callable_for_int_fn(i_f, smarts_cache, row_ctx=None):
     """Return ``callable(mol)`` for one internal descriptor id (shared by thread and process workers)."""
+    ctx = row_ctx if row_ctx is not None else {}
     if i_f == "SMILES":
         return lambda m: mol_to_canonical_smiles(m) if m is not None else ""
     if i_f == "INCHIKEY":
@@ -79,8 +82,10 @@ def descriptor_callable_for_int_fn(i_f, smarts_cache):
         return lambda m: lipinski_violations(m) if m is not None else 0
     if i_f == "RO5_PASS":
         return lambda m: ro5_pass(m) if m is not None else "No"
+    if i_f == "LOGD74":
+        return lambda m: logd74_value(m, ctx.get("pkasolver_states"))
     if i_f == "CNS_MPO":
-        return lambda m: cns_mpo_score(m) if m is not None else 0.0
+        return lambda m: cns_mpo_score(m, ctx.get("pkasolver_states")) if m is not None else 0.0
     if i_f == "QED":
         return lambda m: QED.qed(m)
     if i_f.startswith("Count_"):
@@ -131,14 +136,17 @@ def _mp_calc_descriptor_row(args: tuple):
     """One row in a child process — avoids GIL contention with the Qt GUI thread."""
     idx, mol_bytes, disp_headers, int_fns = args
     smarts_cache = {}
-    callables = [descriptor_callable_for_int_fn(i_f, smarts_cache) for i_f in int_fns]
-    row_data: dict[str, str] = {}
+    row_ctx: dict = {}
     mol = None
     if mol_bytes:
         try:
             mol = Chem.Mol(mol_bytes)
         except Exception:
             mol = None
+    if mol is not None and int_fns_need_pkasolver(int_fns):
+        row_ctx["pkasolver_states"] = microstates_for_mol(mol)
+    callables = [descriptor_callable_for_int_fn(i_f, smarts_cache, row_ctx) for i_f in int_fns]
+    row_data: dict[str, str] = {}
     if mol:
         for d_n, fn in zip(disp_headers, callables):
             try:
@@ -154,12 +162,16 @@ def _mp_calc_descriptor_row(args: tuple):
 
 def _calc_descriptor_row_task(args):
     """One row for :class:`CalcWorker` parallel path (thread worker)."""
-    idx, mol, disp_headers, callables = args
+    idx, mol, disp_headers, int_fns, smarts_cache = args
     if mol is not None:
         try:
             mol = Chem.Mol(mol)
         except Exception:
             mol = None
+    row_ctx: dict = {}
+    if mol is not None and int_fns_need_pkasolver(int_fns):
+        row_ctx["pkasolver_states"] = microstates_for_mol(mol)
+    callables = [descriptor_callable_for_int_fn(i_f, smarts_cache, row_ctx) for i_f in int_fns]
     row_data: dict[str, str] = {}
     if mol:
         for d_n, fn in zip(disp_headers, callables):
@@ -713,16 +725,8 @@ class CalcWorker(QRunnable):
         )
         self.cancel_event = cancel_event
 
-    def _resolve_callable(self, i_f, smarts_cache):
-        return descriptor_callable_for_int_fn(i_f, smarts_cache)
-
     def run(self):
-        callables = []
         smarts_cache = {}
-        # Pre-resolve all callables to avoid per-molecule getattr and closure issues
-        for i_f in self.int_fns:
-            callables.append(self._resolve_callable(i_f, smarts_cache))
-
         nrows = len(self.data)
         tot = max(nrows, 1)
         prepared = []
@@ -820,7 +824,7 @@ class CalcWorker(QRunnable):
             results = []
         else:
             _emit_progress(0, force=True)
-            tasks = [(i, mol, self.disp_headers, tuple(callables)) for i, mol in prepared]
+            tasks = [(i, mol, self.disp_headers, tuple(self.int_fns), smarts_cache) for i, mol in prepared]
             results = []
             with ThreadPoolExecutor(max_workers=max_workers) as ex:
                 pending = {ex.submit(_calc_descriptor_row_task, t) for t in tasks}
