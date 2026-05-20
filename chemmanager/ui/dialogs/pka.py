@@ -18,7 +18,8 @@ from rdkit import Chem
 
 from ...science_citations import pka_dialog_footer_html
 from ...utils import parse_molecule_from_cell_text
-from ...workers import PKaPredictorSignals, PKaPredictorWorker
+from ...workers import PKaPredictorWorker
+from ..qt_widget_utils import make_window_minimizable
 from .scope import selection_scope_checked
 
 
@@ -107,12 +108,9 @@ class PKaPredictorDialog(QDialog):
         ref_lbl.setStyleSheet("color: palette(mid);")
         root.addWidget(ref_lbl)
 
-        self._pka_signals = PKaPredictorSignals(self.parent_app)
-        self._pka_signals.finished.connect(self._on_batch_finished)
-        self._pka_signals.failed.connect(self._on_failed)
-
         self._refresh_structure_sources()
         self.adjustSize()
+        make_window_minimizable(self)
 
     def _on_most_basic_toggled(self, on: bool) -> None:
         if on:
@@ -130,8 +128,7 @@ class PKaPredictorDialog(QDialog):
         self.src_combo.clear()
         if self.parent_app is None:
             return
-        candidates = ["Structure"] + self.parent_app._data_headers_confirmed_for_chemistry_tools()
-        self.src_combo.addItems(candidates)
+        self.src_combo.addItems(self.parent_app.chemistry_tool_structure_sources())
 
     def _on_mode_changed(self, idx: int) -> None:
         is_smiles = idx == 1
@@ -139,36 +136,7 @@ class PKaPredictorDialog(QDialog):
         self._smiles_cfg.setVisible(is_smiles)
 
     def _collect_table_mols(self, src: str, only_selected: bool) -> list[tuple[int, Chem.Mol]]:
-        allowed = self.parent_app._selected_oids_set() if only_selected else None
-        col = None if src == "Structure" else self.parent_app.headers.index(src)
-        data: list[tuple[int, Chem.Mol]] = []
-        for r in range(self.parent_app._table_model.rowCount()):
-            t0 = self.parent_app._table_model.cell_text(r, 0)
-            if not t0.isdigit():
-                continue
-            oid = int(t0)
-            if allowed is not None and oid not in allowed:
-                continue
-            if src == "Structure":
-                mol = self.parent_app.mols.get(oid)
-                if mol is None:
-                    mol = self.parent_app._mol_for_structure_row(r)
-            else:
-                if self.parent_app._table_model.is_pixmap_data_column(src):
-                    mol = self.parent_app.mols.get(oid)
-                    if mol is None:
-                        raw = self.parent_app._table_model.backing_value_for_row_header(r, src)
-                        mol = self.parent_app._mol_from_structure_text(raw) if raw else None
-                    if mol is None:
-                        mol = self.parent_app._mol_for_structure_row(r)
-                else:
-                    raw = self.parent_app._table_cell_text(r, col)
-                    mol = self.parent_app._mol_from_structure_text(raw)
-                if mol is not None:
-                    self.parent_app.mols[oid] = mol
-            if mol is not None:
-                data.append((oid, mol))
-        return data
+        return self.parent_app.collect_scoped_table_mols(src, only_selected=only_selected)
 
     def _on_predict(self) -> None:
         if self.parent_app is None:
@@ -204,31 +172,14 @@ class PKaPredictorDialog(QDialog):
                 return
             rows = list(rows_m)
 
-        self.predict_btn.setEnabled(False)
         self.parent_app.status_label.setText("pKa prediction…")
         most_basic = bool(self.most_basic_only_cb.isChecked())
         most_acidic = bool(self.most_acidic_only_cb.isChecked())
+        pka_signals = self.parent_app._ensure_pka_predictor_signals()
         self.parent_app.process_queue.enqueue(
             f"pKa prediction ({len(rows)} molecules)",
-            lambda ev, r=rows, ws=self.parent_app.signals, ps=self._pka_signals, mb=most_basic, ma=most_acidic: PKaPredictorWorker(
+            lambda ev, r=rows, ws=self.parent_app.signals, ps=pka_signals, mb=most_basic, ma=most_acidic: PKaPredictorWorker(
                 r, ws, ps, cancel_event=ev, most_basic_only=mb, most_acidic_only=ma
             ),
         )
-
-    def _on_batch_finished(self, results: list) -> None:
-        self.predict_btn.setEnabled(True)
-        table_rows = [(o, t) for o, t in results if o is not None]
-        lone = [t for o, t in results if o is None]
-        if table_rows:
-            res = [(int(o), {"pKa": text}) for o, text in table_rows]
-            self.parent_app.on_calc_finished(res, ["pKa"])
-        if lone:
-            QMessageBox.information(self, "pKa Predictor", lone[0])
-        if not table_rows:
-            self.parent_app._clear_tool_progress()
-            self.parent_app.status_label.setText("Ready.")
-
-    def _on_failed(self, msg: str) -> None:
-        self.predict_btn.setEnabled(True)
-        self.parent_app._clear_tool_progress()
-        QMessageBox.warning(self, "pKa Predictor", msg or "Prediction failed.")
+        self.close()

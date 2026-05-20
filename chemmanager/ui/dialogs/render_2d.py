@@ -9,6 +9,7 @@ from PyQt5.QtWidgets import (
     QVBoxLayout,
 )
 
+from ..qt_widget_utils import make_window_minimizable
 from ..strings import TOOL_RENDER_2D
 from .scope import selection_scope_checked
 
@@ -46,6 +47,7 @@ class Render2DStructureDialog(QDialog):
         bb.rejected.connect(self.reject)
         ly.addWidget(bb)
         self.adjustSize()
+        make_window_minimizable(self)
 
     def chosen_source(self) -> str:
         return self.src_combo.currentText()

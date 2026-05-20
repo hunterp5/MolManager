@@ -21,6 +21,7 @@ from rdkit import Chem
 from rdkit.Chem import AllChem
 
 from ..confs_codec import conformer_mol_blocks_b64_json
+from .qt_widget_utils import make_window_minimizable
 
 logger = logging.getLogger(__name__)
 
@@ -625,6 +626,8 @@ class Molecule3DViewerDialog(QDialog):
                 "Close this window when you are done."
             )
             root.addWidget(QLabel(msg), 1)
+
+        make_window_minimizable(self)
 
 
 def open_molecule_3d_viewer(mol: Chem.Mol, parent: QWidget | None = None, *, title: str = "View in 3D") -> None:

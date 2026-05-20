@@ -1,0 +1,39 @@
+"""Modeless singleton helper (Boltz-2 / Processes tracking depends on correct reuse)."""
+
+from __future__ import annotations
+
+from PyQt5.QtCore import Qt
+from PyQt5.QtWidgets import QWidget
+
+from chemmanager.ui.singleton_modeless_dialog import reuse_or_show_modeless_singleton
+
+
+def test_reuse_or_show_modeless_singleton_reuses_hidden_widget(qapp):  # noqa: ARG001
+    """Opening the menu again must not replace the singleton while the widget still exists (hidden)."""
+    destroyed = []
+
+    class Host:
+        def __init__(self) -> None:
+            self._dlg = None
+
+    host = Host()
+    created: list[QWidget] = []
+
+    def factory() -> QWidget:
+        w = QWidget()
+        w.setWindowFlags(Qt.Window)
+        created.append(w)
+        return w
+
+    def on_destroyed() -> None:
+        destroyed.append(True)
+
+    w1 = reuse_or_show_modeless_singleton(host, "_dlg", factory, on_destroyed)
+    assert len(created) == 1
+    w1.hide()
+    qapp.processEvents()
+
+    w2 = reuse_or_show_modeless_singleton(host, "_dlg", factory, on_destroyed)
+    assert w2 is w1
+    assert len(created) == 1
+    assert not destroyed

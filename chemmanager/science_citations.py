@@ -103,3 +103,24 @@ def protomer_dialog_footer_html() -> str:
         "<b>Population model</b>: independent-site Henderson–Hasselbalch over those microstates "
         "(same pooling code path as LogD 7.4 / LogS 7.4 descriptors).</small>"
     )
+
+
+SURECHEMBL = (
+    "SureChEMBL (EMBL-EBI): chemistry extracted from patents and other documents; public REST API "
+    "at https://www.surechembl.org/api — documentation https://chembl.gitbook.io/surechembl . "
+    "Similarity search uses Tanimoto on RDKit Morgan fingerprints (256 bits, radius 2) on their "
+    "servers (FPSim2-backed; see SureChEMBL chemical search documentation)."
+)
+
+
+def surechembl_patent_search_html() -> str:
+    """Rich text for the Query Patents (SureChEMBL) dialog."""
+    return (
+        "<small><b>Data source</b>: <a href=\"https://www.surechembl.org\">SureChEMBL</a> "
+        "(EMBL-EBI) — compounds linked to <b>patent and document</b> chemistry, not a live Google Patents "
+        "HTML search. "
+        "<b>Similarity</b>: server-side Tanimoto on RDKit Morgan fingerprints (256 bits, r=2); "
+        'see <a href="https://chembl.gitbook.io/surechembl/chemical-search/similarity-search-tanimoto-coefficient-and-fingerprint-generation">SureChEMBL docs</a> '
+        'and <a href="https://www.ebi.ac.uk/chembl/surechembl/">SureChEMBL at ChEMBL</a>.</small>'
+    )
+

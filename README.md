@@ -4,11 +4,19 @@ Small desktop chemistry manager built with **PyQt5** + **RDKit**.
 
 ### Install (Windows)
 
-Create/activate a virtualenv, then:
+Create/activate a virtualenv, then either **core only** or **full stack** (pKa + Boltz Python packages):
 
 ```bash
 pip install -r requirements.txt
+# optional full Python stack (see requirements-pka.txt for Windows PyTorch notes first):
+pip install -r requirements-all.txt
 ```
+
+Or editable install: `pip install -e ".[dev]"` (see `pyproject.toml` for extras `pka`, `boltz`).
+
+**Optional CLI tools** (AutoDock Vina, Boltz predict binary): not stored in git. Copy into
+`chemmanager/resources/bin/win/` (`vina.exe`, `boltz.exe`) or run
+`scripts\bootstrap_optional_tools.ps1` for guided setup. See `docs/PACKAGING.md` for installer builds.
 
 Notes:
 - **RDKit** can be finicky on Windows via pip. If `rdkit-pypi` fails to install, use **conda** instead:
@@ -31,14 +39,19 @@ Optional environment variables:
 | `CHEMMANAGER_SUBSTRUCTURE_ASYNC_ROWS` | Row count at which substructure filtering uses a worker thread (default `400`, clamped `64`–`500000`). |
 | `CHEMMANAGER_FILTER_DEBOUNCE_SUBSTRUCTURE_ROWS` / `CHEMMANAGER_FILTER_DEBOUNCE_SUBSTRUCTURE_MS` | Row threshold and debounce (ms) when a substructure filter is active (defaults `120` / `85`). |
 | `CHEMMANAGER_FILTER_DEBOUNCE_DEFAULT_ROWS` / `CHEMMANAGER_FILTER_DEBOUNCE_DEFAULT_MS` | Same when no substructure filter (defaults `400` / `55`). |
+| `CHEMMANAGER_PERF_METRICS` | Enable runtime perf metric aggregation/logging for load/filter/search/export hot paths. |
+| `CHEMMANAGER_PERF_LOG_EVERY` | Log interval for perf metrics (default `25` samples). |
 | `CHEMMANAGER_CONFORMER_THREADS` | Parallel workers for conformer generation (`1`–`16`; unset = auto). |
 | `CHEMMANAGER_DESCRIPTOR_THREADS` | Parallel workers for descriptor calculation (`1`–`32`; unset = auto). |
+| `CHEMMANAGER_PROTOmer_PROCESSES` | Parallel **processes** for Tools → Generate Protomers (`1`–`8`). `1` = always sequential (one shared model). Unset = auto: **dedupe** identical structures, then use a small process pool when there are **≥4 unique** structures (each process loads its own pkasolver model — faster but more RAM). |
 | `CHEMMANAGER_SQL_MAX_ROWS_HARD` | Hard ceiling for “Max rows” when loading from SQL (default `2000000`; caps UI spinbox and server `LIMIT`). |
 | `CHEMMANAGER_SQL_PRECOUNT_WARN` | If a pre-load `COUNT(*)` is ≥ this value, confirm before fetching (default `100000`). |
 | `CHEMMANAGER_SQLITE_TIMEOUT_S` | SQLite `connect_args["timeout"]` seconds (default `30`, clamped when applied). |
 | `CHEMMANAGER_PG_CONNECT_TIMEOUT` | Postgres `connect_timeout` seconds (default `30`). |
+| `CHEMMANAGER_SQLITE_BACKEND_PAGE_SIZE` | Page size for the local SQLite row cache used by text filters and column search (default `5000`). |
 | `CHEMMANAGER_DISABLE_CUSTOM_CALC` | Set to `1`, `true`, `yes`, or `on` to disable Tools → Custom Calculator (policy lockdown). |
 | `CHEMMANAGER_CUSTOM_CALC_LEGACY_EVAL` | Set to `1`, `true`, `yes`, or `on` to use legacy restricted `eval` instead of the default AST evaluator. |
+| `CHEMMANAGER_BUNDLE_DIR` | Directory containing optional bundled executables (`vina`, `boltz`) when not using `chemmanager/resources/bin/<platform>/`. |
 
 **Custom calculator:** by default expressions are evaluated with a restricted **AST** interpreter (`+ - * / // % **`, unary `+`/`-`, parentheses, and `math.*` callables in scope). Treat expressions as **trusted input only** (not a full sandbox). Use `CHEMMANAGER_DISABLE_CUSTOM_CALC` where policy requires; use `CHEMMANAGER_CUSTOM_CALC_LEGACY_EVAL` only if you hit an expression compatibility edge case.
 
@@ -53,6 +66,12 @@ python -m pytest tests/ -v
 ```
 
 On Linux/macOS, use `export QT_QPA_PLATFORM=offscreen`. CI runs the same suite on pushes and pull requests (see `.github/workflows/ci.yml`).
+
+Performance baseline benchmark:
+
+```bash
+python scripts/benchmark_large_table.py --runs 3 --scales 10000,50000,100000
+```
 
 ### Project structure
 

@@ -22,6 +22,7 @@ from rdkit import Chem
 from ...science_citations import protomer_dialog_footer_html
 from ...utils import parse_molecule_from_cell_text
 from ...workers import ProtomerGeneratorSignals, ProtomerGeneratorWorker
+from ..qt_widget_utils import make_window_minimizable
 from .scope import selection_scope_checked
 
 
@@ -93,7 +94,9 @@ class ProtomerGeneratorDialog(QDialog):
 
         hint = QLabel(
             "<p><small>% values are a rough HH-style sum over pkasolver microstates "
-            "(independent sites; not Epik-grade).</small></p>"
+            "(independent sites; not Epik-grade). Identical structures are computed once and reused; "
+            "with several <i>different</i> structures the app may use parallel processes (see "
+            "<code>CHEMMANAGER_PROTOmer_PROCESSES</code> in the README).</small></p>"
             + protomer_dialog_footer_html()
         )
         hint.setWordWrap(True)
@@ -133,13 +136,13 @@ class ProtomerGeneratorDialog(QDialog):
 
         self._refresh_structure_sources()
         self.adjustSize()
+        make_window_minimizable(self)
 
     def _refresh_structure_sources(self) -> None:
         self.src_combo.clear()
         if self.parent_app is None:
             return
-        candidates = ["Structure"] + self.parent_app._data_headers_confirmed_for_chemistry_tools()
-        self.src_combo.addItems(candidates)
+        self.src_combo.addItems(self.parent_app.chemistry_tool_structure_sources())
 
     def _on_mode_changed(self, idx: int) -> None:
         is_smiles = idx == 1
@@ -147,36 +150,7 @@ class ProtomerGeneratorDialog(QDialog):
         self._smiles_cfg.setVisible(is_smiles)
 
     def _collect_table_mols(self, src: str, only_selected: bool) -> list[tuple[int, Chem.Mol]]:
-        allowed = self.parent_app._selected_oids_set() if only_selected else None
-        col = None if src == "Structure" else self.parent_app.headers.index(src)
-        data: list[tuple[int, Chem.Mol]] = []
-        for r in range(self.parent_app._table_model.rowCount()):
-            t0 = self.parent_app._table_model.cell_text(r, 0)
-            if not t0.isdigit():
-                continue
-            oid = int(t0)
-            if allowed is not None and oid not in allowed:
-                continue
-            if src == "Structure":
-                mol = self.parent_app.mols.get(oid)
-                if mol is None:
-                    mol = self.parent_app._mol_for_structure_row(r)
-            else:
-                if self.parent_app._table_model.is_pixmap_data_column(src):
-                    mol = self.parent_app.mols.get(oid)
-                    if mol is None:
-                        raw = self.parent_app._table_model.backing_value_for_row_header(r, src)
-                        mol = self.parent_app._mol_from_structure_text(raw) if raw else None
-                    if mol is None:
-                        mol = self.parent_app._mol_for_structure_row(r)
-                else:
-                    raw = self.parent_app._table_cell_text(r, col)
-                    mol = self.parent_app._mol_from_structure_text(raw)
-                if mol is not None:
-                    self.parent_app.mols[oid] = mol
-            if mol is not None:
-                data.append((oid, mol))
-        return data
+        return self.parent_app.collect_scoped_table_mols(src, only_selected=only_selected)
 
     def _on_generate(self) -> None:
         if self.parent_app is None:
@@ -234,7 +208,7 @@ class ProtomerGeneratorDialog(QDialog):
             self.results_table.setItem(r, 1, QTableWidgetItem(smi))
             self.results_table.setItem(r, 2, QTableWidgetItem(f"{pct:.2f}"))
         self.parent_app._clear_tool_progress()
-        self.parent_app.status_label.setText("Ready.")
+        self.parent_app.status_label.setText(self.parent_app._consume_partial_results_notice() or "Ready.")
 
     def _on_failed(self, msg: str) -> None:
         self.generate_btn.setEnabled(True)
@@ -254,6 +228,7 @@ class ProtomerGeneratorDialog(QDialog):
             return
         pct_col = self._unique_col("Protomer %")
         src_col = self._unique_col("Protomer source OID")
+        batch: list[tuple[str, dict[str, str]]] = []
         for r in sorted(table_rows):
             oid_item = self.results_table.item(r, 0)
             smi_item = self.results_table.item(r, 1)
@@ -265,9 +240,11 @@ class ProtomerGeneratorDialog(QDialog):
                 continue
             oid_txt = (oid_item.text() if oid_item is not None else "").strip()
             pct_txt = (pct_item.text() or "").strip()
-            fields = {pct_col: pct_txt, src_col: oid_txt}
-            self.parent_app.add_row_from_external_record(smi, fields)
-        self.parent_app.status_label.setText(f"Added {len(table_rows)} protomer row(s) to the table.")
+            batch.append((smi, {pct_col: pct_txt, src_col: oid_txt}))
+        if not batch:
+            return
+        added = self.parent_app.add_rows_from_external_records_batch(batch)
+        self.parent_app.status_label.setText(f"Added {added} protomer row(s) to the table.")
 
     def _add_all_to_main(self) -> None:
         n = self.results_table.rowCount()

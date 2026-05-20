@@ -31,6 +31,9 @@ jobs:
       - name: Run tests
         run: python -m pytest tests/ -v --tb=short
 
+      - name: Performance gate (100k core model)
+        run: python scripts/perf_gate.py
+
       - name: Audit dependencies (informational)
         continue-on-error: true
         run: |

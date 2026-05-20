@@ -85,7 +85,8 @@ def pack_confs_cell(meta: dict, mol: Chem.Mol | None, *, max_chars: int = CONFS_
     """
     Store generation metadata plus, when possible, all conformers as mol blocks for later 3D viewing.
 
-    Falls back to :func:`format_confs_table_cell` when there is no multi-conformer molecule or packing fails.
+    Falls back to :func:`format_confs_table_cell` when there are no conformers or packing fails.
+    A single minimized conformer (e.g. Generate Single Conformation) is packed so the 3D viewer can load it.
     """
     base = format_confs_table_cell(meta)
     if mol is None:
@@ -94,7 +95,7 @@ def pack_confs_cell(meta: dict, mol: Chem.Mol | None, *, max_chars: int = CONFS_
         nconf = int(mol.GetNumConformers())
     except Exception:
         nconf = 0
-    if nconf < 2:
+    if nconf < 1:
         return base
     try:
         blocks_b64 = conformer_mol_blocks_b64_json(mol)
@@ -130,7 +131,7 @@ def pack_confs_cell(meta: dict, mol: Chem.Mol | None, *, max_chars: int = CONFS_
 def unpack_confs_blocks_json_b64(cell_text: str) -> str | None:
     """
     If *cell_text* is a packed ``confs`` cell (v1 with ``b``), return the inner ``blocks_json_b64`` string
-    expected by :class:`~chemmanager.ui.mol_viewer_3d.Molecule3DViewerDialog` ``multi_conf_blocks_json_b64``.
+    expected by :class:`~MolManager.ui.mol_viewer_3d.Molecule3DViewerDialog` ``multi_conf_blocks_json_b64``.
     """
     s = (cell_text or "").strip()
     if not s or len(s) < 10:

@@ -6,7 +6,6 @@ Drug-likeness columns that invoke ``medchem_descriptors`` / **pkasolver** cite
 ``chemmanager.science_citations`` and the worker module docstrings there.
 """
 
-import json
 import logging
 import math
 import os
@@ -14,6 +13,12 @@ import re
 import threading
 import time
 from concurrent.futures import FIRST_COMPLETED, ProcessPoolExecutor, ThreadPoolExecutor, wait
+
+from .process_pool_utils import (
+    register_process_pool,
+    should_terminate_process_pool,
+    shutdown_process_pool_executor,
+)
 from dataclasses import dataclass
 
 from PyQt5.QtCore import QRunnable
@@ -46,10 +51,11 @@ from ..medchem_descriptors import (
     ro5_pass,
 )
 from ..pkasolver_descriptor_support import int_fns_need_pkasolver, microstates_for_mol
+from .pkasolver_parallel import build_microstates_cache_for_rows
 from ..safe_calc import eval_custom_calc_expression
 from ..utils import mol_to_canonical_smiles, parse_molecule_from_cell_text
 from .fingerprint_similarity import _rdk_fp_onbits
-from .signals import WorkerSignals
+from .signals import WorkerSignals, emit_partial_results_if_cancelled
 
 logger = logging.getLogger(__name__)
 
@@ -146,7 +152,7 @@ def descriptor_callable_for_int_fn(i_f, smarts_cache, row_ctx=None):
 
 def _mp_calc_descriptor_row(args: tuple):
     """One row in a child process — avoids GIL contention with the Qt GUI thread."""
-    idx, mol_bytes, disp_headers, int_fns = args
+    idx, mol_bytes, disp_headers, int_fns, pka_states, pka_cache_used = args
     smarts_cache = {}
     row_ctx: dict = {}
     mol = None
@@ -156,7 +162,10 @@ def _mp_calc_descriptor_row(args: tuple):
         except Exception:
             mol = None
     if mol is not None and int_fns_need_pkasolver(int_fns):
-        row_ctx["pkasolver_states"] = microstates_for_mol(mol)
+        if pka_cache_used:
+            row_ctx["pkasolver_states"] = pka_states
+        else:
+            row_ctx["pkasolver_states"] = microstates_for_mol(mol)
     callables = [descriptor_callable_for_int_fn(i_f, smarts_cache, row_ctx) for i_f in int_fns]
     row_data: dict[str, str] = {}
     if mol:
@@ -174,7 +183,7 @@ def _mp_calc_descriptor_row(args: tuple):
 
 def _calc_descriptor_row_task(args):
     """One row for :class:`CalcWorker` parallel path (thread worker)."""
-    idx, mol, disp_headers, int_fns, smarts_cache = args
+    idx, mol, disp_headers, int_fns, smarts_cache, pka_states, pka_cache_used = args
     if mol is not None:
         try:
             mol = Chem.Mol(mol)
@@ -182,7 +191,10 @@ def _calc_descriptor_row_task(args):
             mol = None
     row_ctx: dict = {}
     if mol is not None and int_fns_need_pkasolver(int_fns):
-        row_ctx["pkasolver_states"] = microstates_for_mol(mol)
+        if pka_cache_used:
+            row_ctx["pkasolver_states"] = pka_states
+        else:
+            row_ctx["pkasolver_states"] = microstates_for_mol(mol)
     callables = [descriptor_callable_for_int_fn(i_f, smarts_cache, row_ctx) for i_f in int_fns]
     row_data: dict[str, str] = {}
     if mol:
@@ -211,6 +223,25 @@ class ConformerGenParams:
     random_seed: int = 0xC0FFEE
     prune_rms_threshold: float = -1.0
     max_iterations: int = 200
+
+    @classmethod
+    def single_lowest_energy(
+        cls,
+        *,
+        force_field: str = "MMFF",
+        random_seed: int = 0xC0FFEE,
+        prune_rms_threshold: float = -1.0,
+        max_iterations: int = 200,
+    ) -> "ConformerGenParams":
+        """One embedded conformer, minimized; written to the ``confs`` column."""
+        return cls(
+            num_confs=1,
+            energy_window_kcal=0.0,
+            force_field=force_field,
+            random_seed=random_seed,
+            prune_rms_threshold=prune_rms_threshold,
+            max_iterations=max_iterations,
+        )
 
 
 def _etkdg_params(random_seed: int, prune_rms_threshold: float):
@@ -439,6 +470,8 @@ class ConformerGenerationWorker(QRunnable):
         use_parallel = nrows >= 6 and max_workers > 1
         cancel_ev = self.cancel_event
         results: list = []
+        cancelled = False
+        done_count = 0
         prog_state = [0, 0.0]
         try:
             if use_parallel:
@@ -452,6 +485,16 @@ class ConformerGenerationWorker(QRunnable):
                     while pending:
                         if cancel_ev is not None and cancel_ev.is_set():
                             shutdown_cancel = True
+                            cancelled = True
+                            for f in list(pending):
+                                if f.done() and not f.cancelled():
+                                    try:
+                                        results.append(f.result())
+                                        done_count += 1
+                                    except Exception:
+                                        logger.exception("Conformer row task failed")
+                                else:
+                                    f.cancel()
                             break
                         completed, pending = wait(pending, timeout=0.08, return_when=FIRST_COMPLETED)
                         for f in completed:
@@ -476,10 +519,15 @@ class ConformerGenerationWorker(QRunnable):
             else:
                 for done, t in enumerate(tasks, start=1):
                     if cancel_ev is not None and cancel_ev.is_set():
+                        cancelled = True
                         break
                     results.append(_conformer_row_task((*t, cancel_ev)))
+                    done_count = done
                     _emit_tool_progress_throttled(self.signals, "Generate conformations…", done, tot, prog_state)
         finally:
+            emit_partial_results_if_cancelled(
+                self.signals, "Generate conformations", done_count, tot, cancelled
+            )
             try:
                 self.signals.conformers_finished.emit(results)
             except Exception:
@@ -670,6 +718,8 @@ class SuperposeConformersWorker(QRunnable):
         use_parallel = nrows >= 6 and max_workers > 1
         cancel_ev = self.cancel_event
         results: list = []
+        cancelled = False
+        done_count = 0
         prog_state = [0, 0.0]
         try:
             if use_parallel:
@@ -683,6 +733,16 @@ class SuperposeConformersWorker(QRunnable):
                     while pending:
                         if cancel_ev is not None and cancel_ev.is_set():
                             shutdown_cancel = True
+                            cancelled = True
+                            for f in list(pending):
+                                if f.done() and not f.cancelled():
+                                    try:
+                                        results.append(f.result())
+                                        done_count += 1
+                                    except Exception:
+                                        logger.exception("Superpose row task failed")
+                                else:
+                                    f.cancel()
                             break
                         completed, pending = wait(pending, timeout=0.08, return_when=FIRST_COMPLETED)
                         for f in completed:
@@ -707,10 +767,15 @@ class SuperposeConformersWorker(QRunnable):
             else:
                 for done, t in enumerate(tasks, start=1):
                     if cancel_ev is not None and cancel_ev.is_set():
+                        cancelled = True
                         break
                     results.append(_superpose_row_task((*t, cancel_ev)))
+                    done_count = done
                     _emit_tool_progress_throttled(self.signals, "Superpose conformers…", done, tot, prog_state)
         finally:
+            emit_partial_results_if_cancelled(
+                self.signals, "Superpose conformers", done_count, tot, cancelled
+            )
             try:
                 self.signals.superpose_finished.emit(results)
             except Exception:
@@ -726,6 +791,7 @@ class CalcWorker(QRunnable):
         is_smiles,
         signals,
         cancel_event: threading.Event | None = None,
+        progress_state=None,
     ):
         super().__init__()
         self.data, self.disp_headers, self.int_fns, self.is_smiles, self.signals = (
@@ -736,19 +802,38 @@ class CalcWorker(QRunnable):
             signals,
         )
         self.cancel_event = cancel_event
+        self.progress_state = progress_state
 
     def run(self):
         smarts_cache = {}
         nrows = len(self.data)
         tot = max(nrows, 1)
         prepared = []
-        for i, item in self.data:
+        prep_emit_step = max(1, nrows // 80)
+        prep_last_emit = 0.0
+
+        def _emit_prep_progress(done_count: int, *, force: bool = False) -> None:
+            nonlocal prep_last_emit
+            now = time.monotonic()
+            if force or done_count >= nrows or (now - prep_last_emit) >= 0.2:
+                prep_last_emit = now
+                if self.progress_state is not None:
+                    self.progress_state.update("Preparing descriptors…", done_count, tot)
+                try:
+                    self.signals.tool_progress.emit("Preparing descriptors…", done_count, tot)
+                except Exception:
+                    pass
+
+        for idx, (i, item) in enumerate(self.data):
             if self.is_smiles:
                 smi = item.strip() if isinstance(item, str) else ""
                 mol = parse_molecule_from_cell_text(smi) if smi else None
             else:
                 mol = item
             prepared.append((i, mol))
+            if idx == 0 or idx + 1 >= nrows or (idx + 1) % prep_emit_step == 0:
+                _emit_prep_progress(idx + 1)
+        _emit_prep_progress(len(prepared), force=True)
 
         cfg = load_config()
         if cfg.descriptor_threads is not None:
@@ -756,18 +841,35 @@ class CalcWorker(QRunnable):
         else:
             max_workers = min(8, max(1, (os.cpu_count() or 4)))
 
-        # Pharm2D uses a process pool when possible (below). All other descriptor work runs in
+        pka_by_idx: dict[int, list | None] = {}
+        pka_cache_used = False
+        if int_fns_need_pkasolver(self.int_fns) and nrows > 0:
+            try:
+                self.signals.tool_progress.emit("pkasolver microstates…", 0, tot)
+            except Exception:
+                pass
+            pka_by_idx = build_microstates_cache_for_rows(
+                prepared, cancel_event=self.cancel_event
+            )
+            pka_cache_used = True
+            try:
+                self.signals.tool_progress.emit("Calculate descriptors", 0, tot)
+            except Exception:
+                pass
         # ThreadPoolExecutor row tasks so RDKit never runs on the Qt GUI thread and small jobs
         # still use a worker thread instead of the process-queue thread doing every row inline.
         heavy_pharm2d = _descriptor_int_fns_include_pharm2d(self.int_fns)
         cancel_ev = self.cancel_event
+        cancelled = False
 
         prog_last_emit = 0.0
         prog_last_done = -1
 
         def _emit_progress(done_count: int, *, force: bool = False) -> None:
-            """Avoid flooding the GUI thread with queued progress signals."""
+            """Update shared progress state every row; throttle cross-thread signal emissions."""
             nonlocal prog_last_emit, prog_last_done
+            if self.progress_state is not None:
+                self.progress_state.update("Calculate descriptors", done_count, tot)
             now = time.monotonic()
             step = max(1, tot // 40)
             if (
@@ -780,7 +882,7 @@ class CalcWorker(QRunnable):
                 prog_last_emit = now
                 prog_last_done = done_count
                 try:
-                    self.signals.tool_progress.emit("Calculate descriptors…", done_count, tot)
+                    self.signals.tool_progress.emit("Calculate descriptors", done_count, tot)
                 except Exception:
                     pass
 
@@ -792,22 +894,46 @@ class CalcWorker(QRunnable):
                 mp_tasks = []
                 for i, mol in prepared:
                     blob = mol.ToBinary() if mol is not None else b""
-                    mp_tasks.append((i, blob, tuple(self.disp_headers), tuple(self.int_fns)))
+                    mp_tasks.append(
+                        (
+                            i,
+                            blob,
+                            tuple(self.disp_headers),
+                            tuple(self.int_fns),
+                            pka_by_idx.get(i) if pka_cache_used else None,
+                            pka_cache_used,
+                        )
+                    )
                 proc_workers = min(max_workers, max(2, (os.cpu_count() or 4) - 1), 8)
                 _emit_progress(0, force=True)
                 mp_results_dict: dict = {}
                 done_count = 0
                 user_cancelled = False
-                ex = ProcessPoolExecutor(max_workers=proc_workers)
+                last_pulse = 0.0
+                ex = register_process_pool(ProcessPoolExecutor(max_workers=proc_workers))
                 try:
                     pending = {ex.submit(_mp_calc_descriptor_row, t) for t in mp_tasks}
                     while pending:
-                        if cancel_ev is not None and cancel_ev.is_set():
+                        if should_terminate_process_pool(cancel_ev):
                             user_cancelled = True
-                            for f in pending:
-                                f.cancel()
+                            cancelled = True
+                            for f in list(pending):
+                                if f.done() and not f.cancelled():
+                                    try:
+                                        idx, row_d = f.result()
+                                        mp_results_dict[int(idx)] = row_d
+                                        done_count += 1
+                                    except Exception:
+                                        logger.exception("Process-pool descriptor row failed")
+                                else:
+                                    f.cancel()
                             break
                         completed, pending = wait(pending, timeout=0.25, return_when=FIRST_COMPLETED)
+                        if not completed and pending:
+                            now = time.monotonic()
+                            if now - last_pulse >= 0.55:
+                                last_pulse = now
+                                _emit_progress(done_count, force=True)
                         for f in completed:
                             if f.cancelled():
                                 continue
@@ -819,10 +945,9 @@ class CalcWorker(QRunnable):
                             except Exception:
                                 logger.exception("Process-pool descriptor row failed")
                 finally:
-                    try:
-                        ex.shutdown(wait=not user_cancelled, cancel_futures=True)
-                    except TypeError:
-                        ex.shutdown(wait=not user_cancelled)
+                    shutdown_process_pool_executor(
+                        ex, kill_workers=should_terminate_process_pool(cancel_ev)
+                    )
                 _emit_progress(done_count, force=True)
                 results = [(oid, mp_results_dict[oid]) for oid, _ in prepared if oid in mp_results_dict]
                 mp_used = True
@@ -836,13 +961,26 @@ class CalcWorker(QRunnable):
             results = []
         else:
             _emit_progress(0, force=True)
-            tasks = [(i, mol, self.disp_headers, tuple(self.int_fns), smarts_cache) for i, mol in prepared]
+            tasks = [
+                (
+                    i,
+                    mol,
+                    self.disp_headers,
+                    tuple(self.int_fns),
+                    smarts_cache,
+                    pka_by_idx.get(i) if pka_cache_used else None,
+                    pka_cache_used,
+                )
+                for i, mol in prepared
+            ]
             results = []
             with ThreadPoolExecutor(max_workers=max_workers) as ex:
                 pending = {ex.submit(_calc_descriptor_row_task, t) for t in tasks}
                 done_count = 0
+                last_pulse = 0.0
                 while pending:
                     if cancel_ev is not None and cancel_ev.is_set():
+                        cancelled = True
                         for f in pending:
                             f.cancel()
                         for f in list(pending):
@@ -854,7 +992,12 @@ class CalcWorker(QRunnable):
                                     pass
                                 pending.discard(f)
                         break
-                    completed, pending = wait(pending, timeout=0.35, return_when=FIRST_COMPLETED)
+                    completed, pending = wait(pending, timeout=0.12, return_when=FIRST_COMPLETED)
+                    if not completed and pending:
+                        now = time.monotonic()
+                        if now - last_pulse >= 0.55:
+                            last_pulse = now
+                            _emit_progress(done_count, force=True)
                     for f in completed:
                         if f.cancelled():
                             continue
@@ -866,6 +1009,9 @@ class CalcWorker(QRunnable):
                         _emit_progress(done_count)
             _emit_progress(min(done_count, tot), force=True)
 
+        emit_partial_results_if_cancelled(
+            self.signals, "Calculate descriptors", len(results), tot, cancelled
+        )
         self.signals.calculated.emit(results, self.disp_headers)
 
 
@@ -906,10 +1052,18 @@ class CustomCalcWorker(QRunnable):
     Set ``CHEMMANAGER_CUSTOM_CALC_LEGACY_EVAL`` to restore the old ``eval`` path if needed.
     """
 
-    def __init__(self, row_data, expression, signals, cancel_event: threading.Event | None = None):
+    def __init__(
+        self,
+        row_data,
+        expression,
+        signals,
+        cancel_event: threading.Event | None = None,
+        progress_state=None,
+    ):
         super().__init__()
         self.row_data, self.expression, self.signals = row_data, expression, signals
         self.cancel_event = cancel_event
+        self.progress_state = progress_state
 
     def run(self):
         results = []
@@ -920,8 +1074,13 @@ class CustomCalcWorker(QRunnable):
         math_scope = {k: getattr(math, k) for k in dir(math) if not k.startswith("_")}
         rows = list(self.row_data)
         tot = max(len(rows), 1)
+        cancelled = False
+        prog_last_emit = 0.0
+        prog_last_done = -1
+        done = 0
         for done, (idx, data_map) in enumerate(rows, start=1):
             if self.cancel_event is not None and self.cancel_event.is_set():
+                cancelled = True
                 break
             try:
                 expr = expr_template
@@ -958,9 +1117,24 @@ class CustomCalcWorker(QRunnable):
             except Exception as e:
                 res = describe_custom_calc_error(e)
             results.append((idx, f"{res:.3f}" if isinstance(res, float) else str(res)))
-            try:
-                self.signals.tool_progress.emit("Calculator…", done, tot)
-            except Exception:
-                pass
+            if self.progress_state is not None:
+                self.progress_state.update("Calculator…", done, tot)
+            now = time.monotonic()
+            step = max(1, tot // 40)
+            if (
+                done <= 1
+                or done >= tot
+                or (done - prog_last_done) >= step
+                or (now - prog_last_emit) >= 0.15
+            ):
+                prog_last_emit = now
+                prog_last_done = done
+                try:
+                    self.signals.tool_progress.emit("Calculator…", done, tot)
+                except Exception:
+                    pass
+        if self.progress_state is not None:
+            self.progress_state.update("Calculator…", min(done, tot) if rows else 0, tot)
+        emit_partial_results_if_cancelled(self.signals, "Calculator", len(results), tot, cancelled)
         self.signals.custom_calc.emit(results)
 

@@ -1,73 +1,66 @@
 from __future__ import annotations
 
-import json
 import logging
-import os
 import re
-import subprocess
-import sys
-import tempfile
 import threading
 import time
+from contextlib import nullcontext
 
-from PyQt5.QtCore import QItemSelection, QItemSelectionModel, QTimer, Qt
-from PyQt5.QtGui import QImage, QKeySequence, QPixmap
+from PyQt5.QtCore import QTimer, Qt
+from PyQt5.QtGui import QImage, QPixmap
 from PyQt5.QtWidgets import (
-    QAction,
-    QApplication,
     QDialog,
-    QFileDialog,
-    QFrame,
-    QHBoxLayout,
-    QInputDialog,
-    QLabel,
-    QMainWindow,
-    QMenu,
     QMessageBox,
-    QPushButton,
-    QStackedWidget,
     QVBoxLayout,
-    QWidget,
 )
 
 from rdkit import Chem
 
 from ...config import load_config
+from ...display_constants import STRUCTURE_ROW_DEFAULT_HEIGHT
+from ...structure_render_store import StructureRenderStore
 from ...confs_codec import (
     demote_v1_cell_to_sidecar,
     rehydrate_v1_confs_cell,
     unpack_confs_blocks_json_b64,
 )
-from ...utils import mol_to_canonical_smiles, redact_sqlalchemy_url, safe_float, safe_mol_prop_string
+from ...utils import mol_to_canonical_smiles, redact_sqlalchemy_url, safe_float
 from ..singleton_modeless_dialog import reuse_or_show_modeless_singleton
 from ..strings import (
     LOADING_DETAIL_AFTER_FILE_READ,
     STATUS_READY_RENDER_2D,
     TOOL_CALCULATOR,
+    TOOL_SINGLE_CONFORMATION,
     TOOL_RENDER_2D,
-    TOOL_RGROUP_DECOMP,
+    TOOL_BRICS_DECOMP,
+    TOOL_BRICS_RECOMP,
+    TOOL_CORE_DECOMP,
+    TOOL_RECAP_DECOMP,
+    TOOL_RECAP_RECOMP,
+    loaded_session_status,
     loaded_sql_status,
 )
+from ...storage import SqliteTableStore
 from ...workers import (
     CalcWorker,
     ConformerGenerationWorker,
     CustomCalcWorker,
-    ExportWorker,
+    FragmentDecompositionWorker,
+    FragmentRecompositionWorker,
     Render2DBatchProcessWorker,
     RGroupDecompositionWorker,
+    SqliteRebuildWorker,
     SuperposeConformersWorker,
-    UniversalLoadWorker,
+    Render2DBatchHeldJob,
     WashWorker,
-    WorkerSignals,
 )
 from ..compound_table_model import (
     CompoundTableModel,
-    CompoundTableView,
     STRUCTURE_COLUMN_HORIZONTAL_PADDING,
     STRUCTURE_DEPICT_HEIGHT,
     STRUCTURE_DEPICT_WIDTH,
 )
-from ..widgets import FilterCard, SubstructureFilterCard
+from ..widgets import CategoryFilterCard, FilterCard, TextFilterCard
 
 logger = logging.getLogger(__name__)
 
@@ -78,39 +71,239 @@ class ChemistryMixin:
         cb = getattr(dialog, "only_selected_cb", None)
         if cb is None:
             return
+        try:
+            from PyQt5 import sip
+
+            if sip.isdeleted(cb):
+                return
+        except Exception:
+            pass
         prefix = getattr(dialog, "_only_selected_scope_prefix", "Only selected rows")
         n = len(self._selected_logical_rows())
-        if n > 0:
-            cb.setEnabled(True)
-            cb.setText(f"{prefix} ({n} row(s))")
-        else:
-            cb.setEnabled(False)
-            cb.setChecked(False)
-            cb.setText(prefix)
+        try:
+            if n > 0:
+                cb.setEnabled(True)
+                cb.setText(f"{prefix} ({n} row(s))")
+            else:
+                cb.setEnabled(False)
+                cb.setChecked(False)
+                cb.setText(prefix)
+        except RuntimeError:
+            return
 
     def _prepare_tool_dialog(self, dialog: QDialog) -> None:
         """Let the main table stay interactive and keep scope UI in sync while the dialog is open."""
         dialog.setModal(False)
         dialog.setWindowModality(Qt.NonModal)
-        if getattr(dialog, "only_selected_cb", None) is None:
+        self._attach_tool_scope_sync(dialog, on_finished_signal=dialog.finished)
+
+    def _prepare_tool_plot(self, plot_widget) -> None:
+        """Keep docked plot scope UI in sync with table selection changes."""
+        self._attach_tool_scope_sync(plot_widget, on_finished_signal=plot_widget.destroyed)
+
+    def _iter_active_plot_selection_views(self) -> list:
+        """Plot surfaces that mirror table row selection (dock, floating plotter, PCA/t-SNE)."""
+        views: list = []
+        docked = getattr(self, "_docked_plot_widget", None)
+        if docked is not None:
+            views.append(docked)
+        plot_dlg = getattr(self, "_plot_dialog", None)
+        if plot_dlg is not None:
+            pw = getattr(plot_dlg, "_plot_widget", None)
+            if pw is not None:
+                views.append(pw)
+        for attr in ("_pca_dialog", "_tsne_dialog"):
+            dlg = getattr(self, attr, None)
+            if dlg is None:
+                continue
+            pv = getattr(dlg, "_plot_view", None)
+            if pv is not None:
+                views.append(pv)
+        return views
+
+    def _refresh_active_plot_axis_columns(self) -> None:
+        """Update plotter axis dropdowns when table columns or numeric bounds change."""
+        for view in self._iter_active_plot_selection_views():
+            refresh = getattr(view, "refresh_axis_columns", None)
+            if callable(refresh):
+                try:
+                    refresh()
+                except RuntimeError:
+                    pass
+
+    def _sync_active_plots_from_table_selection(self) -> None:
+        for view in self._iter_active_plot_selection_views():
+            try:
+                sync = getattr(view, "sync_from_table_selection", None)
+                if callable(sync):
+                    sync()
+            except RuntimeError:
+                pass
+
+    def _schedule_sync_active_plots_from_table_selection(self) -> None:
+        timer = getattr(self, "_plot_table_sync_timer", None)
+        if timer is None:
             return
-        self._sync_dialog_only_selected_scope(dialog)
+        timer.start(40)
+
+    def _attach_tool_scope_sync(self, target, *, on_finished_signal) -> None:
+        """Wire table selection changes to a dialog/plot ``only_selected_cb`` until teardown."""
+        if getattr(target, "only_selected_cb", None) is None:
+            return
+        prior = getattr(target, "_scope_sync_disconnect", None)
+        if callable(prior):
+            prior()
+        self._sync_dialog_only_selected_scope(target)
         sm = self.table.selectionModel()
         if sm is None:
             return
 
         def on_sel_changed(*_args):
-            self._sync_dialog_only_selected_scope(dialog)
+            self._sync_dialog_only_selected_scope(target)
 
         sm.selectionChanged.connect(on_sel_changed)
 
-        def on_finished(_result=None):
+        def teardown(*_args):
             try:
-                sm.selectionChanged.disconnect(on_sel_changed)
-            except TypeError:
-                pass
+                from PyQt5 import sip
 
-        dialog.finished.connect(on_finished)
+                if sm is not None and not sip.isdeleted(sm):
+                    sm.selectionChanged.disconnect(on_sel_changed)
+            except (TypeError, RuntimeError):
+                pass
+            target._scope_sync_disconnect = None
+
+        on_finished_signal.connect(teardown)
+        target._scope_sync_disconnect = teardown
+
+    def dock_plot_widget(self, plot_widget) -> bool:
+        """Move a plot widget into the main-window panel beside the table."""
+        from ..plot import PlotWidget
+
+        if not isinstance(plot_widget, PlotWidget):
+            return False
+        existing = getattr(self, "_docked_plot_widget", None)
+        if existing is not None and existing is not plot_widget:
+            try:
+                QMessageBox.information(
+                    self,
+                    "Plot",
+                    "A plot is already docked in the main window. Close it from the plot panel first.",
+                )
+            except RuntimeError:
+                self._docked_plot_widget = None
+            else:
+                return False
+        existing_dlg = getattr(self, "_plot_dialog", None)
+        if existing_dlg is not None:
+            try:
+                teardown = getattr(existing_dlg, "_scope_sync_disconnect", None)
+                if callable(teardown):
+                    teardown()
+                existing_dlg._force_close = True
+                existing_dlg.close()
+            except RuntimeError:
+                pass
+            self._plot_dialog = None
+
+        host = self._plot_panel_host
+        lay = host.layout()
+        if lay is None:
+            lay = QVBoxLayout(host)
+            lay.setContentsMargins(0, 0, 0, 0)
+            lay.setSpacing(0)
+        else:
+            while lay.count():
+                item = lay.takeAt(0)
+                w = item.widget()
+                if w is not None:
+                    w.setParent(None)
+        lay.addWidget(plot_widget, 1)
+        self._docked_plot_widget = plot_widget
+        self._plot_panel.setVisible(True)
+        prior_teardown = getattr(plot_widget, "_scope_sync_disconnect", None)
+        if callable(prior_teardown):
+            prior_teardown()
+        self._prepare_tool_plot(plot_widget)
+        plot_widget.destroyed.connect(self._on_docked_plot_destroyed)
+        self.status_label.setText("Plot: docked to the right of the table.")
+        return True
+
+    def _on_docked_plot_destroyed(self, *_args) -> None:
+        self._docked_plot_widget = None
+        try:
+            self._plot_panel.setVisible(False)
+        except Exception:
+            pass
+
+    def close_plot_panel_keep_plot(self) -> None:
+        """Hide the docked plot panel; the plot widget and its state are preserved."""
+        self._plot_panel.setVisible(False)
+        self.status_label.setText("Plot panel hidden.")
+
+    def _release_plot_widget_from_panel_host(self, plot_widget) -> None:
+        host = self._plot_panel_host
+        lay = host.layout()
+        if lay is not None:
+            while lay.count():
+                item = lay.takeAt(0)
+                w = item.widget()
+                if w is not None:
+                    w.setParent(None)
+        teardown = getattr(plot_widget, "_scope_sync_disconnect", None)
+        if callable(teardown):
+            teardown()
+        self._docked_plot_widget = None
+
+    def undock_plot_to_window(self) -> bool:
+        """Move the docked plot from the main window into a floating plotter window."""
+        from ..plot import PlotDialog, PlotWidget
+
+        plot_widget = getattr(self, "_docked_plot_widget", None)
+        if plot_widget is None:
+            return False
+        if not isinstance(plot_widget, PlotWidget):
+            self._docked_plot_widget = None
+            return False
+        existing_dlg = getattr(self, "_plot_dialog", None)
+        if existing_dlg is not None:
+            try:
+                QMessageBox.information(
+                    self,
+                    "Plot",
+                    "A plot window is already open. Close it before sending the docked plot to a new window.",
+                )
+                return False
+            except RuntimeError:
+                self._plot_dialog = None
+
+        self._release_plot_widget_from_panel_host(plot_widget)
+        self._plot_panel.setVisible(False)
+
+        dlg = PlotDialog(self, plot_widget=plot_widget)
+        self._plot_dialog = dlg
+        dlg.destroyed.connect(self._on_plot_dialog_destroyed)
+        self._prepare_tool_dialog(dlg)
+        dlg.show()
+        dlg.raise_()
+        dlg.activateWindow()
+        self.status_label.setText("Plot: moved to separate window.")
+        return True
+
+    def toggle_plot_panel(self) -> None:
+        """Show/hide the docked plot panel, or open the floating plotter if none is docked."""
+        w = getattr(self, "_docked_plot_widget", None)
+        if w is None:
+            self.open_plot()
+            return
+        try:
+            visible = self._plot_panel.isVisible()
+            self._plot_panel.setVisible(not visible)
+            if not visible:
+                self._sync_dialog_only_selected_scope(w)
+        except RuntimeError:
+            self._docked_plot_widget = None
+            self.open_plot()
 
     def _abort_if_only_selected_but_empty(
         self, only_selected: bool, allowed: set | frozenset | None, title: str
@@ -125,6 +318,35 @@ class ChemistryMixin:
             return True
         return False
 
+    def _on_structure_source_probe(self, headers: list) -> None:
+        """Worker paused after first record; pick structure column before bulk read."""
+        incoming = list(headers)
+        if self._ingest_append_mode and self._table_model.rowCount() > 0:
+            self._merge_import_headers(incoming)
+        else:
+            self.headers = incoming
+        from ...import_structure import structure_source_picker_candidates
+        from ..dialogs.structure_source import StructureSourcePickerDialog
+
+        struct_cols = structure_source_picker_candidates(self.headers)
+        if len(struct_cols) >= 2:
+            picked, ok = StructureSourcePickerDialog.pick_column(self, struct_cols)
+            if ok and picked:
+                self._structure_field_override = picked
+            elif not ok:
+                self._structure_field_override = None
+        ev = getattr(self, "_structure_choice_event", None)
+        if ev is not None:
+            ev.set()
+
+    def _maybe_start_ingest_processing(self) -> None:
+        if self._processing_batches:
+            return
+        if not self._pending_batches and not self._last_batch_received:
+            return
+        self._processing_batches = True
+        QTimer.singleShot(0, self._process_next_chunk)
+
     def on_file_loaded(self, mols_list, headers, is_first, is_last):
         # Append batch to pending queue and schedule incremental processing
         if is_first:
@@ -138,66 +360,52 @@ class ChemistryMixin:
                 self._table_model.clear_rows()
                 self._table_model.set_headers(list(self.headers))
                 self.table.setColumnHidden(0, True)
-            self._structure_field_override = None
-            struct_cols = [
-                h for h in incoming[2:] if self._header_looks_structural(h)
-            ]
-            if len(struct_cols) >= 2:
-                opt = "[Keep structures as loaded]"
-                items = [opt] + struct_cols
-                picked, ok = QInputDialog.getItem(
-                    self,
-                    "Structure source",
-                    "Multiple structure-related columns were detected.\nWhich column should define the molecule used for the Structure column?",
-                    items,
-                    0,
-                    False,
-                )
-                if ok and picked and picked != opt:
-                    self._structure_field_override = picked
             if self._table_stack.currentIndex() == 0:
                 self._loading_detail.setText(LOADING_DETAIL_AFTER_FILE_READ)
         if mols_list:
             self._pending_batches.append((mols_list, is_last))
         if is_last:
             self._last_batch_received = True
-        # start processing loop if not running
-        if not self._processing_batches:
-            self._processing_batches = True
-            QTimer.singleShot(0, self._process_next_chunk)
+        self._maybe_start_ingest_processing()
 
-    def _process_next_chunk(self, chunk_size=64):
+    def _process_next_chunk(self, chunk_size: int | None = None):
+        if chunk_size is None:
+            chunk_size = int(load_config().ingest_gui_chunk_size)
         # Process up to chunk_size molecules, then reschedule to keep UI responsive
         processed = 0
-        while self._pending_batches and processed < chunk_size:
-            mols_list, is_last = self._pending_batches.pop(0)
-            # process as many as fits in remaining budget
-            while mols_list and processed < chunk_size:
-                m = mols_list.pop(0)
-                m = self._apply_structure_field_override(m)
-                oid = self.next_oid
-                self.next_oid += 1
-                self.mols[oid] = m
-                self._table_model.append_row(oid, {})
-                row_idx = self._table_model.rowCount() - 1
-                self._fill_row_data_columns_from_mol(row_idx, m)
-                # update status to show progress (table hidden behind loading page until complete)
-                n = len(self.mols)
-                self.status_label.setText(f"Loaded {n} molecules — preparing table…")
-                if self._table_stack.currentIndex() == 0:
-                    self._loading_detail.setText(f"Building table…\n{n} molecule(s); 2D structures draw when ready")
-                if getattr(self, "_ingest_loading", False):
-                    if not self._import_building_progress_shown:
-                        self._import_building_progress_shown = True
-                        self._on_tool_progress("Building table…", -1, -1)
-                processed += 1
-            # if there are remaining molecules in this batch, put them back to front
-            if mols_list:
-                self._pending_batches.insert(0, (mols_list, is_last))
-                break
-            # if this batch signaled last, mark last_batch_received
-            if is_last:
-                self._last_batch_received = True
+        perf = getattr(self, "_perf", None)
+        scope = perf.track if perf is not None else (lambda *_args, **_kwargs: nullcontext())
+        with scope("ingest.process_chunk"):
+            while self._pending_batches and processed < chunk_size:
+                mols_list, is_last = self._pending_batches.pop(0)
+                remain = max(0, int(chunk_size - processed))
+                take = mols_list[:remain]
+                if take:
+                    new_rows: list[tuple[int, dict[str, str]]] = []
+                    for m in take:
+                        m = self._apply_structure_field_override(m)
+                        oid = self.next_oid
+                        self.next_oid += 1
+                        self.mols[oid] = m
+                        new_rows.append((oid, self._row_cells_from_mol(m)))
+                    self._table_model.append_rows_batch(new_rows)
+                    processed += len(new_rows)
+                    n = len(self.mols)
+                    self.status_label.setText(f"Loaded {n} molecules — preparing table…")
+                    if self._table_stack.currentIndex() == 0:
+                        self._loading_detail.setText(f"Building table…\n{n} molecule(s); 2D structures draw when ready")
+                    if getattr(self, "_ingest_loading", False):
+                        if not self._import_building_progress_shown:
+                            self._import_building_progress_shown = True
+                            self._on_tool_progress("Building table…", -1, -1)
+                    del mols_list[: len(take)]
+                # if there are remaining molecules in this batch, put them back to front
+                if mols_list:
+                    self._pending_batches.insert(0, (mols_list, is_last))
+                    break
+                # if this batch signaled last, mark last_batch_received
+                if is_last:
+                    self._last_batch_received = True
 
         if self._pending_batches and processed >= chunk_size:
             # schedule next chunk to continue processing
@@ -206,6 +414,10 @@ class ChemistryMixin:
             # finished current pending items; finalize if we have received last batch
             if not self._pending_batches and self._last_batch_received:
                 self.calculate_global_bounds()
+                if getattr(self, "_sqlite_store", None) is not None:
+                    self._sqlite_store_dirty = True
+                else:
+                    self._rebuild_sqlite_store_from_model()
                 self.table.setSortingEnabled(False)
                 self._ingest_loading = False
                 self._structures_queued = 0
@@ -220,6 +432,93 @@ class ChemistryMixin:
                 if "confs" in self.headers or "superpose" in self.headers:
                     QTimer.singleShot(0, self._migrate_legacy_confs_cells_to_sidecar)
             self._processing_batches = False
+
+    def _rebuild_sqlite_store_from_model(self) -> None:
+        """Synchronous rebuild (clear table, tests). Large tables use ``_schedule_sqlite_rebuild``."""
+        store = getattr(self, "_sqlite_store", None)
+        if store is None:
+            return
+        self._sqlite_rebuild_in_progress = True
+        data_headers = [h for h in self.headers[2:] if h and not self._table_model.is_pixmap_data_column(h)]
+        entries = self._table_model.export_rows_for_sqlite(data_headers)
+        perf = getattr(self, "_perf", None)
+        scope = perf.track if perf is not None else (lambda *_args, **_kwargs: nullcontext())
+        try:
+            with scope("sqlite.rebuild"):
+                store.rebuild(self.headers, entries)
+            self._sqlite_store_dirty = False
+        finally:
+            self._sqlite_rebuild_in_progress = False
+
+    def _schedule_sqlite_rebuild(self) -> None:
+        """Export on the UI thread, rebuild SQLite mirror in a background worker."""
+        store = getattr(self, "_sqlite_store", None)
+        if store is None or self._sqlite_rebuild_in_progress:
+            return
+        sigs = getattr(self, "_sqlite_rebuild_signals", None)
+        pool = getattr(self, "threadpool", None)
+        if sigs is None or pool is None:
+            self._rebuild_sqlite_store_from_model()
+            return
+        self._sqlite_rebuild_gen = int(getattr(self, "_sqlite_rebuild_gen", 0)) + 1
+        gen = self._sqlite_rebuild_gen
+        self._sqlite_rebuild_in_progress = True
+        data_headers = [h for h in self.headers[2:] if h and not self._table_model.is_pixmap_data_column(h)]
+        entries = self._table_model.export_rows_for_sqlite(data_headers)
+        import os
+        import tempfile
+        from pathlib import Path
+
+        fd, db_path = tempfile.mkstemp(prefix="chemmanager_sqlite_", suffix=".sqlite3")
+        try:
+            os.close(fd)
+        except OSError:
+            pass
+        self._sqlite_rebuild_pending_path = Path(db_path)
+        n = len(entries)
+        self.status_label.setText(f"Indexing table… ({n} rows)")
+        pool.start(
+            SqliteRebuildWorker(gen, list(self.headers), entries, db_path, sigs),
+        )
+
+    def _on_sqlite_rebuild_finished(self, job_gen: int, db_path: str) -> None:
+        if job_gen != getattr(self, "_sqlite_rebuild_gen", -1):
+            return
+        try:
+            new_store = SqliteTableStore(db_path)
+            old = getattr(self, "_sqlite_store", None)
+            self._sqlite_store = new_store
+            if old is not None:
+                try:
+                    old.close()
+                except Exception:
+                    pass
+            self._sqlite_store_dirty = False
+        except Exception:
+            logger.exception("Failed to swap SQLite row store after background rebuild")
+        finally:
+            self._sqlite_rebuild_in_progress = False
+            self._sqlite_rebuild_pending_path = None
+        if getattr(self, "_sqlite_rebuild_stale", False):
+            self._sqlite_rebuild_stale = False
+            self._sqlite_store_dirty = True
+            self._schedule_sqlite_rebuild()
+            return
+        n_rows = self._table_model.rowCount()
+        if getattr(self, "_sqlite_rebuild_pending_filters", False):
+            self._sqlite_rebuild_pending_filters = False
+            self.apply_filters()
+        elif n_rows:
+            self.status_label.setText(loaded_session_status(n_rows))
+
+    def _on_sqlite_rebuild_failed(self, job_gen: int, msg: str) -> None:
+        if job_gen != getattr(self, "_sqlite_rebuild_gen", -1):
+            return
+        logger.warning("SQLite rebuild failed: %s", msg)
+        self._sqlite_rebuild_in_progress = False
+        self._sqlite_rebuild_pending_path = None
+        self._sqlite_rebuild_pending_filters = False
+        self.status_label.setText("Table indexing failed — filters may be slow until data changes.")
 
     def _sync_structure_column_width_for_pixmap(self, pm: QPixmap | None, fallback_w: int) -> None:
         """Grow the Structure column to fit the pixmap + padding (never shrink — avoids fighting user resizes)."""
@@ -260,8 +559,11 @@ class ChemistryMixin:
             else:
                 pm = QPixmap.fromImage(QImage.fromData(img))
                 if pix_target:
-                    self._table_model.register_pixmap_column(pix_target)
-                    self._table_model.set_column_pixmap(oid, pix_target, pm)
+                    if getattr(self, "_render2d_column_pixmap_mode", True):
+                        self._table_model.register_pixmap_column(pix_target)
+                        self._table_model.set_column_pixmap(oid, pix_target, pm)
+                    else:
+                        self._table_model.set_cell_pixmap(oid, pix_target, pm)
                 else:
                     self._table_model.set_structure_pixmap(oid, pm)
                 if self.table.rowHeight(row) != h:
@@ -271,16 +573,17 @@ class ChemistryMixin:
                 else:
                     self._sync_structure_column_width_for_pixmap(pm, w)
                 if props:
-                    for name in self.headers[2:]:
-                        if name in props:
-                            self._table_model.set_cell_text(oid, name, str(props.get(name, "")))
+                    updates = {name: str(props.get(name, "")) for name in self.headers[2:] if name in props}
+                    if updates:
+                        self._table_model.set_cell_text_batch(oid, updates)
                 pend = getattr(self, "_structure_column_autosize_after_render_oid", None)
                 if pend is not None and pend == oid:
                     self._structure_column_autosize_after_render_oid = None
-                    try:
-                        self.table.resizeColumnToContents(CompoundTableModel.STRUCTURE_COL)
-                    except Exception:
-                        pass
+                    if self._table_model.rowCount() <= 20_000:
+                        try:
+                            self.table.resizeColumnToContents(CompoundTableModel.STRUCTURE_COL)
+                        except Exception:
+                            pass
         else:
             if batch:
                 self._render2d_pending[oid] = (b"", False, int(w), int(h))
@@ -317,6 +620,65 @@ class ChemistryMixin:
                 self._flush_render2d_batch_results()
                 self._restore_render2d_batch_environment()
 
+    def _resize_columns_after_render2d(self, pix_target: str | None) -> None:
+        """Set structure / pixmap column width from depict size (O(1), safe for huge tables)."""
+        pad = STRUCTURE_COLUMN_HORIZONTAL_PADDING
+        need = max(1, int(STRUCTURE_DEPICT_WIDTH) + pad)
+        try:
+            if pix_target:
+                col = self.headers.index(pix_target)
+                if self.table.columnWidth(col) < need:
+                    self.table.setColumnWidth(col, need)
+            else:
+                self._sync_structure_column_width_for_pixmap(None, STRUCTURE_DEPICT_WIDTH)
+        except Exception:
+            pass
+
+    def _render2d_use_lazy_structure_flush(self, count: int, *, structure_column: bool) -> bool:
+        if not structure_column:
+            return False
+        cfg = load_config()
+        return count >= int(cfg.structure_render_lazy_min_rows)
+
+    def _ensure_structure_lazy_scroll_hook(self) -> None:
+        if getattr(self, "_structure_lazy_scroll_hooked", False):
+            return
+        try:
+            self.table.verticalScrollBar().valueChanged.connect(self._on_structure_lazy_scroll)
+            self._structure_lazy_scroll_hooked = True
+        except Exception:
+            pass
+
+    def _on_structure_lazy_scroll(self, *_args) -> None:
+        if not self._table_model.structure_png_store_active():
+            return
+        self._refresh_visible_structure_cells()
+
+    def _refresh_visible_structure_cells(self) -> None:
+        """Repaint only viewport-visible Structure cells (lazy PNG cache)."""
+        m = self._table_model
+        if m.rowCount() <= 0:
+            return
+        view = self.table
+        try:
+            r0 = view.rowAt(0)
+            r1 = view.rowAt(max(0, view.viewport().height() - 1))
+        except Exception:
+            r0, r1 = 0, m.rowCount() - 1
+        if r0 < 0:
+            r0 = 0
+        if r1 < 0:
+            r1 = m.rowCount() - 1
+        store = getattr(m, "_structure_png_store", None)
+        if store is not None:
+            keep: set[int] = set()
+            for r in range(r0, r1 + 1):
+                oid = m.row_oid(r)
+                if store.has_png(oid):
+                    keep.add(int(oid))
+            store.trim_decoded_cache(keep_oids=keep)
+        m.notify_structure_column_changed(r0, r1)
+
     def _flush_render2d_batch_results(self) -> None:
         """Apply buffered PNGs in one pass (table stayed on placeholders until workers finished)."""
         if not getattr(self, "_render2d_batch_active", False):
@@ -325,36 +687,76 @@ class ChemistryMixin:
         ordered = list(getattr(self, "_render2d_batch_oids_ordered", []) or [])
         pending = getattr(self, "_render2d_pending", None) or {}
         pix_target = getattr(self, "_render2d_pixmap_target", None)
-        if pix_target:
+        column_pixmap_mode = getattr(self, "_render2d_column_pixmap_mode", True)
+        lazy_structure = bool(getattr(self, "_render2d_lazy_flush", False)) and not pix_target
+        if pix_target and column_pixmap_mode:
             self._table_model.register_pixmap_column(pix_target)
+        set_pixmap = (
+            self._table_model.set_column_pixmap
+            if column_pixmap_mode
+            else self._table_model.set_cell_pixmap
+        )
         try:
             self.table.setUpdatesEnabled(False)
         except Exception:
             pass
         try:
-            for oid in ordered:
-                row = self._resolve_structure_row_for_oid(int(oid))
-                rec = pending.get(oid)
-                if not rec:
+            if lazy_structure:
+                cfg = load_config()
+                store = StructureRenderStore(max_decoded_pixmaps=cfg.structure_render_pixmap_lru)
+                png_items: list[tuple[int, bytes]] = []
+                for oid in ordered:
+                    rec = pending.get(oid)
+                    if not rec:
+                        continue
+                    img_b, ok, _rw, _rh = rec
+                    if ok and img_b:
+                        png_items.append((int(oid), bytes(img_b)))
+                if png_items:
+                    store.ingest_batch(png_items)
+                self._table_model.set_structure_png_store(store)
+                self._ensure_structure_lazy_scroll_hook()
+                self._refresh_visible_structure_cells()
+            else:
+                eager: list[tuple[int, QPixmap | None]] = []
+                default_rh = STRUCTURE_ROW_DEFAULT_HEIGHT
+                set_uniform_height = len(ordered) >= load_config().structure_render_lazy_min_rows
+                for oid in ordered:
+                    row = self._resolve_structure_row_for_oid(int(oid))
+                    rec = pending.get(oid)
+                    if not rec:
+                        if pix_target:
+                            set_pixmap(oid, pix_target, None)
+                        else:
+                            eager.append((int(oid), None))
+                        continue
+                    img_b, ok, rw, rh = rec
+                    if not ok or row < 0:
+                        if pix_target:
+                            set_pixmap(oid, pix_target, None)
+                        else:
+                            eager.append((int(oid), None))
+                        continue
+                    pm = QPixmap.fromImage(QImage.fromData(img_b))
                     if pix_target:
-                        self._table_model.set_column_pixmap(oid, pix_target, None)
+                        set_pixmap(oid, pix_target, pm)
                     else:
-                        self._table_model.set_structure_pixmap(oid, None)
-                    continue
-                img_b, ok, rw, rh = rec
-                if not ok or row < 0:
-                    if pix_target:
-                        self._table_model.set_column_pixmap(oid, pix_target, None)
-                    else:
-                        self._table_model.set_structure_pixmap(oid, None)
-                    continue
-                pm = QPixmap.fromImage(QImage.fromData(img_b))
-                if pix_target:
-                    self._table_model.set_column_pixmap(oid, pix_target, pm)
-                else:
-                    self._table_model.set_structure_pixmap(oid, pm)
-                if row >= 0 and self.table.rowHeight(row) != rh:
-                    self.table.setRowHeight(row, rh)
+                        eager.append((int(oid), pm))
+                    if row >= 0 and not set_uniform_height and self.table.rowHeight(row) != rh:
+                        self.table.setRowHeight(row, rh)
+                if eager and not pix_target:
+                    self._table_model.apply_structure_pixmaps_batch(eager, emit=True)
+                elif eager and pix_target:
+                    pass
+                if set_uniform_height and not pix_target:
+                    vh = self.table.verticalHeader()
+                    try:
+                        vh.setSectionResizeMode(vh.Fixed)
+                    except Exception:
+                        pass
+                    for row in range(self._table_model.rowCount()):
+                        if self.table.rowHeight(row) != default_rh:
+                            self.table.setRowHeight(row, default_rh)
         finally:
             try:
                 self.table.setUpdatesEnabled(True)
@@ -363,6 +765,7 @@ class ChemistryMixin:
         self._render2d_pending = {}
         self._render2d_batch_oids_ordered = []
         self._render2d_snapshot = None
+        self._render2d_lazy_flush = False
 
     def on_cell_double_click(self, r, c):
         if c != 1:
@@ -388,7 +791,7 @@ class ChemistryMixin:
     def run_disconnect_fragments(self) -> None:
         if not self.headers or not self.mols:
             return
-        candidates = ["Structure"] + self._data_headers_confirmed_for_chemistry_tools()
+        candidates = self.chemistry_tool_structure_sources()
         from ..dialogs import DisconnectFragmentsDialog
 
         n_sel = len(self._selected_logical_rows())
@@ -472,7 +875,10 @@ class ChemistryMixin:
             if src == "Structure":
                 mol = self.mols.get(oid)
                 if mol is None:
+                    mol = self._mol_for_structure_row(r)
+                if mol is None:
                     continue
+                self.mols[oid] = mol
             else:
                 if self._table_model.is_pixmap_data_column(src):
                     mol = self.mols.get(oid)
@@ -502,6 +908,15 @@ class ChemistryMixin:
             return False
         if not self.headers or self._table_model.rowCount() == 0:
             return False
+        n_rows = self._table_model.rowCount()
+        cfg = load_config()
+        max_auto = int(cfg.auto_render_2d_max_rows)
+        if max_auto > 0 and n_rows > max_auto:
+            self.status_label.setText(
+                f"Loaded {n_rows:,} rows — auto 2D render skipped (limit {max_auto:,}). "
+                "Use Tools → Render 2D for visible or selected rows."
+            )
+            return False
         base_w, base_h = STRUCTURE_DEPICT_WIDTH, STRUCTURE_DEPICT_HEIGHT
         renders, row_by_oid = self._build_render2d_tasks_in_table_order("Structure", base_w, base_h, None)
         if not renders:
@@ -518,14 +933,8 @@ class ChemistryMixin:
         self._render2d_row_by_oid = None
         pix_target = getattr(self, "_render2d_pixmap_target", None)
         self._render2d_pixmap_target = None
-        try:
-            if pix_target:
-                c = self.headers.index(pix_target)
-                self.table.resizeColumnToContents(c)
-            else:
-                self.table.resizeColumnToContents(CompoundTableModel.STRUCTURE_COL)
-        except Exception:
-            pass
+        self._render2d_column_pixmap_mode = True
+        self._resize_columns_after_render2d(pix_target)
         try:
             self.table.setUpdatesEnabled(True)
         except Exception:
@@ -541,6 +950,12 @@ class ChemistryMixin:
         hub = getattr(self, "background_activity", None)
         if hub is not None:
             hub.notify_changed()
+        done_ev = getattr(self, "_render2d_batch_done_event", None)
+        if done_ev is not None:
+            done_ev.set()
+        pq = getattr(self, "process_queue", None)
+        if pq is not None:
+            pq.schedule_resume()
 
     def cancel_render_2d_batch(self) -> bool:
         """Stop a Tools → Render 2D batch: no further chunks, workers skip drawing if not started."""
@@ -553,15 +968,24 @@ class ChemistryMixin:
         self._render2d_accept_session = None
         self._render2d_pending.clear()
         self._render2d_batch_oids_ordered.clear()
+        if getattr(self, "_render2d_lazy_flush", False) and not getattr(self, "_render2d_pixmap_target", None):
+            self._table_model.clear_structure_png_store()
         snap = getattr(self, "_render2d_snapshot", None)
         target = getattr(self, "_render2d_pixmap_target", None)
         if snap:
+            column_pixmap_mode = getattr(self, "_render2d_column_pixmap_mode", True)
+            set_pixmap = (
+                self._table_model.set_column_pixmap
+                if column_pixmap_mode
+                else self._table_model.set_cell_pixmap
+            )
             for oid, pm in snap.items():
                 if target:
-                    self._table_model.set_column_pixmap(oid, target, pm)
+                    set_pixmap(oid, target, pm)
                 else:
                     self._table_model.set_structure_pixmap(oid, pm)
         self._render2d_snapshot = None
+        self._render2d_lazy_flush = False
         self._import_progress_active = False
         self._clear_tool_progress()
         self._restore_render2d_batch_environment()
@@ -572,10 +996,14 @@ class ChemistryMixin:
         if not self.headers or self._table_model.rowCount() == 0:
             QMessageBox.information(self, TOOL_RENDER_2D, "Load a table with at least one row first.")
             return
-        if self._render2d_batch_active:
-            QMessageBox.warning(self, TOOL_RENDER_2D, "A render operation is already in progress.")
+        if self._render2d_batch_active or self.process_queue.has_running_job():
+            QMessageBox.warning(
+                self,
+                TOOL_RENDER_2D,
+                "A render or background tool is already running. Wait for it to finish or cancel it from Processes.",
+            )
             return
-        candidates = ["Structure"] + self._data_headers_confirmed_for_chemistry_tools()
+        candidates = self.chemistry_tool_structure_sources()
         from ..dialogs import Render2DStructureDialog
 
         rd = Render2DStructureDialog(candidates, len(self._selected_logical_rows()), self)
@@ -600,15 +1028,44 @@ class ChemistryMixin:
             )
             self.status_label.setText("No structures rendered.")
             return
-        self._start_render_2d_batch(renders, row_by_oid, src)
+        self._start_render_2d_batch(renders, row_by_oid, src, column_pixmap_mode=(src != "Structure"))
 
-    def _start_render_2d_batch(self, renders, row_by_oid, src: str = "Structure") -> None:
-        """Batch 2D renders: sorting stays off until done; workers use the normal render thread pool."""
+    def _start_render_2d_batch(
+        self,
+        renders,
+        row_by_oid,
+        src: str = "Structure",
+        *,
+        column_pixmap_mode: bool = True,
+    ) -> None:
+        """Queue batch 2D renders on the serial process queue (waits behind other tools)."""
+        if getattr(self, "_render2d_batch_active", False):
+            return
+        title = f"Render 2D ({len(renders)} rows)"
+        payload = (renders, row_by_oid, src, column_pixmap_mode)
+        self.process_queue.enqueue(
+            title,
+            lambda ev, p=payload: Render2DBatchHeldJob(self, p, ev),
+        )
+
+    def _begin_render2d_batch_impl(
+        self,
+        renders,
+        row_by_oid,
+        src: str = "Structure",
+        *,
+        column_pixmap_mode: bool = True,
+        cancel_event: threading.Event | None = None,
+    ) -> None:
+        """Start batch 2D rendering on the GUI thread (called from :class:`Render2DBatchHeldJob`)."""
+        if cancel_event is not None and cancel_event.is_set():
+            return
         self._render2d_session_id += 1
         self._render2d_batch_session_tag = self._render2d_session_id
         self._render2d_accept_session = self._render2d_batch_session_tag
         self._render2d_pixmap_target = None if src == "Structure" else src
-        if self._render2d_pixmap_target:
+        self._render2d_column_pixmap_mode = bool(column_pixmap_mode)
+        if self._render2d_pixmap_target and self._render2d_column_pixmap_mode:
             self._table_model.register_pixmap_column(self._render2d_pixmap_target)
         self._render2d_saved_sort_enabled = self.table.isSortingEnabled()
         self.table.setSortingEnabled(False)
@@ -617,22 +1074,38 @@ class ChemistryMixin:
         oids = [oid for oid, _, _, _ in renders]
         self._render2d_batch_oids_ordered = oids
         self._render2d_pending = {}
+        structure_column = self._render2d_pixmap_target is None
+        lazy_structure = self._render2d_use_lazy_structure_flush(len(oids), structure_column=structure_column)
+        self._render2d_lazy_flush = lazy_structure
         tgt = self._render2d_pixmap_target
         if tgt:
-            self._render2d_snapshot = self._table_model.snapshot_column_pixmaps(tgt, oids)
+            if self._render2d_column_pixmap_mode:
+                self._render2d_snapshot = self._table_model.snapshot_column_pixmaps(tgt, oids)
+                clear_pixmap = self._table_model.set_column_pixmap
+            else:
+                self._render2d_snapshot = {
+                    oid: self._table_model.cell_pixmap_copy(oid, tgt) for oid in oids
+                }
+                clear_pixmap = self._table_model.set_cell_pixmap
             for oid in oids:
-                self._table_model.set_column_pixmap(oid, tgt, None)
+                clear_pixmap(oid, tgt, None)
+        elif lazy_structure:
+            self._render2d_snapshot = {}
+            self._table_model.clear_structure_png_store()
+            self._table_model.clear_structure_pixmaps_for_oids(oids, emit=True)
         else:
-            self._render2d_snapshot = self._table_model.snapshot_structure_pixmaps(oids)
-            for oid in oids:
-                self._table_model.set_structure_pixmap(oid, None)
+            if len(oids) <= load_config().structure_render_lazy_min_rows:
+                self._render2d_snapshot = self._table_model.snapshot_structure_pixmaps(oids)
+            else:
+                self._render2d_snapshot = {}
+            self._table_model.clear_structure_pixmaps_for_oids(oids, emit=True)
         self._render2d_progress_last_emit = 0.0
         self._render2d_progress_last_done = 0
         self._import_progress_active = True
         self._import_render_goal = len(renders)
         self._import_render_done = 0
         self._on_tool_progress("Drawing 2D structures…", 0, len(renders))
-        self._render2d_cancel_event = threading.Event()
+        self._render2d_cancel_event = cancel_event if cancel_event is not None else threading.Event()
         self._render2d_queue = None
         hub = getattr(self, "background_activity", None)
         if hub is not None:
@@ -646,13 +1119,45 @@ class ChemistryMixin:
             )
         )
 
-    def run_render_2d_for_table_row(self, row: int) -> None:
-        """Run Tools → Render 2D for one row (Structure source), same pipeline as the full tool."""
+    def _render2d_source_header_for_column(self, col: int) -> str:
+        """Header used as Render 2D source and pixmap target (clicked column, else Structure)."""
+        if 0 <= col < len(self.headers):
+            return self.headers[col]
+        return "Structure"
+
+    def _mol_for_render2d_source(self, row: int, src: str) -> Chem.Mol | None:
+        """Molecule to draw for one row from the chosen source column."""
+        if row < 0 or row >= self._table_model.rowCount():
+            return None
+        if src == "Structure":
+            return self._mol_for_structure_row(row)
+        if src not in self.headers:
+            return None
+        ci = self.headers.index(src)
+        if self._table_model.is_pixmap_data_column(src):
+            raw = (self._table_model.backing_value_for_row_header(row, src) or "").strip()
+            mol = self._mol_from_structure_text(raw) if raw else None
+            if mol is not None:
+                return mol
+            return self._mol_for_structure_row(row)
+        raw = (self._table_cell_text(row, ci) or "").strip()
+        if not raw:
+            raw = (self._table_model.backing_value_for_row_header(row, src) or "").strip()
+        if not raw:
+            return None
+        return self._mol_from_structure_text(raw)
+
+    def run_render_2d_for_table_row(self, row: int, col: int | None = None) -> None:
+        """Run Render 2D for one row: read chemistry from ``col`` and write the pixmap into that column."""
         if not self.headers or self._table_model.rowCount() == 0:
             QMessageBox.information(self, TOOL_RENDER_2D, "Load a table with at least one row first.")
             return
-        if self._render2d_batch_active:
-            QMessageBox.warning(self, TOOL_RENDER_2D, "A render operation is already in progress.")
+        if self._render2d_batch_active or self.process_queue.has_running_job():
+            QMessageBox.warning(
+                self,
+                TOOL_RENDER_2D,
+                "A render or background tool is already running. Wait for it to finish or cancel it from Processes.",
+            )
             return
         if row < 0 or row >= self._table_model.rowCount():
             return
@@ -661,28 +1166,26 @@ class ChemistryMixin:
         if oid is None:
             QMessageBox.information(self, TOOL_RENDER_2D, "Could not resolve this row’s compound id.")
             return
-        if self.mols.get(oid) is None:
-            m = self._mol_for_structure_row(row)
-            if m is None:
-                QMessageBox.information(
-                    self,
-                    TOOL_RENDER_2D,
-                    "No molecule is available for this row yet. Load SMILES or add a structure first.",
-                )
-                return
-            self.mols[oid] = m
+        src = self._render2d_source_header_for_column(col if col is not None else -1)
+        mol = self._mol_for_render2d_source(row, src)
+        if mol is None:
+            QMessageBox.information(
+                self,
+                TOOL_RENDER_2D,
+                f"No structure could be read from column “{src}” for this row.",
+            )
+            return
+        self.mols[oid] = mol
         base_w, base_h = STRUCTURE_DEPICT_WIDTH, STRUCTURE_DEPICT_HEIGHT
-        renders, row_by_oid = self._build_render2d_tasks_in_table_order(
-            "Structure", base_w, base_h, {oid}
-        )
+        renders, row_by_oid = self._build_render2d_tasks_in_table_order(src, base_w, base_h, {oid})
         if not renders:
             QMessageBox.information(
                 self,
                 TOOL_RENDER_2D,
-                "No molecule is available for this row yet. Load SMILES or add a structure first.",
+                f"No structure could be read from column “{src}” for this row.",
             )
             return
-        self._start_render_2d_batch(renders, row_by_oid, "Structure")
+        self._start_render_2d_batch(renders, row_by_oid, src, column_pixmap_mode=False)
 
     def on_wash_finished(self, results):
         self.table.setSortingEnabled(False)
@@ -741,7 +1244,7 @@ class ChemistryMixin:
             if renders:
                 self._start_render_2d_batch(renders, row_by_oid, "Structure")
                 return
-        self.status_label.setText("Done.")
+        self.status_label.setText(self._consume_partial_results_notice() or "Done.")
 
     def open_generate_conformations(self):
         if not self.headers or self._table_model.rowCount() == 0:
@@ -759,15 +1262,14 @@ class ChemistryMixin:
         d.accepted.connect(lambda *_, dlg=d: self._on_generate_conformations_dialog_accepted(dlg))
         d.show()
 
-    def _on_generate_conformations_dialog_accepted(self, d) -> None:
-        only_selected = d.only_selected_rows()
+    def _collect_mols_for_conformer_tools(
+        self, *, only_selected: bool
+    ) -> list[tuple[int, Chem.Mol]]:
         allowed = self._selected_oids_set() if only_selected else None
-        if self._abort_if_only_selected_but_empty(only_selected, allowed, "Generate Conformations"):
-            return
         oids_list = self._all_oids_in_table_order()
         if allowed is not None:
             oids_list = [o for o in oids_list if o in allowed]
-        data = []
+        data: list[tuple[int, Chem.Mol]] = []
         for o in oids_list:
             r = self.get_row_by_id(o)
             m = self.mols.get(o) if r >= 0 else None
@@ -775,6 +1277,14 @@ class ChemistryMixin:
                 m = self._mol_for_structure_row(r)
             if m is not None:
                 data.append((o, m))
+        return data
+
+    def _on_generate_conformations_dialog_accepted(self, d) -> None:
+        only_selected = d.only_selected_rows()
+        allowed = self._selected_oids_set() if only_selected else None
+        if self._abort_if_only_selected_but_empty(only_selected, allowed, "Generate Conformations"):
+            return
+        data = self._collect_mols_for_conformer_tools(only_selected=only_selected)
         if not data:
             QMessageBox.information(
                 self,
@@ -792,19 +1302,67 @@ class ChemistryMixin:
             ),
         )
 
+    def open_generate_single_conformation(self) -> None:
+        if not self.headers or self._table_model.rowCount() == 0:
+            QMessageBox.information(
+                self,
+                TOOL_SINGLE_CONFORMATION,
+                "Open a file or add rows so the table has molecules to process.",
+            )
+            return
+        from ..dialogs import GenerateSingleConformationDialog
+
+        d = GenerateSingleConformationDialog(len(self._selected_logical_rows()), self)
+        self._prepare_tool_dialog(d)
+        d.setAttribute(Qt.WA_DeleteOnClose, True)
+        d.accepted.connect(
+            lambda *_, dlg=d: self._on_generate_single_conformation_dialog_accepted(dlg)
+        )
+        d.show()
+
+    def _on_generate_single_conformation_dialog_accepted(self, d) -> None:
+        only_selected = d.only_selected_rows()
+        allowed = self._selected_oids_set() if only_selected else None
+        if self._abort_if_only_selected_but_empty(only_selected, allowed, TOOL_SINGLE_CONFORMATION):
+            return
+        data = self._collect_mols_for_conformer_tools(only_selected=only_selected)
+        if not data:
+            QMessageBox.information(
+                self,
+                TOOL_SINGLE_CONFORMATION,
+                "No parseable structures for those rows (in-memory molecules or chemistry in table cells).",
+            )
+            return
+        params = d.params()
+        n = len(data)
+        self.status_label.setText(f"{TOOL_SINGLE_CONFORMATION}…")
+        self.process_queue.enqueue(
+            f"{TOOL_SINGLE_CONFORMATION} ({n} structures)",
+            lambda ev, d=data, p=params, sigs=self.signals: ConformerGenerationWorker(
+                d, p, sigs, cancel_event=ev
+            ),
+        )
+
     def cancel_active_tool_process(self) -> None:
-        """Request cooperative cancellation of the process-queue job and/or an active Render 2D batch."""
+        """Request cooperative cancellation of the process-queue job, Render 2D, Boltz-2, and/or Vina."""
         r2d = self.cancel_render_2d_batch()
+        boltz = self.cancel_boltz2_predict()
+        vina = self.cancel_vina_dock()
         pq_ok = self.process_queue.cancel_running()
         if pq_ok:
             self.status_label.setText("Cancelling…")
         elif r2d:
             self.status_label.setText("Render 2D cancelled.")
+        elif boltz:
+            self.status_label.setText("Boltz-2 stopped.")
+        elif vina:
+            self.status_label.setText("Vina stopped.")
         else:
             QMessageBox.information(
                 self,
                 "Cancel Process",
-                "Nothing to cancel (no process-queue job or Render 2D batch), or cancellation was already requested.",
+                "Nothing to cancel (no process-queue job, Render 2D batch, Boltz-2 run, or Vina run), "
+                "or cancellation was already requested.",
             )
 
     def on_conformers_finished(self, results: list) -> None:
@@ -841,7 +1399,7 @@ class ChemistryMixin:
                 self.table.setUpdatesEnabled(True)
             except Exception:
                 pass
-        self.status_label.setText("Done.")
+        self.status_label.setText(self._consume_partial_results_notice() or "Done.")
 
     def open_superpose_conformers(self):
         if not self.headers or self._table_model.rowCount() == 0:
@@ -933,14 +1491,14 @@ class ChemistryMixin:
                 self.table.setUpdatesEnabled(True)
             except Exception:
                 pass
-        self.status_label.setText("Done.")
+        self.status_label.setText(self._consume_partial_results_notice() or "Done.")
 
     def open_calc(self):
         if not self.headers:
             return
         from ..dialogs import PropertyDialog
 
-        desc_src_cols = ["Structure"] + self._data_headers_confirmed_for_chemistry_tools()
+        desc_src_cols = self.chemistry_tool_structure_sources()
         d = PropertyDialog(desc_src_cols, len(self._selected_logical_rows()), self)
         self._prepare_tool_dialog(d)
         d.setAttribute(Qt.WA_DeleteOnClose, True)
@@ -959,7 +1517,6 @@ class ChemistryMixin:
         oids_list = self._all_oids_in_table_order()
         if allowed is not None:
             oids_list = [o for o in oids_list if o in allowed]
-        self.status_label.setText("Calculating...")
         if not is_s:
             data = []
             for o in oids_list:
@@ -979,15 +1536,39 @@ class ChemistryMixin:
             )
             self.status_label.setText("Ready.")
             return
+        ps = self._tool_progress_state
+        self._begin_tool_progress("Calculate descriptors", len(data))
         self.process_queue.enqueue(
             f"Calculate descriptors ({len(data)} rows)",
-            lambda ev, d=data, dh=disp, fn=fns, sm=is_s, sigs=self.signals: CalcWorker(
-                d, dh, fn, sm, sigs, cancel_event=ev
+            lambda ev, d=data, dh=disp, fn=fns, sm=is_s, sigs=self.signals, p=ps: CalcWorker(
+                d, dh, fn, sm, sigs, cancel_event=ev, progress_state=p
             ),
         )
 
-    def on_calc_finished(self, res, calc_h):
-        self._clear_tool_progress()
+    def _sync_global_bounds_for_headers(self, headers: list[str], *, refresh_filters: bool = False) -> None:
+        """Refresh slider min/max for specific columns without scanning the whole table."""
+        if not headers:
+            return
+        self._table_model.refresh_numeric_bounds_for_headers(headers)
+        cache = self._table_model._numeric_bounds_cache
+        if cache is not None:
+            for h in headers:
+                if h in cache:
+                    self.global_bounds[h] = cache[h]
+                else:
+                    self.global_bounds.pop(h, None)
+        if refresh_filters:
+            cols = self._filterable_data_column_names()
+            for f in self.filters:
+                if isinstance(f, FilterCard):
+                    f.update_prop_list(list(self.global_bounds.keys()))
+                elif isinstance(f, (TextFilterCard, CategoryFilterCard)):
+                    f.update_prop_list(cols)
+        self._refresh_active_plot_axis_columns()
+
+    def on_calc_finished(self, res, calc_h, *, finish_progress: bool = True):
+        if finish_progress:
+            self._finish_tool_progress("Calculate descriptors")
         self.table.setSortingEnabled(False)
         try:
             self.table.setUpdatesEnabled(False)
@@ -997,49 +1578,43 @@ class ChemistryMixin:
             h_map = {h: i for i, h in enumerate(self.headers)}
             new_h = [h for h in calc_h if h not in h_map]
             if new_h:
-                for nh in new_h:
-                    col_at = len(self.headers)
-                    self.headers.append(nh)
-                    self._table_model.insert_column_at(col_at, nh, None)
-                    h_map[nh] = col_at
-            for oid, row_d in res:
-                if self.get_row_by_id(oid) < 0:
-                    continue
-                self._table_model.set_cell_text_batch(
-                    oid,
-                    {h: str(row_d.get(h, "N/A")) for h in calc_h},
-                )
-            self.calculate_global_bounds()
+                col_at = len(self.headers)
+                self.headers.extend(new_h)
+                self._table_model.insert_columns_at(col_at, new_h, None)
+            bulk_rows = [(int(oid), {h: str(row_d.get(h, "N/A")) for h in calc_h}) for oid, row_d in res]
+            if bulk_rows:
+                self._table_model.apply_columns_values_bulk(calc_h, bulk_rows)
+            self._sync_global_bounds_for_headers(calc_h, refresh_filters=bool(new_h))
             self.table.setSortingEnabled(False)
         finally:
             try:
                 self.table.setUpdatesEnabled(True)
             except Exception:
                 pass
-        self.status_label.setText("Done.")
+        self.status_label.setText(self._consume_partial_results_notice() or "Done.")
 
-    def open_rgroup_decomposition(self) -> None:
+    def open_core_based_decomposition(self) -> None:
         if not self.headers or self._table_model.rowCount() == 0:
             QMessageBox.information(
                 self,
-                TOOL_RGROUP_DECOMP,
+                TOOL_CORE_DECOMP,
                 "Load a table with at least one row first.",
             )
             return
-        candidates = ["Structure"] + self._data_headers_confirmed_for_chemistry_tools()
-        from ..dialogs import RGroupDecompositionDialog
+        candidates = self.chemistry_tool_structure_sources()
+        from ..dialogs import CoreBasedDecompositionDialog
 
-        d = RGroupDecompositionDialog(candidates, len(self._selected_logical_rows()), self)
+        d = CoreBasedDecompositionDialog(candidates, len(self._selected_logical_rows()), self)
         self._prepare_tool_dialog(d)
         d.setAttribute(Qt.WA_DeleteOnClose, True)
-        d.accepted.connect(lambda *_, dlg=d: self._on_rgroup_decomposition_dialog_accepted(dlg))
+        d.accepted.connect(lambda *_, dlg=d: self._on_core_based_decomposition_dialog_accepted(dlg))
         d.show()
 
-    def _on_rgroup_decomposition_dialog_accepted(self, d) -> None:
+    def _on_core_based_decomposition_dialog_accepted(self, d) -> None:
         p = d.params()
         only_selected = d.only_selected_rows()
         allowed = self._selected_oids_set() if only_selected else None
-        if self._abort_if_only_selected_but_empty(only_selected, allowed, TOOL_RGROUP_DECOMP):
+        if self._abort_if_only_selected_but_empty(only_selected, allowed, TOOL_CORE_DECOMP):
             return
         src = p.structure_source
         col = None if src == "Structure" else self.headers.index(src)
@@ -1073,14 +1648,14 @@ class ChemistryMixin:
         if not data:
             QMessageBox.information(
                 self,
-                TOOL_RGROUP_DECOMP,
+                TOOL_CORE_DECOMP,
                 "No valid structures were found for the selected source and scope.",
             )
             self.status_label.setText("Ready.")
             return
-        self.status_label.setText("R-group decomposition…")
+        self.status_label.setText("Core-based decomposition…")
         self.process_queue.enqueue(
-            f"R-group decomposition ({len(data)} rows)",
+            f"Core-based decomposition ({len(data)} rows)",
             lambda ev, dt=data, pp=p, sigs=self.signals: RGroupDecompositionWorker(
                 dt,
                 pp.core_query,
@@ -1099,20 +1674,255 @@ class ChemistryMixin:
     def on_rgroup_decomp_failed(self, message: str) -> None:
         self._clear_tool_progress()
         self.status_label.setText("Ready.")
-        QMessageBox.warning(self, TOOL_RGROUP_DECOMP, message or "R-group decomposition failed.")
+        QMessageBox.warning(self, TOOL_CORE_DECOMP, message or "Core-based decomposition failed.")
 
-    def _on_calculator_dialog_finished(self, result: int) -> None:
+    def open_brics_decomposition(self) -> None:
+        self._open_fragment_decomposition_dialog(
+            method="brics",
+            window_title=TOOL_BRICS_DECOMP,
+            default_prefix="BRICS",
+            intro=(
+                "Break each structure into BRICS fragments (retrosynthetic building blocks). "
+                "Fragments are written as SMILES in new columns (BRICS_1, BRICS_2, …). "
+                "Dummy atoms in SMILES mark connection points."
+            ),
+        )
+
+    def open_recap_decomposition(self) -> None:
+        self._open_fragment_decomposition_dialog(
+            method="recap",
+            window_title=TOOL_RECAP_DECOMP,
+            default_prefix="RECAP",
+            intro=(
+                "Break each structure into RECAP fragments (retrosynthetic hierarchies). "
+                "Leaf fragments are written as SMILES in new columns (RECAP_1, RECAP_2, …)."
+            ),
+        )
+
+    def _open_fragment_decomposition_dialog(
+        self,
+        *,
+        method: str,
+        window_title: str,
+        default_prefix: str,
+        intro: str,
+    ) -> None:
+        if not self.headers or self._table_model.rowCount() == 0:
+            QMessageBox.information(
+                self,
+                window_title,
+                "Load a table with at least one row first.",
+            )
+            return
+        from ..dialogs import FragmentDecompositionDialog
+
+        d = FragmentDecompositionDialog(
+            window_title=window_title,
+            intro=intro,
+            default_prefix=default_prefix,
+            method=method,
+            structure_sources=self.chemistry_tool_structure_sources(),
+            selected_row_count=len(self._selected_logical_rows()),
+            parent=self,
+        )
+        self._prepare_tool_dialog(d)
+        d.setAttribute(Qt.WA_DeleteOnClose, True)
+        d.accepted.connect(
+            lambda *_, dlg=d: self._on_fragment_decomposition_dialog_accepted(dlg)
+        )
+        d.show()
+
+    def _on_fragment_decomposition_dialog_accepted(self, d) -> None:
+        p = d.params()
+        only_selected = d.only_selected_rows()
+        if self._abort_if_only_selected_but_empty(only_selected, self._selected_oids_set(), p.tool_title):
+            return
+        data = self.collect_scoped_table_mols(p.structure_source, only_selected=only_selected)
+        if not data:
+            QMessageBox.information(
+                self,
+                p.tool_title,
+                "No valid structures were found for the selected source and scope.",
+            )
+            self.status_label.setText("Ready.")
+            return
+        prefix = p.column_prefix or ("BRICS" if p.method == "brics" else "RECAP")
+        method = "brics" if p.method == "brics" else "recap"
+        self.status_label.setText(f"{p.tool_title}…")
+        self.process_queue.enqueue(
+            f"{p.tool_title} ({len(data)} rows)",
+            lambda ev, dt=data, m=method, pref=prefix, title=p.tool_title, sigs=self.signals: FragmentDecompositionWorker(
+                dt,
+                m,
+                pref,
+                title,
+                sigs,
+                cancel_event=ev,
+            ),
+        )
+
+    def on_fragment_decomp_finished(self, res, col_headers: list, tool_title: str) -> None:
+        self._finish_tool_progress(tool_title)
+        self.on_calc_finished(res, col_headers, finish_progress=False)
+
+    def on_fragment_decomp_failed(self, message: str, tool_title: str) -> None:
+        self._clear_tool_progress()
+        self.status_label.setText("Ready.")
+        QMessageBox.warning(self, tool_title, message or "Fragment decomposition failed.")
+
+    def open_brics_recomposition(self) -> None:
+        self._open_fragment_recomposition_dialog(
+            method="brics",
+            window_title=TOOL_BRICS_RECOMP,
+            default_prefix="BRICS",
+            intro=(
+                "Combine unique BRICS fragments from decomposition columns (e.g. BRICS_1, BRICS_2) "
+                "into new product structures using RDKit BRICSBuild. Products are appended as new "
+                "table rows with SMILES and 2D structures."
+            ),
+        )
+
+    def open_recap_recomposition(self) -> None:
+        self._open_fragment_recomposition_dialog(
+            method="recap",
+            window_title=TOOL_RECAP_RECOMP,
+            default_prefix="RECAP",
+            intro=(
+                "Combine unique RECAP fragments from decomposition columns (e.g. RECAP_1, RECAP_2) "
+                "into new product structures. RECAP attachment points (*) are coupled via the "
+                "BRICS builder; products are appended as new rows with SMILES and 2D structures."
+            ),
+        )
+
+    def _open_fragment_recomposition_dialog(
+        self,
+        *,
+        method: str,
+        window_title: str,
+        default_prefix: str,
+        intro: str,
+    ) -> None:
+        if not self.headers or self._table_model.rowCount() == 0:
+            QMessageBox.information(
+                self,
+                window_title,
+                "Load a table with fragment columns from decomposition first.",
+            )
+            return
+        from ..dialogs import FragmentRecompositionDialog
+
+        d = FragmentRecompositionDialog(
+            window_title=window_title,
+            intro=intro,
+            default_prefix=default_prefix,
+            method=method,
+            table_headers=list(self.headers),
+            selected_row_count=len(self._selected_logical_rows()),
+            parent=self,
+        )
+        self._prepare_tool_dialog(d)
+        d.setAttribute(Qt.WA_DeleteOnClose, True)
+        d.accepted.connect(
+            lambda *_, dlg=d: self._on_fragment_recomposition_dialog_accepted(dlg)
+        )
+        d.show()
+
+    def _collect_fragment_smiles_for_prefix(
+        self,
+        prefix: str,
+        *,
+        only_selected: bool,
+    ) -> list[str]:
+        from ...fragment_decomposition import fragment_columns_for_prefix
+
+        cols = fragment_columns_for_prefix(self.headers, prefix)
+        if not cols:
+            return []
+        allowed = self._selected_oids_set() if only_selected else None
+        col_idx = {h: self.headers.index(h) for h in cols}
+        out: list[str] = []
+        for r in range(self._table_model.rowCount()):
+            t0 = self._table_model.cell_text(r, 0)
+            if not t0.isdigit():
+                continue
+            oid = int(t0)
+            if allowed is not None and oid not in allowed:
+                continue
+            for h in cols:
+                raw = self._table_cell_text(r, col_idx[h])
+                if not raw:
+                    raw = self._table_model.backing_value_for_row_header(r, h) or ""
+                if raw:
+                    out.append(str(raw).strip())
+        return out
+
+    def _on_fragment_recomposition_dialog_accepted(self, d) -> None:
+        p = d.params()
+        only_selected = d.only_selected_rows()
+        if self._abort_if_only_selected_but_empty(
+            only_selected, self._selected_oids_set(), p.tool_title
+        ):
+            return
+        fragments = self._collect_fragment_smiles_for_prefix(
+            p.column_prefix, only_selected=only_selected
+        )
+        if not fragments:
+            QMessageBox.information(
+                self,
+                p.tool_title,
+                f"No fragment SMILES found in columns matching “{p.column_prefix}_1”, “{p.column_prefix}_2”, …",
+            )
+            self.status_label.setText("Ready.")
+            return
+        method = "brics" if p.method == "brics" else "recap"
+        self.status_label.setText(f"{p.tool_title}…")
+        self.process_queue.enqueue(
+            f"{p.tool_title} ({len(fragments)} fragments)",
+            lambda ev, fr=fragments, pp=p, m=method, sigs=self.signals: FragmentRecompositionWorker(
+                fr,
+                m,
+                pp.max_depth,
+                pp.max_products,
+                pp.tool_title,
+                sigs,
+                cancel_event=ev,
+            ),
+        )
+
+    def on_fragment_recomp_finished(self, products: list, tool_title: str) -> None:
+        self._finish_tool_progress(tool_title)
+        method_label = "BRICS" if "BRICS" in tool_title.upper() else "RECAP"
+        records = [
+            (str(smi), {"Recompose_Method": method_label}) for smi in products if (smi or "").strip()
+        ]
+        n = self.add_rows_from_external_records_batch(records, render_structures=True)
+        self.status_label.setText(
+            self._consume_partial_results_notice()
+            or f"{tool_title}: added {n:,} product row(s)."
+        )
+
+    def on_fragment_recomp_failed(self, message: str, tool_title: str) -> None:
+        self._clear_tool_progress()
+        self.status_label.setText("Ready.")
+        QMessageBox.warning(self, tool_title, message or "Fragment recomposition failed.")
+
+    def _run_calculator_from_dialog(self, dlg) -> None:
         from ..dialogs import CalculatorDialog
 
-        dlg = self.sender()
-        if not isinstance(dlg, CalculatorDialog) or int(result) != int(QDialog.Accepted):
+        if not isinstance(dlg, CalculatorDialog):
             return
-        self.new_c = dlg.name_input.text()
+        self.new_c = dlg.name_input.text().strip()
+        if not self.new_c:
+            QMessageBox.warning(self, TOOL_CALCULATOR, "Enter a name for the new column.")
+            return
+        expr = dlg.expr_input.text().strip()
+        if not expr:
+            QMessageBox.warning(self, TOOL_CALCULATOR, "Enter an expression to evaluate.")
+            return
         only_selected = dlg.only_selected_rows()
         allowed = self._selected_oids_set() if only_selected else None
         if self._abort_if_only_selected_but_empty(only_selected, allowed, TOOL_CALCULATOR):
             return
-        self.status_label.setText("Calculating…")
         numeric_vars = list(self.global_bounds.keys())
         h_map = {h: i for i, h in enumerate(self.headers)}
         oids_list = self._all_oids_in_table_order()
@@ -1133,10 +1943,13 @@ class ChemistryMixin:
             )
             self.status_label.setText("Ready.")
             return
-        expr = dlg.expr_input.text()
+        ps = self._tool_progress_state
+        self._begin_tool_progress("Calculator…", len(row_data))
         self.process_queue.enqueue(
             f"Calculator ({len(row_data)} rows)",
-            lambda ev, rd=row_data, ex=expr, sigs=self.signals: CustomCalcWorker(rd, ex, sigs, cancel_event=ev),
+            lambda ev, rd=row_data, ex=expr, sigs=self.signals, p=ps: CustomCalcWorker(
+                rd, ex, sigs, cancel_event=ev, progress_state=p
+            ),
         )
 
     def open_calculator(self):
@@ -1156,7 +1969,7 @@ class ChemistryMixin:
             d = CalculatorDialog(numeric_vars, len(self._selected_logical_rows()), self)
             d.setModal(False)
             d.setAttribute(Qt.WA_DeleteOnClose, True)
-            d.finished.connect(self._on_calculator_dialog_finished)
+            d.apply_requested.connect(lambda dlg=d: self._run_calculator_from_dialog(dlg))
             self._prepare_tool_dialog(d)
             return d
 
@@ -1196,6 +2009,16 @@ class ChemistryMixin:
     def open_plot(self):
         if not self.headers:
             return
+        w = getattr(self, "_docked_plot_widget", None)
+        if w is not None:
+            try:
+                self._plot_panel.setVisible(True)
+                self._sync_dialog_only_selected_scope(w)
+                self.activateWindow()
+                self.raise_()
+                return
+            except RuntimeError:
+                self._docked_plot_widget = None
         reuse_or_show_modeless_singleton(
             self,
             "_plot_dialog",
@@ -1277,6 +2100,40 @@ class ChemistryMixin:
             self._on_chembl_dialog_destroyed,
         )
 
+    def open_patent_query(self):
+        from ..external import PatentQueryDialog
+
+        reuse_or_show_modeless_singleton(
+            self,
+            "_patent_query_dialog",
+            lambda: PatentQueryDialog(self),
+            self._on_patent_query_dialog_destroyed,
+        )
+
+    def open_boltz2(self):
+        from ..external import Boltz2Dialog
+
+        dlg = reuse_or_show_modeless_singleton(
+            self,
+            "_boltz2_dialog",
+            lambda: Boltz2Dialog(self),
+            self._on_boltz2_dialog_destroyed,
+        )
+        dlg.setAttribute(Qt.WA_DeleteOnClose, True)
+        self._prepare_tool_dialog(dlg)
+
+    def open_vina_dock(self):
+        from ..vina_dock import VinaDockDialog
+
+        dlg = reuse_or_show_modeless_singleton(
+            self,
+            "_vina_dock_dialog",
+            lambda: VinaDockDialog(self),
+            self._on_vina_dock_dialog_destroyed,
+        )
+        dlg.setAttribute(Qt.WA_DeleteOnClose, True)
+        self._prepare_tool_dialog(dlg)
+
     def _ensure_columns(self, col_names: list[str]) -> None:
         """Ensure the table has these headers (adds columns to the right if needed)."""
         if not self.headers:
@@ -1284,13 +2141,11 @@ class ChemistryMixin:
             self._table_model.set_headers(list(self.headers))
             self.table.setColumnHidden(0, True)
         existing = {h: i for i, h in enumerate(self.headers)}
-        for h in col_names:
-            if h in existing:
-                continue
+        to_add = [h for h in col_names if h not in existing]
+        if to_add:
             col_at = len(self.headers)
-            self.headers.append(h)
-            self._table_model.insert_column_at(col_at, h, None)
-            existing[h] = col_at
+            self.headers.extend(to_add)
+            self._table_model.insert_columns_at(col_at, to_add, None)
 
     def add_row_from_external_record(self, smiles: str, fields: dict[str, str]) -> None:
         """Append a row with SMILES + additional fields; render structure when possible."""
@@ -1315,8 +2170,58 @@ class ChemistryMixin:
             self.mols[oid] = mol
             self.start_render_worker(oid, mol)
 
-        self.calculate_global_bounds()
+        self._sync_global_bounds_for_headers(list(fields.keys()), refresh_filters=False)
         self.table.setSortingEnabled(False)
+
+    def add_rows_from_external_records_batch(
+        self,
+        records: list[tuple[str, dict[str, str]]],
+        *,
+        render_structures: bool = True,
+    ) -> int:
+        """Append many external rows with one model notification (ChEMBL/PubChem/protomer adds)."""
+        if not records:
+            return 0
+        field_names: set[str] = set()
+        for _smi, fields in records:
+            field_names.update(fields.keys())
+        self._ensure_columns(["SMILES"] + sorted(field_names))
+        self.table.setSortingEnabled(False)
+        try:
+            self.table.setUpdatesEnabled(False)
+        except Exception:
+            pass
+        batch_rows: list[tuple[int, dict[str, str]]] = []
+        new_mols: list[tuple[int, Chem.Mol]] = []
+        for smiles, fields in records:
+            smiles = (smiles or "").strip()
+            if not smiles:
+                continue
+            oid = self.next_oid
+            self.next_oid += 1
+            row_cells: dict[str, str] = {}
+            for h in self.headers[2:]:
+                if h == "SMILES":
+                    row_cells[h] = smiles
+                else:
+                    row_cells[h] = str(fields.get(h, "") or "")
+            batch_rows.append((oid, row_cells))
+            if render_structures:
+                mol = Chem.MolFromSmiles(smiles)
+                if mol is not None:
+                    new_mols.append((oid, mol))
+        if batch_rows:
+            self._table_model.append_rows_batch(batch_rows)
+            for oid, mol in new_mols:
+                self.mols[oid] = mol
+                self.start_render_worker(oid, mol)
+            self._sync_global_bounds_for_headers(sorted(field_names), refresh_filters=False)
+        try:
+            self.table.setUpdatesEnabled(True)
+        except Exception:
+            pass
+        self.table.setSortingEnabled(False)
+        return len(batch_rows)
 
     def load_from_sql(
         self,
@@ -1328,16 +2233,11 @@ class ChemistryMixin:
         apply_limit: bool = True,
         clear_first: bool = True,
     ) -> None:
-        f"""Load a SQL query/table into the main table.
+        """Load a SQL query/table into the main table.
 
         If a 'SMILES' column exists (case-insensitive), molecules will be created and
         2D structure images are drawn automatically (same as after opening a structure file).
         """
-        try:
-            import pandas as pd
-        except Exception as e:
-            raise RuntimeError("pandas is required for SQL loading. Install requirements.txt.") from e
-
         try:
             from sqlalchemy import create_engine, text
         except Exception as e:
@@ -1381,6 +2281,11 @@ class ChemistryMixin:
         if connect_args:
             eng_kw["connect_args"] = connect_args
         eng = create_engine(url, **eng_kw)
+        page_size = max(128, int(sql_cfg.sqlite_backend_page_size))
+        sql = ""
+        cols: list[str] = []
+        nrows = 0
+        rows_hit_limit = False
         with eng.connect() as conn:
             limit_eff = int(li) if apply_limit and li else 0
 
@@ -1415,77 +2320,95 @@ class ChemistryMixin:
                 sql = f"SELECT * FROM {table}"
                 if apply_limit and limit_eff:
                     sql += f" LIMIT {int(limit_eff)}"
-                df = pd.read_sql_query(text(sql), conn)
             else:
                 sql = query or ""
                 if apply_limit and limit_eff:
                     # If the query already includes a LIMIT, leave it alone.
                     if re.search(r"\blimit\b", sql, flags=re.IGNORECASE) is None:
                         sql = f"SELECT * FROM ({sql}) AS subq LIMIT {int(limit_eff)}"
-                df = pd.read_sql_query(text(sql), conn)
+            perf = getattr(self, "_perf", None)
+            scope = perf.track if perf is not None else (lambda *_args, **_kwargs: nullcontext())
+            with scope("sql.load_rows"):
+                try:
+                    self.table.setUpdatesEnabled(False)
+                except Exception:
+                    pass
+                rs = conn.execution_options(stream_results=True).execute(text(sql))
+                cols = [str(c) for c in rs.keys()]
+                if not cols:
+                    rs.close()
+                    raise RuntimeError("Query returned 0 rows.")
 
-        if df is None or df.empty:
+                if clear_first:
+                    self.clear_all()
+
+                # Build headers: keep the app's first two columns.
+                self.headers = ["ID_HIDDEN", "Structure"] + cols
+                self.table.setSortingEnabled(False)
+                self._table_model.clear_rows()
+                self._table_model.set_headers(list(self.headers))
+                self.table.setColumnHidden(0, True)
+
+                smiles_col = next((c for c in cols if c.lower() == "smiles"), None)
+
+                # Reset molecule store.
+                self.mols = {}
+                self._clear_filter_target_smiles_cache()
+                self.global_bounds = {}
+                self.next_oid = 0
+
+                while True:
+                    chunk = rs.fetchmany(page_size)
+                    if not chunk:
+                        break
+                    batch: list[tuple[int, dict[str, str]]] = []
+                    for rec in chunk:
+                        oid = self.next_oid
+                        self.next_oid += 1
+                        row_cells: dict[str, str] = {}
+                        for c in cols:
+                            v = rec._mapping.get(c)
+                            row_cells[c] = "" if v is None else str(v)
+                        batch.append((oid, row_cells))
+                        if smiles_col is not None:
+                            smi = (row_cells.get(smiles_col, "") or "").strip()
+                            mol = Chem.MolFromSmiles(smi) if smi else None
+                            if mol is not None:
+                                self.mols[oid] = mol
+                    if batch:
+                        self._table_model.append_rows_batch(batch)
+                        nrows += len(batch)
+                        if apply_limit and limit_eff and nrows >= limit_eff:
+                            rows_hit_limit = True
+                rs.close()
+                try:
+                    self.table.setUpdatesEnabled(True)
+                except Exception:
+                    pass
+
+        if nrows <= 0:
             raise RuntimeError("Query returned 0 rows.")
 
-        if apply_limit and limit_eff and len(df) >= limit_eff:
+        if rows_hit_limit:
             QMessageBox.information(
                 self,
                 "SQL load",
-                f"The result has {len(df):,} row(s), reaching the row limit ({limit_eff:,}). "
+                f"The result has {nrows:,} row(s), reaching the row limit ({limit_eff:,}). "
                 "If you expected more rows, raise “Max rows” in the SQL dialog or adjust your query.",
             )
 
-        if clear_first:
-            self.clear_all()
-
-        # Build headers: keep the app's first two columns.
-        cols = [str(c) for c in df.columns]
-        self.headers = ["ID_HIDDEN", "Structure"] + cols
-        self.table.setSortingEnabled(False)
-        self._table_model.clear_rows()
-        self._table_model.set_headers(list(self.headers))
-        self.table.setColumnHidden(0, True)
-
-        smiles_col = None
-        for c in cols:
-            if c.lower() == "smiles":
-                smiles_col = c
-                break
-
-        # Reset molecule store.
-        self.mols = {}
-        self._clear_filter_target_smiles_cache()
-        self.global_bounds = {}
-        self.next_oid = 0
-
-        # Insert rows (NumPy slice is much faster than df.iterrows for large frames).
-        raw = df[cols].to_numpy(dtype=object, copy=False)
-        n_df = len(df)
-        si = cols.index(smiles_col) if smiles_col else None
-        for i in range(n_df):
-            oid = self.next_oid
-            self.next_oid += 1
-            row_cells = {}
-            for j, c in enumerate(cols):
-                v = raw[i, j]
-                row_cells[c] = "" if v is None or pd.isna(v) else str(v)
-            self._table_model.append_row(oid, row_cells)
-
-            if smiles_col is not None and si is not None:
-                smi = row_cells.get(smiles_col, "") or ""
-                smi = smi.strip()
-                mol = Chem.MolFromSmiles(smi) if smi else None
-                if mol is not None:
-                    self.mols[oid] = mol
+        if self._sqlite_store is not None:
+            # Rebuild lazily on demand (filter/search) to keep ingest fast and memory flatter.
+            self._sqlite_store_dirty = True
 
         self.calculate_global_bounds()
         self.table.setSortingEnabled(False)
-        nrows = n_df
-        if smiles_col and self._try_auto_render_all_structures_after_ingest():
+        smiles_loaded = "SMILES" in self.headers
+        if smiles_loaded and self._try_auto_render_all_structures_after_ingest():
             self.status_label.setText(f"Loaded {nrows} row(s) from SQL — drawing 2D structures…")
         else:
             self.status_label.setText(
-                loaded_sql_status(nrows) if smiles_col else f"Loaded {nrows} row(s) from SQL (no SMILES column)."
+                loaded_sql_status(nrows) if smiles_loaded else f"Loaded {nrows} row(s) from SQL (no SMILES column)."
             )
 
     def open_fp_similarity(self):
@@ -1498,6 +2421,35 @@ class ChemistryMixin:
         dlg.show()
         dlg.raise_()
         dlg.activateWindow()
+
+    def _ensure_pka_predictor_signals(self):
+        """Signals live on the main window so pKa jobs survive dialog close."""
+        sig = getattr(self, "_pka_predictor_signals", None)
+        if sig is not None:
+            return sig
+        from ...workers import PKaPredictorSignals
+
+        sig = PKaPredictorSignals(self)
+        sig.finished.connect(self._on_pka_prediction_finished)
+        sig.failed.connect(self._on_pka_prediction_failed)
+        self._pka_predictor_signals = sig
+        return sig
+
+    def _on_pka_prediction_finished(self, results: list) -> None:
+        table_rows = [(o, t) for o, t in results if o is not None]
+        lone = [t for o, t in results if o is None]
+        if table_rows:
+            res = [(int(o), {"pKa": text}) for o, text in table_rows]
+            self.on_calc_finished(res, ["pKa"])
+        if lone:
+            QMessageBox.information(self, "pKa Predictor", lone[0])
+        if not table_rows:
+            self._clear_tool_progress()
+            self.status_label.setText("Ready.")
+
+    def _on_pka_prediction_failed(self, msg: str) -> None:
+        self._clear_tool_progress()
+        QMessageBox.warning(self, "pKa Predictor", msg or "Prediction failed.")
 
     def open_pka_predictor(self) -> None:
         if not self.headers:
@@ -1551,14 +2503,14 @@ class ChemistryMixin:
             self._clear_tool_progress()
             return
 
-        self._clear_tool_progress()
-        self.table.setSortingEnabled(False)
-        nc = self._table_model.columnCount()
-        self.headers.append(self.new_c)
-        self._table_model.insert_column_at(nc, self.new_c, None)
-        # One batched model update (contiguous row runs) vs N× set_cell_text.
-        self._table_model.set_column_text_by_oids(self.new_c, [(oid, str(val)) for oid, val in res])
-        self.calculate_global_bounds()
-        self.table.setSortingEnabled(False)
-        self.status_label.setText("Done.")
+        self._finish_tool_progress("Calculator…")
+        self.on_calc_finished(
+            [(int(oid), {self.new_c: str(val)}) for oid, val in res],
+            [self.new_c],
+            finish_progress=False,
+        )
+        self.status_label.setText(
+            self._consume_partial_results_notice()
+            or f'{TOOL_CALCULATOR}: column "{self.new_c}" updated.'
+        )
 

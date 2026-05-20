@@ -11,9 +11,15 @@ logger = logging.getLogger(__name__)
 
 
 class SubstructureFilterWorker(QRunnable):
-    """Compute substructure matches off the UI thread (SMILES per row vs SMARTS query)."""
+    """Compute substructure matches off the UI thread (prebuilt per-row mols vs SMARTS query)."""
 
-    def __init__(self, job_gen: int, smarts: str, targets: list[tuple[int, str]], signals: SubstructureFilterSignals):
+    def __init__(
+        self,
+        job_gen: int,
+        smarts: str,
+        targets: list[tuple[int, Chem.Mol | str | None]],
+        signals: SubstructureFilterSignals,
+    ):
         super().__init__()
         self.job_gen = job_gen
         self.smarts = smarts
@@ -31,12 +37,15 @@ class SubstructureFilterWorker(QRunnable):
                 self.signals.finished.emit(self.job_gen, frozenset())
                 return
             matched: set[int] = set()
-            for oid, smi in self.targets:
-                smi = (smi or "").strip()
-                if not smi:
-                    continue
+            for oid, raw_target in self.targets:
                 try:
-                    m = Chem.MolFromSmiles(smi)
+                    if isinstance(raw_target, Chem.Mol):
+                        m = raw_target
+                    else:
+                        smi = (raw_target or "").strip()
+                        if not smi:
+                            continue
+                        m = Chem.MolFromSmiles(smi)
                     if m is not None and m.HasSubstructMatch(q):
                         matched.add(int(oid))
                 except Exception:

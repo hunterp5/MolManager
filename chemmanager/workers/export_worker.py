@@ -8,7 +8,6 @@ from PyQt5.QtCore import QRunnable
 from rdkit import Chem
 
 from ..utils import mol_to_canonical_smiles
-from .signals import WorkerSignals
 
 logger = logging.getLogger(__name__)
 
@@ -74,9 +73,10 @@ class ExportWorker(QRunnable):
                         user_cancelled = True
                         break
                     row = self.table_data.get(oid, {})
+                    out_mol = Chem.Mol(mol)
                     for h in clean_headers:
-                        mol.SetProp(h, str(row.get(h, "")))
-                    writer.write(mol)
+                        out_mol.SetProp(h, str(row.get(h, "")))
+                    writer.write(out_mol)
                     try:
                         self.signals.tool_progress.emit("Exporting…", done, tot)
                     except Exception:

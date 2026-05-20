@@ -18,10 +18,10 @@ from ...utils import mol_to_canonical_smiles
 from .bonds import _bond_make, _bond_unpack
 from .chem import _sanitize_mol_for_smiles
 from .constants import (
-    ACS_PUBLICATION_MEDIAN_BOND_PX,
     BOND_DIR_HASH as _BOND_DIR_HASH,
     DEFAULT_WILDCARD_ELEMENTS,
     SKETCH_COORD_SCALE as _SKETCH_COORD_SCALE,
+    SKETCH_MEDIAN_BOND_PX,
 )
 from .wildcards import (
     _is_wildcard_node,
@@ -174,7 +174,7 @@ class SketchWidgetRdkitMixin:
             pa, pb = conf.GetAtomPosition(i), conf.GetAtomPosition(j)
             lens.append(math.hypot(pa.x - pb.x, pa.y - pb.y))
         med = sorted(lens)[len(lens) // 2] if lens else 1.5
-        scale = ACS_PUBLICATION_MEDIAN_BOND_PX / max(med, 0.01)
+        scale = float(SKETCH_MEDIAN_BOND_PX) / max(med, 0.01)
         xs = [conf.GetAtomPosition(i).x for i in range(na)]
         ys = [conf.GetAtomPosition(i).y for i in range(na)]
         mx, my = sum(xs) / len(xs), sum(ys) / len(ys)
@@ -234,13 +234,9 @@ class SketchWidgetRdkitMixin:
         def _finish_rdkit_load() -> None:
             if not self.nodes:
                 return
-            applied = False
-            try:
-                applied = self.fit_sketch_to_viewport(cap_median_bond_length_px=ACS_PUBLICATION_MEDIAN_BOND_PX)
-            except Exception:
-                applied = False
-            if not applied:
-                self._after_sketch_edit(notify=True, notify_if_valence_failed=True)
+            self._view_scale = 1.0
+            self._refresh_sketch_draw_metrics()
+            self._after_sketch_edit(notify=True, notify_if_valence_failed=True)
 
         QTimer.singleShot(0, _finish_rdkit_load)
         return True
@@ -651,7 +647,7 @@ class SketchWidgetRdkitMixin:
                 pa, pb = conf.GetAtomPosition(ia), conf.GetAtomPosition(ib)
                 lens.append(math.hypot(pa.x - pb.x, pa.y - pb.y))
             med = sorted(lens)[len(lens) // 2] if lens else 1.5
-            scale = 58.0 / max(med, 0.01)
+            scale = float(SKETCH_MEDIAN_BOND_PX) / max(med, 0.01)
             xs = [conf.GetAtomPosition(i).x for i in range(mol.GetNumAtoms())]
             ys = [conf.GetAtomPosition(i).y for i in range(mol.GetNumAtoms())]
             mx, my = sum(xs) / len(xs), sum(ys) / len(ys)

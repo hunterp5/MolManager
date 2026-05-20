@@ -13,6 +13,7 @@ from rdkit import DataStructs
 from rdkit.ML.Cluster import Butina
 
 from .fingerprint_similarity import fingerprint_bitvect_for_ui_choice
+from .signals import emit_partial_results_if_cancelled
 
 logger = logging.getLogger(__name__)
 
@@ -24,11 +25,13 @@ def _bitvect_to_numpy(fp) -> np.ndarray:
     return arr
 
 
-def _condensed_tanimoto_distances(fps: Sequence) -> list[float]:
+def _condensed_tanimoto_distances(fps: Sequence, cancel_event: threading.Event | None = None) -> list[float] | None:
     """Lower-triangle condensed distances d = 1 - Tanimoto (same order as RDKit Butina)."""
     n = len(fps)
     out: list[float] = []
     for i in range(n):
+        if cancel_event is not None and cancel_event.is_set():
+            return None
         sims = DataStructs.BulkTanimotoSimilarity(fps[i], fps[: i + 1])
         for j in range(i):
             s = float(sims[j])
@@ -62,7 +65,9 @@ def cluster_butina(
         return None
     if cancel_event is not None and cancel_event.is_set():
         return None
-    dists = _condensed_tanimoto_distances(fps)
+    dists = _condensed_tanimoto_distances(fps, cancel_event=cancel_event)
+    if dists is None:
+        return None
     clusters = Butina.ClusterData(
         dists,
         nPts=n,
@@ -359,11 +364,12 @@ class ClusterWorker(QRunnable):
         oids: list[int] = []
         fps: list = []
         tot = max(len(self.rows), 1)
+        cancelled = False
 
         for i, (oid, mol) in enumerate(self.rows, start=1):
             if cancel_ev is not None and cancel_ev.is_set():
-                self.signals.cluster_failed.emit("Cancelled.")
-                return
+                cancelled = True
+                break
             try:
                 self.signals.tool_progress.emit("Clustering…", i, tot)
             except Exception:
@@ -381,6 +387,16 @@ class ClusterWorker(QRunnable):
                 logger.debug("Fingerprint conversion failed for oid=%s", oid, exc_info=True)
 
         if len(fps) < 2:
+            if cancelled and len(fps) == 1 and oids:
+                # Keep completed work: one processed row still gets a deterministic cluster label.
+                res = [(oids[0], {self.column_name: "0"})]
+                emit_partial_results_if_cancelled(self.signals, "Cluster", 1, tot, True)
+                self.signals.calculated.emit(res, [self.column_name])
+                self.signals.cluster_failed.emit("Cancelled.")
+                return
+            if cancelled:
+                self.signals.cluster_failed.emit("Cancelled.")
+                return
             self.signals.cluster_failed.emit(
                 "Need at least two rows with valid fingerprints in this scope to cluster."
             )
@@ -394,14 +410,14 @@ class ClusterWorker(QRunnable):
                 self.params,
                 X=X,
                 fps=fps,
-                cancel_event=cancel_ev,
+                cancel_event=None if cancelled else cancel_ev,
             )
         except Exception as e:
             logger.exception("Clustering fit failed")
             self.signals.cluster_failed.emit(str(e) or "Clustering failed.")
             return
 
-        if labels is None or (cancel_ev is not None and cancel_ev.is_set()):
+        if labels is None:
             self.signals.cluster_failed.emit("Cancelled.")
             return
 
@@ -415,7 +431,10 @@ class ClusterWorker(QRunnable):
             self.signals.tool_progress.emit("Clustering…", tot, tot)
         except Exception:
             pass
+        emit_partial_results_if_cancelled(self.signals, "Cluster", len(res), tot, cancelled)
         self.signals.calculated.emit(res, [self.column_name])
+        if cancelled:
+            self.signals.cluster_failed.emit("Cancelled.")
 
 
 class ClusterExploreWorker(QRunnable):
@@ -493,6 +512,15 @@ class ClusterExploreWorker(QRunnable):
 
         for ti, (method, params) in enumerate(trials):
             if cancel_ev is not None and cancel_ev.is_set():
+                try:
+                    self.signals.tool_progress.emit("Exploring clusters…", min(ti, n_trials), n_trials)
+                except Exception:
+                    pass
+                self.signals.cluster_explore_finished.emit(results)
+                try:
+                    self.signals.partial_results.emit("Cluster explore", len(results), n_trials)
+                except Exception:
+                    pass
                 self.signals.cluster_failed.emit("Cancelled.")
                 return
             try:
@@ -517,7 +545,13 @@ class ClusterExploreWorker(QRunnable):
                 )
                 continue
             if labels is None:
-                break
+                self.signals.cluster_explore_finished.emit(results)
+                try:
+                    self.signals.partial_results.emit("Cluster explore", len(results), n_trials)
+                except Exception:
+                    pass
+                self.signals.cluster_failed.emit("Cancelled.")
+                return
             stats = _summarize_partition(labels, X)
             sil = stats["silhouette"]
             results.append(

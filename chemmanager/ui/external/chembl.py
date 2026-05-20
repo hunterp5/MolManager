@@ -2,14 +2,19 @@
 
 from __future__ import annotations
 
+import logging
+from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass
 from typing import Any
 
 from PyQt5.QtCore import QObject, QRunnable, Qt, pyqtSignal
 from PyQt5.QtGui import QKeySequence
 from PyQt5.QtWidgets import (
+    QButtonGroup,
     QCheckBox,
     QDialog,
+    QDoubleSpinBox,
     QFormLayout,
     QGridLayout,
     QGroupBox,
@@ -18,16 +23,41 @@ from PyQt5.QtWidgets import (
     QLineEdit,
     QMessageBox,
     QPushButton,
+    QRadioButton,
     QShortcut,
     QSpinBox,
     QTabWidget,
     QTextEdit,
     QVBoxLayout,
-    QWidget,
 )
 
-from ..qt_widget_utils import apply_monospace_to_text_edit
+from ..qt_widget_utils import apply_monospace_to_text_edit, make_window_minimizable
+from ..strings import COLUMN_TANIMOTO_SIMILARITY
 from ..threadpool_access import start_runnable_on_app_pool
+
+
+@contextmanager
+def _quiet_chembl_console() -> Iterator[None]:
+    """Raise common HTTP/client loggers to WARNING while ChEMBL runs (fewer console lines)."""
+    names = (
+        "urllib3",
+        "urllib3.connectionpool",
+        "urllib3.util",
+        "urllib3.util.retry",
+        "requests.packages.urllib3",
+        "requests",
+        "chembl_webresource_client",
+    )
+    saved: list[tuple[logging.Logger, int]] = []
+    for name in names:
+        lg = logging.getLogger(name)
+        saved.append((lg, lg.level))
+        lg.setLevel(logging.WARNING)
+    try:
+        yield
+    finally:
+        for lg, level in saved:
+            lg.setLevel(level)
 
 
 @dataclass(frozen=True)
@@ -58,6 +88,16 @@ def _get_chembl_molecule_by_smiles(smiles: str) -> dict[str, Any] | None:
     return dict(res[0]) if res else None
 
 
+def _chembl_table_smiles(rec: dict[str, Any]) -> str:
+    """Canonical SMILES from a ChEMBL molecule record, or empty string."""
+    structs = rec.get("molecule_structures") or {}
+    if isinstance(structs, dict):
+        cs = structs.get("canonical_smiles")
+        if cs:
+            return str(cs).strip()
+    return ""
+
+
 def _extract_field_groups(rec: dict[str, Any], *, groups: dict[str, bool]) -> dict[str, str]:
     fields: dict[str, str] = {}
     if not rec:
@@ -86,8 +126,8 @@ def _extract_field_groups(rec: dict[str, Any], *, groups: dict[str, bool]) -> di
     if groups.get("properties", True):
         props = rec.get("molecule_properties") or {}
         if isinstance(props, dict):
-            wanted = groups.get("properties_selected", None)
-            if not wanted:
+            wanted = groups.get("properties_selected")
+            if wanted is None:
                 wanted = [
                     "full_mwt",
                     "alogp",
@@ -100,6 +140,8 @@ def _extract_field_groups(rec: dict[str, Any], *, groups: dict[str, bool]) -> di
                     "ro5_violations",
                     "qed_weighted",
                 ]
+            else:
+                wanted = list(wanted)
             key_to_out = {
                 "full_mwt": "MolecularWeight",
                 "alogp": "AlogP",
@@ -214,6 +256,7 @@ class _ChEMBLBatchWorker(QRunnable):
         activity_limit: int,
         target_limit: int,
         only_with_pchembl: bool,
+        similarity: tuple[float, int] | None = None,
     ):
         super().__init__()
         self.smiles_list = smiles_list
@@ -224,6 +267,7 @@ class _ChEMBLBatchWorker(QRunnable):
         self.activity_limit = activity_limit
         self.target_limit = target_limit
         self.only_with_pchembl = only_with_pchembl
+        self.similarity = similarity
         self.signals = _QuerySignals()
         self._cancel = False
 
@@ -231,10 +275,150 @@ class _ChEMBLBatchWorker(QRunnable):
         self._cancel = True
 
     def run(self) -> None:
+        with _quiet_chembl_console():
+            self._run_impl()
+
+    def _run_impl(self) -> None:
+        from chembl_webresource_client.new_client import new_client
+        from chembl_webresource_client.settings import Settings
+
         results: list[ChEMBLResult] = []
         logs: list[str] = []
         acts_rows: list[str] = ["SMILES\tChEMBL_ID\tpchembl_value\tstandard_type\tstandard_relation\tstandard_value\tstandard_units\tconfidence_score\tassay_chembl_id\ttarget_chembl_id\tactivity_id"]
         targ_rows: list[str] = ["ChEMBL_ID\ttarget_chembl_id\tpref_name\ttarget_type\torganism"]
+
+        if self.similarity is not None:
+            min_t, max_hits = self.similarity
+            q = (self.smiles_list[0] if self.smiles_list else "").strip()
+            max_hits = max(1, min(500, int(max_hits)))
+            api_t = max(70, min(100, int(round(float(min_t) * 100))))
+            if api_t != int(round(float(min_t) * 100)):
+                logs.append(
+                    f"Note: ChEMBL similarity filter accepts thresholds 70–100 only; "
+                    f"using {api_t} (Tanimoto ≥ {api_t / 100:.2f})."
+                )
+            settings = Settings.Instance()
+            prev_limit = settings.MAX_LIMIT
+            settings.MAX_LIMIT = min(1000, max(100, max_hits + 20))
+            try:
+                sim = new_client.similarity
+                raw_list = list(sim.filter(smiles=q, similarity=str(api_t)))
+            except Exception as e:
+                settings.MAX_LIMIT = prev_limit
+                logs.append(f"{q} | similarity ERROR: {e}")
+                self.signals.finished.emit(results, logs, "\n".join(acts_rows), "\n".join(targ_rows))
+                return
+            finally:
+                settings.MAX_LIMIT = prev_limit
+
+            def _chembl_similarity_sort_key(rec) -> float:
+                d = dict(rec) if not isinstance(rec, dict) else rec
+                try:
+                    return float(d.get("similarity") or 0.0)
+                except Exception:
+                    return -1.0
+
+            raw_list.sort(key=_chembl_similarity_sort_key, reverse=True)
+            raw_list = raw_list[:max_hits]
+            logs.append(
+                f"Similarity (ChEMBL): query={q!r}  min_Tanimoto≥{api_t / 100:.2f}  max_hits={max_hits}  "
+                f"retrieved={len(raw_list)}"
+            )
+            total = len(raw_list)
+            done = 0
+            for rec in raw_list:
+                if self._cancel:
+                    logs.append("Cancelled by user.")
+                    break
+                if not isinstance(rec, dict):
+                    rec = dict(rec)
+                done += 1
+                chembl_id = str(rec.get("molecule_chembl_id", "") or "")
+                table_smi = _chembl_table_smiles(rec) or q
+                self.signals.progress.emit(done, max(total, 1), table_smi)
+                fg = dict(self.field_groups)
+                fg["properties_selected"] = list(self.property_keys)
+                fields = _extract_field_groups(rec, groups=fg)
+                simv = rec.get("similarity")
+                if simv is not None:
+                    try:
+                        fields[COLUMN_TANIMOTO_SIMILARITY] = f"{float(simv) / 100.0:.4f}"
+                    except Exception:
+                        fields[COLUMN_TANIMOTO_SIMILARITY] = str(simv)
+
+                activities: list[dict[str, Any]] = []
+                targets: list[dict[str, Any]] = []
+                if self.get_activities and chembl_id:
+                    try:
+                        activities = _fetch_activities(
+                            chembl_id,
+                            limit=self.activity_limit,
+                            only_with_pchembl=self.only_with_pchembl,
+                        )
+                    except Exception as e:
+                        logs.append(f"{table_smi} | {chembl_id} | Activities ERROR: {e}")
+                        activities = []
+                if self.get_targets and activities:
+                    tids = [str(a.get("target_chembl_id", "") or "") for a in activities]
+                    tids = [t for t in tids if t]
+                    try:
+                        targets = _fetch_targets(tids, limit=self.target_limit)
+                    except Exception as e:
+                        logs.append(f"{table_smi} | {chembl_id} | Targets ERROR: {e}")
+                        targets = []
+                if activities:
+                    best = activities[0]
+                    if best.get("pchembl_value") not in (None, ""):
+                        fields["Best_pChEMBL"] = str(best.get("pchembl_value"))
+                    if best.get("standard_type") not in (None, ""):
+                        fields["Best_StandardType"] = str(best.get("standard_type"))
+                    if best.get("target_chembl_id") not in (None, ""):
+                        fields["Best_TargetChEMBL_ID"] = str(best.get("target_chembl_id"))
+
+                results.append(
+                    ChEMBLResult(
+                        chembl_id=chembl_id,
+                        smiles=table_smi,
+                        fields=fields,
+                        activities=activities,
+                        targets=targets,
+                    )
+                )
+                logs.append(f"{table_smi} | OK | ChEMBL_ID={chembl_id}")
+
+                for a in activities:
+                    acts_rows.append(
+                        "\t".join(
+                            [
+                                table_smi,
+                                chembl_id,
+                                str(a.get("pchembl_value", "") or ""),
+                                str(a.get("standard_type", "") or ""),
+                                str(a.get("standard_relation", "") or ""),
+                                str(a.get("standard_value", "") or ""),
+                                str(a.get("standard_units", "") or ""),
+                                str(a.get("confidence_score", "") or ""),
+                                str(a.get("assay_chembl_id", "") or ""),
+                                str(a.get("target_chembl_id", "") or ""),
+                                str(a.get("activity_id", "") or ""),
+                            ]
+                        )
+                    )
+                for t in targets:
+                    targ_rows.append(
+                        "\t".join(
+                            [
+                                chembl_id,
+                                str(t.get("target_chembl_id", "") or ""),
+                                str(t.get("pref_name", "") or ""),
+                                str(t.get("target_type", "") or ""),
+                                str(t.get("organism", "") or ""),
+                            ]
+                        )
+                    )
+
+            self.signals.finished.emit(results, logs, "\n".join(acts_rows), "\n".join(targ_rows))
+            return
 
         total = len(self.smiles_list)
         done = 0
@@ -253,6 +437,7 @@ class _ChEMBLBatchWorker(QRunnable):
                 logs.append(f"{smi} | No ChEMBL result")
                 continue
             chembl_id = str(rec.get("molecule_chembl_id", "") or "")
+            table_smi = _chembl_table_smiles(rec) or smi.strip()
             fg = dict(self.field_groups)
             fg["properties_selected"] = list(self.property_keys)
             fields = _extract_field_groups(rec, groups=fg)
@@ -289,14 +474,22 @@ class _ChEMBLBatchWorker(QRunnable):
                 if best.get("target_chembl_id") not in (None, ""):
                     fields["Best_TargetChEMBL_ID"] = str(best.get("target_chembl_id"))
 
-            results.append(ChEMBLResult(chembl_id=chembl_id, smiles=smi, fields=fields, activities=activities, targets=targets))
-            logs.append(f"{smi} | OK | ChEMBL_ID={chembl_id}")
+            results.append(
+                ChEMBLResult(
+                    chembl_id=chembl_id,
+                    smiles=table_smi,
+                    fields=fields,
+                    activities=activities,
+                    targets=targets,
+                )
+            )
+            logs.append(f"{table_smi} | OK | ChEMBL_ID={chembl_id}")
 
             for a in activities:
                 acts_rows.append(
                     "\t".join(
                         [
-                            smi,
+                            table_smi,
                             chembl_id,
                             str(a.get("pchembl_value", "") or ""),
                             str(a.get("standard_type", "") or ""),
@@ -362,9 +555,52 @@ class ChEMBLDialog(QDialog):
         top.addWidget(self.btn_sketch)
         root.addLayout(top)
 
+        mode_row = QHBoxLayout()
+        self.rb_chembl_identity = QRadioButton("Identity (SMILES lookup)")
+        self.rb_chembl_similarity = QRadioButton("Similarity (2D Tanimoto, ChEMBL)")
+        self.rb_chembl_identity.setChecked(True)
+        self._chembl_mode_group = QButtonGroup(self)
+        self._chembl_mode_group.addButton(self.rb_chembl_identity)
+        self._chembl_mode_group.addButton(self.rb_chembl_similarity)
+        mode_row.addWidget(self.rb_chembl_identity)
+        mode_row.addWidget(self.rb_chembl_similarity)
+        mode_row.addStretch()
+        root.addLayout(mode_row)
+
+        self.gb_sim = QGroupBox("Similarity parameters (ChEMBL)")
+        sim_form = QFormLayout(self.gb_sim)
+        self.spin_tc = QDoubleSpinBox()
+        self.spin_tc.setRange(0.30, 1.00)
+        self.spin_tc.setDecimals(2)
+        self.spin_tc.setSingleStep(0.05)
+        self.spin_tc.setValue(0.70)
+        self.spin_tc.setToolTip(
+            "Minimum Tanimoto similarity for ChEMBL cartridge search. "
+            "The public API only accepts thresholds from 0.70 to 1.00 (70–100); lower values are raised to 0.70."
+        )
+        sim_form.addRow("Min. Tanimoto:", self.spin_tc)
+        self.spin_max = QSpinBox()
+        self.spin_max.setRange(1, 500)
+        self.spin_max.setValue(25)
+        self.spin_max.setToolTip("Maximum number of similar molecules to process.")
+        sim_form.addRow("Max. structures:", self.spin_max)
+        self.gb_sim.setEnabled(False)
+        self.rb_chembl_similarity.toggled.connect(self.gb_sim.setEnabled)
+        root.addWidget(self.gb_sim)
+
         opts = QHBoxLayout()
         gb_fields = QGroupBox("Retrieve fields")
         f_lyt = QVBoxLayout(gb_fields)
+        btn_all_row = QHBoxLayout()
+        self.btn_chembl_all_fields = QPushButton("Retrieve all fields")
+        self.btn_chembl_all_fields.setToolTip(
+            "Enable identity, structures, every molecule property, activities, targets, "
+            "and the pChEMBL-only filter (heavier API usage)."
+        )
+        self.btn_chembl_all_fields.clicked.connect(self._chembl_select_all_fields)
+        btn_all_row.addWidget(self.btn_chembl_all_fields)
+        btn_all_row.addStretch()
+        f_lyt.addLayout(btn_all_row)
         top_fields = QHBoxLayout()
         self.chk_identity = QCheckBox("Identity")
         self.chk_identity.setChecked(True)
@@ -399,7 +635,7 @@ class ChEMBLDialog(QDialog):
             items = [(k, dict(self._prop_defs).get(k, k)) for k in keys]
             for i, (k, label) in enumerate(items):
                 cb = QCheckBox(label)
-                cb.setChecked(True)
+                cb.setChecked(False)
                 self.prop_checks[k] = cb
                 g.addWidget(cb, i // 2, i % 2)
             props_v.addWidget(gb)
@@ -416,17 +652,17 @@ class ChEMBLDialog(QDialog):
         gb_assoc = QGroupBox("Associations")
         aform = QFormLayout(gb_assoc)
         self.chk_activities = QCheckBox("Activities (bioactivity)")
-        self.chk_activities.setChecked(True)
+        self.chk_activities.setChecked(False)
         self.spin_act = QSpinBox()
         self.spin_act.setRange(0, 2000)
         self.spin_act.setValue(50)
         self.chk_targets = QCheckBox("Targets (from activities)")
-        self.chk_targets.setChecked(True)
+        self.chk_targets.setChecked(False)
         self.spin_targ = QSpinBox()
         self.spin_targ.setRange(0, 500)
         self.spin_targ.setValue(25)
         self.chk_only_pchembl = QCheckBox("Only activities with pChEMBL value")
-        self.chk_only_pchembl.setChecked(True)
+        self.chk_only_pchembl.setChecked(False)
         aform.addRow(self.chk_activities)
         aform.addRow("Max activities / molecule:", self.spin_act)
         aform.addRow(self.chk_targets)
@@ -467,6 +703,14 @@ class ChEMBLDialog(QDialog):
         self.btn_add.setEnabled(False)
         self.btn_add.clicked.connect(self._add_to_table)
         bottom.addWidget(self.btn_add)
+        self.btn_add_unique = QPushButton("Add unique structures only")
+        self.btn_add_unique.setEnabled(False)
+        self.btn_add_unique.setToolTip(
+            "Skip rows whose canonical SMILES already exists in the table, "
+            "and skip duplicates within this result set."
+        )
+        self.btn_add_unique.clicked.connect(self._add_unique_to_table)
+        bottom.addWidget(self.btn_add_unique)
         self.btn_cancel = QPushButton("Cancel")
         self.btn_cancel.setEnabled(False)
         self.btn_cancel.clicked.connect(self._cancel_query)
@@ -478,6 +722,38 @@ class ChEMBLDialog(QDialog):
         root.addLayout(bottom)
 
         QShortcut(QKeySequence("Ctrl+Return"), self, activated=self._run_query)
+        make_window_minimizable(self)
+
+    def _chembl_select_all_fields(self) -> None:
+        self.chk_identity.setChecked(True)
+        self.chk_structures.setChecked(True)
+        for cb in self.prop_checks.values():
+            cb.setChecked(True)
+        self.chk_activities.setChecked(True)
+        self.chk_targets.setChecked(True)
+        self.chk_only_pchembl.setChecked(True)
+
+    def _resolve_single_query_smiles(self) -> str | None:
+        if self.chk_only_selected.isChecked():
+            app = self.parent_app
+            if app is None:
+                QMessageBox.information(self, "ChEMBL", "Main application is not available.")
+                return None
+            try:
+                lst = app._selected_smiles_strings()
+            except Exception:
+                lst = []
+            if not lst:
+                QMessageBox.information(
+                    self, "ChEMBL", "Select one or more rows that have a SMILES value first."
+                )
+                return None
+            return lst[0].strip()
+        raw = (self.smiles.text() or "").strip()
+        if not raw:
+            QMessageBox.information(self, "ChEMBL", "Enter a SMILES string first.")
+            return None
+        return raw.split()[0].strip()
 
     def _parse_smiles_inputs(self) -> list[str]:
         raw = (self.smiles.text() or "").strip()
@@ -521,40 +797,60 @@ class ChEMBLDialog(QDialog):
         self.status.setText("SMILES loaded from sketcher — press Query when ready.")
 
     def _run_query(self) -> None:
-        if self.chk_only_selected.isChecked():
-            app = self.parent_app
-            if app is None:
-                QMessageBox.information(self, "ChEMBL", "Main application is not available.")
-                return
-            try:
-                smiles_list = app._selected_smiles_strings()
-            except Exception:
-                smiles_list = []
-            if not smiles_list:
-                QMessageBox.information(
-                    self, "ChEMBL", "Select one or more rows that have a SMILES value first."
-                )
-                return
-        else:
-            smiles_list = self._parse_smiles_inputs()
-            if not smiles_list:
-                QMessageBox.information(self, "ChEMBL", "Enter at least one SMILES string first.")
-                return
-
-        field_groups = {"identity": self.chk_identity.isChecked(), "structures": self.chk_structures.isChecked(), "properties": True}
         property_keys = [k for k, cb in self.prop_checks.items() if cb.isChecked()]
+        field_groups = {
+            "identity": self.chk_identity.isChecked(),
+            "structures": self.chk_structures.isChecked(),
+            "properties": bool(property_keys),
+        }
         get_acts = self.chk_activities.isChecked() and self.spin_act.value() > 0
         get_targs = self.chk_targets.isChecked() and self.spin_targ.value() > 0
+
+        similarity: tuple[float, int] | None = None
+        smiles_list: list[str]
+
+        if self.rb_chembl_similarity.isChecked():
+            one = self._resolve_single_query_smiles()
+            if not one:
+                return
+            smiles_list = [one]
+            similarity = (float(self.spin_tc.value()), int(self.spin_max.value()))
+        else:
+            if self.chk_only_selected.isChecked():
+                app = self.parent_app
+                if app is None:
+                    QMessageBox.information(self, "ChEMBL", "Main application is not available.")
+                    return
+                try:
+                    smiles_list = app._selected_smiles_strings()
+                except Exception:
+                    smiles_list = []
+                if not smiles_list:
+                    QMessageBox.information(
+                        self, "ChEMBL", "Select one or more rows that have a SMILES value first."
+                    )
+                    return
+            else:
+                smiles_list = self._parse_smiles_inputs()
+                if not smiles_list:
+                    QMessageBox.information(self, "ChEMBL", "Enter at least one SMILES string first.")
+                    return
 
         self._last = []
         self._activities_tsv = ""
         self._targets_tsv = ""
         self.btn_add.setEnabled(False)
+        self.btn_add_unique.setEnabled(False)
         self.btn_cancel.setEnabled(True)
         self.btn_query.setEnabled(False)
         self.chk_only_selected.setEnabled(False)
         self.btn_sketch.setEnabled(False)
-        self.status.setText(f"Starting ChEMBL queries… (N={len(smiles_list)})")
+        self.rb_chembl_identity.setEnabled(False)
+        self.rb_chembl_similarity.setEnabled(False)
+        self.gb_sim.setEnabled(False)
+        self.status.setText(
+            f"Starting ChEMBL {'similarity' if similarity else 'identity'} query… (N={len(smiles_list)})"
+        )
         self.tab_log.setPlainText("")
         self.tab_summary.setPlainText("")
         self.tab_acts.setPlainText("")
@@ -569,6 +865,7 @@ class ChEMBLDialog(QDialog):
             activity_limit=int(self.spin_act.value()),
             target_limit=int(self.spin_targ.value()),
             only_with_pchembl=bool(self.chk_only_pchembl.isChecked()),
+            similarity=similarity,
         )
         self._worker.signals.progress.connect(self._on_progress)
         self._worker.signals.finished.connect(self._on_finished)
@@ -592,10 +889,14 @@ class ChEMBLDialog(QDialog):
         self._targets_tsv = targets_tsv or ""
 
         self.btn_add.setEnabled(bool(self._last))
+        self.btn_add_unique.setEnabled(bool(self._last))
         self.btn_cancel.setEnabled(False)
         self.btn_query.setEnabled(True)
         self.chk_only_selected.setEnabled(True)
         self.btn_sketch.setEnabled(True)
+        self.rb_chembl_identity.setEnabled(True)
+        self.rb_chembl_similarity.setEnabled(True)
+        self.gb_sim.setEnabled(self.rb_chembl_similarity.isChecked())
         self.status.setText(f"Done. Success: {len(self._last)}  Total: {len(logs)}")
         self.tab_log.setPlainText("\n".join(str(x) for x in (logs or [])))
         self.tab_acts.setPlainText(self._activities_tsv)
@@ -608,19 +909,42 @@ class ChEMBLDialog(QDialog):
         self.tab_summary.setPlainText("\n".join(lines))
         self._worker = None
 
-    def _add_to_table(self) -> None:
+    def _add_unique_to_table(self) -> None:
+        self._add_to_table(unique_only=True)
+
+    def _add_to_table(self, *, unique_only: bool = False) -> None:
         if self.parent_app is None or not self._last:
             return
-        added = 0
-        for r in self._last:
-            try:
-                self.parent_app.add_row_from_external_record(r.smiles, r.fields)
-                added += 1
-            except Exception:
-                continue
         app = self.parent_app
+        existing = app.existing_canonical_structure_keys() if unique_only else set()
+        seen_batch: set[str] = set()
+        batch: list[tuple[str, dict[str, str]]] = []
+        skipped = 0
+        for r in self._last:
+            smi = (r.smiles or "").strip()
+            if unique_only:
+                key = app.canonical_structure_key_from_smiles(smi)
+                if key is None:
+                    skipped += 1
+                    continue
+                if key in existing or key in seen_batch:
+                    skipped += 1
+                    continue
+                seen_batch.add(key)
+            batch.append((smi, r.fields))
+        added = 0
+        if batch:
+            try:
+                added = app.add_rows_from_external_records_batch(batch)
+            except Exception:
+                skipped += len(batch)
+                added = 0
         if hasattr(app, "status_label"):
-            if added:
+            if unique_only:
+                app.status_label.setText(
+                    f"ChEMBL: added {added} unique row(s); skipped {skipped} (duplicates or errors)."
+                )
+            elif added:
                 app.status_label.setText(f"ChEMBL: added {added} row(s) to the table.")
             else:
                 app.status_label.setText("ChEMBL: no rows were added (see log in this window for errors).")

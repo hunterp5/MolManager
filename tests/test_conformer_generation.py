@@ -55,6 +55,19 @@ def test_unpack_confs_legacy_meta_only_cell():
     assert unpack_confs_blocks_json_b64(cell) is None
 
 
+def test_run_conformer_generation_single_lowest_energy():
+    m = Chem.MolFromSmiles("CCO")
+    p = ConformerGenParams.single_lowest_energy(force_field="UFF", random_seed=3, max_iterations=80)
+    out, meta = run_conformer_generation(m, p)
+    assert out is not None
+    assert meta.get("ok") is True
+    assert meta.get("n_requested") == 1
+    assert out.GetNumConformers() == 1
+    assert meta.get("n_kept") == 1
+    packed = pack_confs_cell(meta, out)
+    assert unpack_confs_blocks_json_b64(packed) is not None
+
+
 def test_run_conformer_generation_cancelled_before_work():
     m = Chem.MolFromSmiles("CCO")
     p = ConformerGenParams(

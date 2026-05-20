@@ -1,5 +1,5 @@
 """
-ChemManager application package.
+MolManager application package.
 
 This package was extracted from the original single-file prototype
 (`physical_property_calculator.py`) into a small, runnable application layout.

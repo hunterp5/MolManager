@@ -1,6 +1,6 @@
 """Filter panel cards (numeric range, substructure, text, category)."""
 
-from PyQt5.QtCore import Qt, pyqtSignal
+from PyQt5.QtCore import Qt, QTimer, pyqtSignal
 from PyQt5.QtWidgets import (
     QAbstractItemView,
     QComboBox,
@@ -18,103 +18,27 @@ from PyQt5.QtWidgets import (
 
 from rdkit import Chem
 
-from ...utils import safe_float
 
 # --- Filter cards (fixed height; panel scrolls) --------------------------------
-_FILTER_CARD_HEIGHT_RANGE = 218
-_FILTER_CARD_HEIGHT_SUBSTRUCTURE = 104
-_FILTER_CARD_HEIGHT_TEXT = 156
-_FILTER_CARD_HEIGHT_CATEGORY = 248
+_FILTER_CARD_HEIGHT_RANGE = 224
+_FILTER_CARD_HEIGHT_SUBSTRUCTURE = 108
+_FILTER_CARD_HEIGHT_TEXT = 164
+_FILTER_CARD_HEIGHT_CATEGORY = 258
 _FC_PAD = 6
 _FC_GAP = 4
 _FC_CTRL_H = 22
 _FC_SLIDER_H = 16
 _FC_LIST_MAX = 138
 
-_INVERT_BTN_IDLE = (
-    "QPushButton { padding: 2px 8px; font-size: 11px; border: 1px solid #c5cad3; border-radius: 3px; "
-    "background: #ffffff; color: #33353a; }"
-    "QPushButton:hover { background: #eef0f4; border-color: #aeb5c0; }"
-)
-_INVERT_BTN_ACTIVE = (
-    "QPushButton { padding: 2px 8px; font-size: 11px; border: 1px solid #3d6fb0; border-radius: 3px; "
-    "background: #4a7ec2; color: #ffffff; font-weight: 600; }"
-    "QPushButton:hover { background: #3f6eb0; border-color: #355f9a; }"
-)
-
-
-def _fc_card_stylesheet() -> str:
-    h = _FC_CTRL_H
-    return f"""
-    QFrame#FilterCard {{
-        background-color: #f4f5f7;
-        border: 1px solid #d5d8de;
-        border-radius: 5px;
-    }}
-    QFrame#FilterCard QLabel {{
-        font-size: 11px;
-        color: #33353a;
-        background: transparent;
-    }}
-    QFrame#FilterCard QComboBox, QFrame#FilterCard QLineEdit {{
-        min-height: {h}px;
-        max-height: {h}px;
-        font-size: 11px;
-        border: 1px solid #c9ced6;
-        border-radius: 3px;
-        padding: 1px 6px;
-        background: #ffffff;
-    }}
-    QFrame#FilterCard QComboBox::drop-down {{
-        subcontrol-origin: padding;
-        subcontrol-position: top right;
-        width: 18px;
-        border-left: 1px solid #c9ced6;
-    }}
-    QFrame#FilterCard QPushButton#fcRemove {{
-        min-width: 22px; max-width: 22px;
-        min-height: 22px; max-height: 22px;
-        color: #9e2a23;
-        background: #fdecea;
-        border: 1px solid #e59894;
-        border-radius: 4px;
-        font-size: 14px;
-        font-weight: bold;
-        padding: 0px;
-    }}
-    QFrame#FilterCard QPushButton#fcRemove:hover {{
-        background: #fad7d4;
-        border-color: #d67a76;
-    }}
-    QFrame#FilterCard QSlider::groove:horizontal {{
-        height: 4px;
-        background: #dde0e6;
-        border-radius: 2px;
-    }}
-    QFrame#FilterCard QSlider::handle:horizontal {{
-        width: 11px;
-        height: 11px;
-        margin: -5px 0;
-        background: #5b88c7;
-        border: 1px solid #4271b6;
-        border-radius: 5px;
-    }}
-    QFrame#FilterCard QListWidget {{
-        font-size: 11px;
-        border: 1px solid #c9ced6;
-        border-radius: 3px;
-        background: #ffffff;
-        outline: 0;
-    }}
-    """
-
-
 def _fc_install_card_shell(card: QFrame, height_px: int) -> None:
+    from ..theme import filter_card_stylesheet
+
     card.setObjectName("FilterCard")
     card.setFrameShape(QFrame.StyledPanel)
     card.setFixedHeight(height_px)
-    card.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Fixed)
-    card.setStyleSheet(_fc_card_stylesheet())
+    card.setMinimumWidth(0)
+    card.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+    card.setStyleSheet(filter_card_stylesheet())
 
 
 def style_filter_card_remove_button(btn: QPushButton) -> None:
@@ -127,10 +51,30 @@ def style_filter_card_remove_button(btn: QPushButton) -> None:
     btn.setDefault(False)
 
 
+def _fc_configure_column_combo(cb: QComboBox) -> None:
+    """Keep the combo within the filter panel; long names scroll in the dropdown."""
+    cb.setSizeAdjustPolicy(QComboBox.AdjustToMinimumContentsLength)
+    cb.setMinimumContentsLength(8)
+    cb.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+    cb.setMinimumWidth(0)
+
+
 def _fc_toggle_btn(btn: QPushButton) -> None:
+    from ..theme import polish_widget_property
+
+    btn.setObjectName("fcToggle")
     btn.setAutoDefault(False)
     btn.setDefault(False)
     btn.setFixedHeight(_FC_CTRL_H)
+    btn.setMinimumWidth(0)
+    btn.setSizePolicy(QSizePolicy.Minimum, QSizePolicy.Fixed)
+    polish_widget_property(btn, "fcActive", False)
+
+
+def _fc_set_toggle_active(btn: QPushButton, active: bool) -> None:
+    from ..theme import polish_widget_property
+
+    polish_widget_property(btn, "fcActive", bool(active))
 
 
 def _fc_center_button_pair(layout: QHBoxLayout, left: QPushButton, right: QPushButton) -> None:
@@ -164,10 +108,9 @@ class _FilterCardEnableInvertMixin:
     def _sync_invert_button_appearance(self) -> None:
         if self._invert_on:
             self.invert_btn.setText("Inverted")
-            self.invert_btn.setStyleSheet(_INVERT_BTN_ACTIVE)
         else:
             self.invert_btn.setText("Invert")
-            self.invert_btn.setStyleSheet(_INVERT_BTN_IDLE)
+        _fc_set_toggle_active(self.invert_btn, self._invert_on)
 
     def _on_invert_clicked(self) -> None:
         self._invert_on = not self._invert_on
@@ -177,10 +120,9 @@ class _FilterCardEnableInvertMixin:
     def _sync_enable_button_appearance(self) -> None:
         if self._filter_enabled_on:
             self.enable_btn.setText("On")
-            self.enable_btn.setStyleSheet(_INVERT_BTN_ACTIVE)
         else:
             self.enable_btn.setText("Off")
-            self.enable_btn.setStyleSheet(_INVERT_BTN_IDLE)
+        _fc_set_toggle_active(self.enable_btn, self._filter_enabled_on)
 
     def _on_enable_clicked(self) -> None:
         self._filter_enabled_on = not self._filter_enabled_on
@@ -199,6 +141,17 @@ class _FilterCardEnableInvertMixin:
         self._invert_on = bool(inverted)
         self._sync_invert_button_appearance()
 
+    def refresh_theme_styles(self) -> None:
+        """Re-apply toggle state after the card stylesheet changes (theme switch)."""
+        self._sync_enable_button_appearance()
+        self._sync_invert_button_appearance()
+        sync_case = getattr(self, "_sync_case_button_appearance", None)
+        if callable(sync_case):
+            sync_case()
+        sync_partial = getattr(self, "_sync_partial_button_appearance", None)
+        if callable(sync_partial):
+            sync_partial()
+
 
 class FilterCard(_FilterCardEnableInvertMixin, QFrame):
     changed = pyqtSignal()
@@ -215,6 +168,7 @@ class FilterCard(_FilterCardEnableInvertMixin, QFrame):
         h = QHBoxLayout()
         h.setSpacing(_FC_GAP)
         self.cb = QComboBox()
+        _fc_configure_column_combo(self.cb)
         self.cb.addItems(props)
         if initial_property and self.cb.findText(initial_property) >= 0:
             self.cb.setCurrentText(initial_property)
@@ -229,7 +183,8 @@ class FilterCard(_FilterCardEnableInvertMixin, QFrame):
         min_lyt.setSpacing(_FC_GAP)
         min_lyt.addWidget(QLabel("Min"))
         self.min_edit = QLineEdit()
-        self.min_edit.setFixedWidth(72)
+        self.min_edit.setMinimumWidth(48)
+        self.min_edit.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         self.min_edit.editingFinished.connect(self.sync_from_text)
         min_lyt.addWidget(self.min_edit, 1)
         l.addLayout(min_lyt)
@@ -237,13 +192,15 @@ class FilterCard(_FilterCardEnableInvertMixin, QFrame):
         self.s_min.setFixedHeight(_FC_SLIDER_H)
         self.s_min.sliderPressed.connect(lambda: setattr(self, "_active_slider", "min"))
         self.s_min.sliderReleased.connect(lambda: setattr(self, "_active_slider", None))
-        self.s_min.valueChanged.connect(lambda: self.sync_from_slider("min"))
+        self.s_min.valueChanged.connect(lambda: self._sync_slider_edits("min"))
+        self.s_min.sliderReleased.connect(self._commit_slider_filter)
         l.addWidget(self.s_min)
         max_lyt = QHBoxLayout()
         max_lyt.setSpacing(_FC_GAP)
         max_lyt.addWidget(QLabel("Max"))
         self.max_edit = QLineEdit()
-        self.max_edit.setFixedWidth(72)
+        self.max_edit.setMinimumWidth(48)
+        self.max_edit.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         self.max_edit.editingFinished.connect(self.sync_from_text)
         max_lyt.addWidget(self.max_edit, 1)
         l.addLayout(max_lyt)
@@ -251,7 +208,8 @@ class FilterCard(_FilterCardEnableInvertMixin, QFrame):
         self.s_max.setFixedHeight(_FC_SLIDER_H)
         self.s_max.sliderPressed.connect(lambda: setattr(self, "_active_slider", "max"))
         self.s_max.sliderReleased.connect(lambda: setattr(self, "_active_slider", None))
-        self.s_max.valueChanged.connect(lambda: self.sync_from_slider("max"))
+        self.s_max.valueChanged.connect(lambda: self._sync_slider_edits("max"))
+        self.s_max.sliderReleased.connect(self._commit_slider_filter)
         l.addWidget(self.s_max)
         self._fc_install_enable_invert_row(l, "Show rows outside the min/max range.")
         self.refresh_limits()
@@ -291,7 +249,8 @@ class FilterCard(_FilterCardEnableInvertMixin, QFrame):
         self.blockSignals(False)
         self.changed.emit()
 
-    def sync_from_slider(self, which: str | None = None):
+    def _sync_slider_edits(self, which: str | None = None) -> None:
+        """Update min/max text while dragging without re-filtering the table."""
         active = which or getattr(self, "_active_slider", None)
         vmin = self.s_min.value()
         vmax = self.s_max.value()
@@ -307,6 +266,13 @@ class FilterCard(_FilterCardEnableInvertMixin, QFrame):
         fmt = "{:.0f}" if self.scale == 1 else "{:.2f}"
         self.min_edit.setText(fmt.format(vmin / self.scale))
         self.max_edit.setText(fmt.format(vmax / self.scale))
+
+    def _commit_slider_filter(self) -> None:
+        self._sync_slider_edits(None)
+        self.changed.emit()
+
+    def sync_from_slider(self, which: str | None = None):
+        self._sync_slider_edits(which)
         self.changed.emit()
 
     def sync_from_text(self):
@@ -366,6 +332,8 @@ class SubstructureFilterCard(_FilterCardEnableInvertMixin, QFrame):
         row.setSpacing(_FC_GAP)
         self.smarts_edit = QLineEdit()
         self.smarts_edit.setPlaceholderText("SMARTS pattern, e.g. c1ccccc1")
+        self.smarts_edit.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        self.smarts_edit.setMinimumWidth(0)
         self.smarts_edit.textChanged.connect(self._on_change)
         row.addWidget(self.smarts_edit, 1, Qt.AlignVCenter)
         rem = QPushButton()
@@ -437,6 +405,7 @@ class TextFilterCard(_FilterCardEnableInvertMixin, QFrame):
         row = QHBoxLayout()
         row.setSpacing(_FC_GAP)
         self.cb = QComboBox()
+        _fc_configure_column_combo(self.cb)
         self.cb.addItems(columns)
         self.cb.currentTextChanged.connect(lambda _t: self.changed.emit())
         row.addWidget(self.cb, 1, Qt.AlignVCenter)
@@ -446,8 +415,13 @@ class TextFilterCard(_FilterCardEnableInvertMixin, QFrame):
         row.addWidget(rem, 0, Qt.AlignVCenter)
         l.addLayout(row)
         self.text_edit = QLineEdit()
+        self.text_edit.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        self.text_edit.setMinimumWidth(0)
         self._sync_match_placeholder()
-        self.text_edit.textChanged.connect(lambda _t: self.changed.emit())
+        self._text_filter_timer = QTimer(self)
+        self._text_filter_timer.setSingleShot(True)
+        self._text_filter_timer.timeout.connect(self.changed.emit)
+        self.text_edit.textChanged.connect(self._schedule_text_filter_changed)
         l.addWidget(self.text_edit)
         opt = QHBoxLayout()
         opt.setSpacing(_FC_GAP)
@@ -465,6 +439,9 @@ class TextFilterCard(_FilterCardEnableInvertMixin, QFrame):
         l.addLayout(opt)
         self._fc_install_enable_invert_row(l, "Invert matching rows.")
 
+    def _schedule_text_filter_changed(self, _text: str = "") -> None:
+        self._text_filter_timer.start(280)
+
     def _sync_match_placeholder(self) -> None:
         if self._partial_match:
             self.text_edit.setPlaceholderText("Match substring (empty = no filter)")
@@ -474,10 +451,9 @@ class TextFilterCard(_FilterCardEnableInvertMixin, QFrame):
     def _sync_case_button_appearance(self) -> None:
         if self._case_sensitive:
             self.case_btn.setText("Case")
-            self.case_btn.setStyleSheet(_INVERT_BTN_ACTIVE)
         else:
             self.case_btn.setText("Ignore case")
-            self.case_btn.setStyleSheet(_INVERT_BTN_IDLE)
+        _fc_set_toggle_active(self.case_btn, self._case_sensitive)
 
     def _on_case_clicked(self) -> None:
         self._case_sensitive = not self._case_sensitive
@@ -487,10 +463,9 @@ class TextFilterCard(_FilterCardEnableInvertMixin, QFrame):
     def _sync_partial_button_appearance(self) -> None:
         if self._partial_match:
             self.partial_btn.setText("Partial")
-            self.partial_btn.setStyleSheet(_INVERT_BTN_ACTIVE)
         else:
             self.partial_btn.setText("Exact")
-            self.partial_btn.setStyleSheet(_INVERT_BTN_IDLE)
+        _fc_set_toggle_active(self.partial_btn, self._partial_match)
 
     def _on_partial_clicked(self) -> None:
         self._partial_match = not self._partial_match
@@ -591,7 +566,7 @@ class CategoryFilterCard(_FilterCardEnableInvertMixin, QFrame):
         title_row = QHBoxLayout()
         title_row.setSpacing(_FC_GAP)
         title = QLabel("Category")
-        title.setStyleSheet("font-weight: 600; font-size: 11px; color: #1a1c21; background: transparent;")
+        title.setObjectName("fcSectionTitle")
         title_row.addWidget(title, 0, Qt.AlignVCenter)
         title_row.addStretch(1)
         rem = QPushButton()
@@ -602,19 +577,24 @@ class CategoryFilterCard(_FilterCardEnableInvertMixin, QFrame):
         row = QHBoxLayout()
         row.setSpacing(_FC_GAP)
         self.cb = QComboBox()
+        _fc_configure_column_combo(self.cb)
         self.cb.addItems(columns)
         self.cb.currentTextChanged.connect(self._on_column_changed)
         row.addWidget(self.cb, 1, Qt.AlignVCenter)
         ref = QPushButton("Refresh")
+        ref.setObjectName("fcRefresh")
         ref.setToolTip("Reload values for this column.")
         ref.clicked.connect(lambda: self._populate_list())
-        _fc_toggle_btn(ref)
-        ref.setStyleSheet(_INVERT_BTN_IDLE)
+        ref.setAutoDefault(False)
+        ref.setDefault(False)
+        ref.setFixedHeight(_FC_CTRL_H)
         row.addWidget(ref, 0, Qt.AlignVCenter)
         l.addLayout(row)
         self.list_widget = QListWidget()
         self.list_widget.setSelectionMode(QAbstractItemView.NoSelection)
         self.list_widget.setMaximumHeight(_FC_LIST_MAX)
+        self.list_widget.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        self.list_widget.setMinimumWidth(0)
         # Cached for ``row_matches`` during a single ``apply_filters`` pass (avoid O(rows × list) work).
         self._category_checked_cache: frozenset[str] | None = None
         self._category_n_checkable_cache: int | None = None
@@ -646,11 +626,18 @@ class CategoryFilterCard(_FilterCardEnableInvertMixin, QFrame):
         self._category_n_checkable_cache = n_checkable
 
     def _on_column_changed(self, _t: str) -> None:
-        self._populate_list()
+        QTimer.singleShot(0, lambda: self._populate_list())
 
     def set_column(self, name: str) -> None:
         if name and self.cb.findText(name) >= 0:
             self.cb.setCurrentText(name)
+
+    def column_name(self) -> str:
+        return (self.cb.currentText() or "").strip()
+
+    def checked_values(self) -> frozenset[str]:
+        self._ensure_category_filter_cache()
+        return self._category_checked_cache or frozenset()
 
     def _role_value(self, item: QListWidgetItem) -> str:
         d = item.data(Qt.UserRole)
@@ -667,15 +654,23 @@ class CategoryFilterCard(_FilterCardEnableInvertMixin, QFrame):
             self.list_widget.blockSignals(False)
             self.changed.emit()
             return
-        seen: set[str] = set()
         ordered: list[str] = []
-        for r in range(self.app._table_model.rowCount()):
-            v = self.app._table_model.value_for_header(r, prop) or ""
-            if v not in seen:
-                seen.add(v)
-                ordered.append(v)
-        ordered.sort(key=lambda x: x.lower())
         cap = 2000
+        ensure_sqlite = getattr(self.app, "_ensure_sqlite_store_current", None)
+        store = getattr(self.app, "_sqlite_store", None)
+        sqlite_ready = True
+        if callable(ensure_sqlite):
+            sqlite_ready = ensure_sqlite()
+        if sqlite_ready and store is not None and prop in store.headers:
+            ordered = store.distinct_values(prop, limit=cap + 1)
+        else:
+            seen: set[str] = set()
+            for r in range(self.app._table_model.rowCount()):
+                v = self.app._table_model.value_for_header(r, prop) or ""
+                if v not in seen:
+                    seen.add(v)
+                    ordered.append(v)
+            ordered.sort(key=lambda x: x.lower())
         truncated = len(ordered) > cap
         for v in ordered[:cap]:
             label = "(blank)" if v == "" else v

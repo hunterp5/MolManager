@@ -1,4 +1,4 @@
-"""R-group decomposition (Tools → R Group Decomposition)."""
+"""Core-based decomposition (Tools → Core-Based Decomposition)."""
 
 from __future__ import annotations
 
@@ -21,16 +21,16 @@ def _rgroup_decomp_failure_message(exc: BaseException) -> str:
     low = msg.lower()
     if "could not prepare" in low and "core" in low:
         return (
-            "RDKit could not prepare the core for R-group decomposition. "
+            "RDKit could not prepare the core for core-based decomposition. "
             "Check that dummy atoms ([*], [1*], …) label attachment sites correctly and that "
             "the pattern is valid SMARTS (or try a simpler core)."
         )
     if "invariant violation" in low and "core" in low:
         return (
-            "R-group decomposition failed while processing the core. "
+            "Core-based decomposition failed while processing the core. "
             "Verify the core SMARTS/SMILES and R-group dummy labels match your row structures."
         )
-    return msg or "R-group decomposition failed."
+    return msg or "Core-based decomposition failed."
 
 
 def _rg_col_sort_key(k: str) -> tuple:
@@ -114,7 +114,7 @@ class RGroupDecompositionWorker(QRunnable):
         mols = [m for _, m in self.data]
         tot = max(len(mols), 1)
         try:
-            self.signals.tool_progress.emit("R-Group decomposition…", 0, tot)
+            self.signals.tool_progress.emit("Core-based decomposition…", 0, tot)
         except Exception:
             pass
 

@@ -101,9 +101,8 @@ TOOLBAR_ELEMENT_SYMBOLS: tuple[str, ...] = (
 # Pixel → model distance scale for 2D stereo perception (bond dirs + coordinates).
 SKETCH_COORD_SCALE = 40.0
 
-# Median bond length (px) cap after RDKit load + viewport fit — publication-style scale
-# (ACS-style figures use relatively short bonds vs large window fills).
-ACS_PUBLICATION_MEDIAN_BOND_PX = 22.0
+# Canonical median bond length (px) for hand-drawn bonds, ring templates, RDKit import, and ACS line weights.
+SKETCH_MEDIAN_BOND_PX = 60
 # Half-width (Å-like units in draw space) at the wide end of wedge / hash triangles.
 WEDGE_TRI_HALF_WIDTH = 8.0
 

@@ -1,7 +1,7 @@
 """
 Chemical sketcher UI split across ``constants``, ``bonds``, ``wildcards``, ``chem``, ``sketch_graph``, ``sketch_rdkit``, ``widget``, and ``dialog``.
 
-Public imports match the former ``chemmanager.ui.sketcher`` module path.
+Public imports match the former ``MolManager.ui.sketcher`` module path.
 
 **Stereochemistry:** single-bond wedge/hash encode tetrahedral configuration (narrow end = stereocenter).
 Alkene **E/Z** is inferred from 2D geometry in ``alkene_stereo``. Tautomers, atropisomers, and arbitrary

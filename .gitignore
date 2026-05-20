@@ -39,9 +39,16 @@ htmlcov/
 # IDE (machine-local; keep .cursor/rules if you version team rules)
 .idea/
 
+# Optional CLI binaries placed under resources/bin (keep README + .gitkeep)
+chemmanager/resources/bin/**/*
+!chemmanager/resources/bin/**/
+!chemmanager/resources/bin/**/.gitkeep
+
 # Local large or throwaway inputs at repo root (remove lines if you want these tracked)
 fda_approved_full.SDF
 export_test.sdf
+BindingDB_*.sdf
+BindingDB_*.SDF
 
 # Editor / OS junk
 .~lock.*

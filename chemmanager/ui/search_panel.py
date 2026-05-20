@@ -1,0 +1,112 @@
+"""Multi-row in-table search bar widgets."""
+
+from __future__ import annotations
+
+from collections.abc import Callable
+
+from PyQt5.QtCore import Qt
+from PyQt5.QtWidgets import (
+    QCheckBox,
+    QComboBox,
+    QHBoxLayout,
+    QLabel,
+    QLineEdit,
+    QPushButton,
+    QSizePolicy,
+    QWidget,
+)
+
+_PLACEHOLDER_TEXT = (
+    'Match this column: e.g. >10, "eth*", NOT blank. Quote string text ("like this") so '
+    "&, |, and comma are not treated as operators. Press Enter to search."
+)
+_PLACEHOLDER_SUBSTRUCTURE = (
+    "Substructure (SMILES/SMARTS), e.g. c1ccccc1 or [OH]. Prefix NOT, !, or - to exclude. "
+    "& or comma combines terms. Press Enter."
+)
+
+
+class SearchCriterionRow(QWidget):
+    """One column + query line; optional glue, Add/Remove, and per-row search options."""
+
+    def __init__(
+        self,
+        parent: QWidget | None = None,
+        *,
+        show_remove: bool = False,
+        show_glue: bool = False,
+        show_add: bool = False,
+        on_add: Callable[[], None] | None = None,
+        on_remove: Callable[[], None] | None = None,
+    ) -> None:
+        super().__init__(parent)
+        lay = QHBoxLayout(self)
+        lay.setContentsMargins(0, 0, 0, 0)
+        lay.setSpacing(6)
+
+        self.remove_btn = QPushButton("−")
+        self.remove_btn.setFixedWidth(28)
+        self.remove_btn.setVisible(show_remove)
+        self.remove_btn.setToolTip("Remove this search row.")
+        if on_remove is not None:
+            self.remove_btn.clicked.connect(on_remove)
+        lay.addWidget(self.remove_btn)
+
+        self.glue_combo = QComboBox()
+        self.glue_combo.addItem("AND", "and")
+        self.glue_combo.addItem("OR", "or")
+        self.glue_combo.setFixedWidth(58)
+        self.glue_combo.setVisible(show_glue)
+        self.glue_combo.setToolTip("Combine this criterion with the row above (AND or OR).")
+        lay.addWidget(self.glue_combo)
+
+        self.add_btn = QPushButton("Add")
+        self.add_btn.setVisible(show_add)
+        self.add_btn.setToolTip("Add another column query below.")
+        if on_add is not None:
+            self.add_btn.clicked.connect(on_add)
+        lay.addWidget(self.add_btn)
+
+        lay.addWidget(QLabel("Column:"))
+        self.col_combo = QComboBox()
+        self.col_combo.setMinimumWidth(140)
+        lay.addWidget(self.col_combo)
+
+        self.query_edit = QLineEdit()
+        self.query_edit.setPlaceholderText(_PLACEHOLDER_TEXT)
+        self.query_edit.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        lay.addWidget(self.query_edit, 1)
+
+        self.partial_cb = QCheckBox("Partial match")
+        self.partial_cb.setChecked(True)
+        self.partial_cb.setToolTip(
+            "Substring match (and * ? wildcards). Off = whole cell must match."
+        )
+        lay.addWidget(self.partial_cb)
+
+        self.case_cb = QCheckBox("Case sensitive")
+        self.case_cb.setToolTip("When on, letter case must match.")
+        lay.addWidget(self.case_cb)
+
+        self.substructure_cb = QCheckBox("Substructure")
+        self.substructure_cb.setToolTip(
+            "Match structures with SMARTS/SMILES instead of column text."
+        )
+        self.substructure_cb.toggled.connect(self._on_substructure_toggled)
+        lay.addWidget(self.substructure_cb)
+
+    def _on_substructure_toggled(self, on: bool) -> None:
+        self.partial_cb.setEnabled(not on)
+        self.case_cb.setEnabled(not on)
+        self.query_edit.setPlaceholderText(_PLACEHOLDER_SUBSTRUCTURE if on else _PLACEHOLDER_TEXT)
+
+    def copy_options_from(self, other: SearchCriterionRow) -> None:
+        """Mirror checkbox state when adding another row."""
+        self.partial_cb.setChecked(other.partial_cb.isChecked())
+        self.case_cb.setChecked(other.case_cb.isChecked())
+        self.substructure_cb.setChecked(other.substructure_cb.isChecked())
+
+    def glue(self) -> str:
+        """``and`` or ``or`` (only meaningful when the glue control is visible)."""
+        data = self.glue_combo.currentData()
+        return data if data in ("and", "or") else "and"

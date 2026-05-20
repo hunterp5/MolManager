@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import re
-from typing import Any
 
 from PyQt5.QtCore import QPoint, Qt, QTimer
 from PyQt5.QtGui import QCursor, QFont, QKeySequence
@@ -28,6 +27,7 @@ from rdkit import Chem
 
 from ...workers import ExportWorker
 
+from ..qt_widget_utils import make_window_minimizable
 from .constants import SKETCH_ELEMENT_SYMBOLS, TOOLBAR_ELEMENT_SYMBOLS, WILDCARD_ELEMENT
 from .widget import SketchWidget
 
@@ -134,13 +134,13 @@ class SketcherDialog(QDialog):
 
         view_menu = menubar.addMenu("View")
         zoom_in_act = QAction("Zoom in", self)
-        zoom_in_act.setToolTip("Scale the structure up about the canvas center (undo: Ctrl+Z).")
+        zoom_in_act.setToolTip("Zoom in (bonds and labels scale together; does not change the sketch coordinates).")
         zoom_in_act.triggered.connect(self._on_view_zoom_in)
         zoom_in_act.setShortcut(QKeySequence.ZoomIn)
         zoom_in_act.setShortcutContext(Qt.WindowShortcut)
         view_menu.addAction(zoom_in_act)
         zoom_out_act = QAction("Zoom out", self)
-        zoom_out_act.setToolTip("Scale the structure down about the canvas center (undo: Ctrl+Z).")
+        zoom_out_act.setToolTip("Zoom out (bonds and labels scale together; does not change the sketch coordinates).")
         zoom_out_act.triggered.connect(self._on_view_zoom_out)
         zoom_out_act.setShortcut(QKeySequence.ZoomOut)
         zoom_out_act.setShortcutContext(Qt.WindowShortcut)
@@ -347,6 +347,7 @@ class SketcherDialog(QDialog):
         sc_paste_sel = QShortcut(QKeySequence.Paste, self)
         sc_paste_sel.setContext(Qt.WindowShortcut)
         sc_paste_sel.activated.connect(self._shortcut_paste_selection)
+        make_window_minimizable(self)
 
     def _sync_mode_menu_checks(self) -> None:
         if not getattr(self, "_act_mode_erase", None):

@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 from PyQt5.QtCore import Qt
 from PyQt5.QtGui import QCloseEvent
@@ -25,7 +25,8 @@ from PyQt5.QtWidgets import (
 
 from rdkit import Chem
 
-from ...workers import ClusterExploreWorker, ClusterWorker
+from ...workers import ClusterExploreWorker, ClusterWorker, SIMILARITY_FP_TYPE_LABELS
+from ..qt_widget_utils import make_window_minimizable
 from .scope import selection_scope_checked
 
 
@@ -65,7 +66,7 @@ class ClusterDialog(QDialog):
         fp_row.setSpacing(6)
         fp_row.addWidget(QLabel("Fingerprint:"))
         self.fp_combo = QComboBox()
-        self.fp_combo.addItems(["Morgan (r=2, n=1024)", "RDK (2048)", "MACCS (166)"])
+        self.fp_combo.addItems(SIMILARITY_FP_TYPE_LABELS)
         fp_row.addWidget(self.fp_combo, 1)
         root.addLayout(fp_row)
 
@@ -244,6 +245,7 @@ class ClusterDialog(QDialog):
         self._refresh_structure_sources()
         self.adjustSize()
         self._active_cluster_job_id: str | None = None
+        make_window_minimizable(self)
 
     def closeEvent(self, event: QCloseEvent) -> None:
         self._disconnect_pq_thread_finished()
@@ -376,40 +378,10 @@ class ClusterDialog(QDialog):
         self.src_combo.clear()
         if self.parent_app is None:
             return
-        candidates = ["Structure"] + self.parent_app._data_headers_confirmed_for_chemistry_tools()
-        self.src_combo.addItems(candidates)
+        self.src_combo.addItems(self.parent_app.chemistry_tool_structure_sources())
 
     def _collect_table_mols(self, src: str, only_selected: bool) -> list[tuple[int, Chem.Mol]]:
-        allowed = self.parent_app._selected_oids_set() if only_selected else None
-        col = None if src == "Structure" else self.parent_app.headers.index(src)
-        data: list[tuple[int, Chem.Mol]] = []
-        for r in range(self.parent_app._table_model.rowCount()):
-            t0 = self.parent_app._table_model.cell_text(r, 0)
-            if not t0.isdigit():
-                continue
-            oid = int(t0)
-            if allowed is not None and oid not in allowed:
-                continue
-            if src == "Structure":
-                mol = self.parent_app.mols.get(oid)
-                if mol is None:
-                    mol = self.parent_app._mol_for_structure_row(r)
-            else:
-                if self.parent_app._table_model.is_pixmap_data_column(src):
-                    mol = self.parent_app.mols.get(oid)
-                    if mol is None:
-                        raw = self.parent_app._table_model.backing_value_for_row_header(r, src)
-                        mol = self.parent_app._mol_from_structure_text(raw) if raw else None
-                    if mol is None:
-                        mol = self.parent_app._mol_for_structure_row(r)
-                else:
-                    raw = self.parent_app._table_cell_text(r, col)
-                    mol = self.parent_app._mol_from_structure_text(raw)
-                if mol is not None:
-                    self.parent_app.mols[oid] = mol
-            if mol is not None:
-                data.append((oid, mol))
-        return data
+        return self.parent_app.collect_scoped_table_mols(src, only_selected=only_selected)
 
     def _unique_cluster_column(self) -> str:
         base = "Cluster"

@@ -1,29 +1,14 @@
 from __future__ import annotations
 
-import json
-import re
-import subprocess
-import sys
-import tempfile
-import time
 
-from PyQt5.QtCore import QItemSelection, QItemSelectionModel, Qt
-from PyQt5.QtGui import QImage, QKeySequence, QPixmap
+from PyQt5.QtCore import QEventLoop, QItemSelection, QItemSelectionModel, Qt, QTimer
 from PyQt5.QtWidgets import (
     QAbstractItemView,
-    QAction,
     QApplication,
-    QFileDialog,
-    QHBoxLayout,
+    QDialog,
     QInputDialog,
-    QLabel,
-    QMainWindow,
     QMenu,
     QMessageBox,
-    QPushButton,
-    QStackedWidget,
-    QVBoxLayout,
-    QWidget,
 )
 
 from rdkit import Chem
@@ -33,20 +18,23 @@ from ...confs_codec import (
     resolve_blocks_b64_for_viewer,
     rehydrate_v1_confs_cell,
 )
+from ...config import load_config
 from ...utils import (
     looks_like_mol_block,
     mol_to_canonical_smiles,
     parse_molecule_from_cell_text,
     safe_mol_prop_string,
 )
+from ..table_selection import item_selection_for_view_rows, merge_sorted_row_indices
 from ..compound_table_model import CompoundTableModel
 from ..singleton_modeless_dialog import reuse_or_show_modeless_singleton
 from ..strings import TOOL_RENDER_2D
-from ..widgets import CategoryFilterCard, FilterCard, SubstructureFilterCard, TextFilterCard
+from ..widgets import CategoryFilterCard, FilterCard, TextFilterCard
 
 from ..filters import FilterPanelMixin
 from .table_search_mixin import TableSearchMixin
 from .table_undo_commands import (
+    DeleteRowSnapshot,
     UndoCellTextChangeCommand,
     UndoDeleteColumnCommand,
     UndoDeleteRowsCommand,
@@ -57,6 +45,60 @@ from .table_undo_commands import (
 
 
 class TableUIMixin(TableSearchMixin, FilterPanelMixin):
+    def _open_column_color_dialog(self, col: int) -> None:
+        if col < 2 or col >= len(self.headers):
+            return
+        header_name = self.headers[col]
+        if self._table_model.is_pixmap_data_column(header_name):
+            return
+        from ..dialogs.column_color import ColumnColorDialog
+
+        bounds = self._table_model.numeric_bounds_by_column().get(header_name, {})
+        dlg = ColumnColorDialog(
+            self,
+            header_name=header_name,
+            numeric_bounds=bounds,
+            current_mode=self._table_model.column_color_mode(header_name),
+            current_spec=self._table_model.column_color_rule_spec(header_name),
+        )
+        if dlg.exec_() != QDialog.Accepted:
+            return
+        cfg = dlg.result_config()
+        mode = cfg.get("mode", "off")
+        if mode == "numeric":
+            self._table_model.set_column_color_numeric_gradient(
+                header_name,
+                min_value=float(cfg.get("min", 0.0)),
+                max_value=float(cfg.get("max", 1.0)),
+                low_color=cfg["low_color"],
+                high_color=cfg["high_color"],
+                alpha=int(cfg.get("alpha", 96)),
+            )
+            self.status_label.setText(f"Coloring applied: {header_name} (numeric gradient).")
+            return
+        if mode == "categorical":
+            self._table_model.set_column_color_categorical(
+                header_name,
+                alpha=int(cfg.get("alpha", 88)),
+            )
+            self.status_label.setText(f"Coloring applied: {header_name} (categorical).")
+            return
+        if mode == "numeric3":
+            self._table_model.set_column_color_three_point_gradient(
+                header_name,
+                min_value=float(cfg.get("min", 0.0)),
+                mid_value=float(cfg.get("mid", 0.5)),
+                max_value=float(cfg.get("max", 1.0)),
+                low_color=cfg["low_color"],
+                mid_color=cfg["mid_color"],
+                high_color=cfg["high_color"],
+                alpha=int(cfg.get("alpha", 96)),
+            )
+            self.status_label.setText(f"Coloring applied: {header_name} (3-color gradient).")
+            return
+        self._table_model.clear_column_coloring(header_name)
+        self.status_label.setText(f"Coloring cleared: {header_name}.")
+
     def _apply_table_sort(self, logical_col: int, ascending: bool, sort_kind: str) -> None:
         """Apply sort on the model and record state for session save/restore."""
         order = Qt.AscendingOrder if ascending else Qt.DescendingOrder
@@ -69,35 +111,644 @@ class TableUIMixin(TableSearchMixin, FilterPanelMixin):
             return
         if self.headers[logical_index] == "ID_HIDDEN":
             return
-        self.table.setCurrentIndex(self._table_model.index(0, logical_index))
+        view_model = self.table.model()
+        if view_model is not None and view_model.rowCount() > 0:
+            self.table.setCurrentIndex(view_model.index(0, logical_index))
         self._select_column(logical_index)
 
     def _select_column(self, col: int) -> None:
-        n = self._table_model.rowCount()
+        view_model = self.table.model()
+        if view_model is None:
+            self._report_table_selection_status(0)
+            return
+        n = view_model.rowCount()
         if n <= 0:
+            self._report_table_selection_status(0)
             return
         prev_behavior = self.table.selectionBehavior()
         self.table.setSelectionBehavior(QAbstractItemView.SelectColumns)
-        top = self._table_model.index(0, col)
-        bottom = self._table_model.index(n - 1, col)
+        top = view_model.index(0, col)
+        bottom = view_model.index(n - 1, col)
         sel = QItemSelection(top, bottom)
-        self.table.selectionModel().select(sel, QItemSelectionModel.ClearAndSelect | QItemSelectionModel.Columns)
+        sm = self.table.selectionModel()
+        if sm is not None:
+            sm.select(sel, QItemSelectionModel.ClearAndSelect | QItemSelectionModel.Columns)
         self.table.setSelectionBehavior(prev_behavior)
+        self._refresh_table_selection_visual([0] if n > 0 else None)
+        self._report_table_selection_status(n)
+
+    def _refresh_table_selection_visual(self, anchor_rows: list[int] | None) -> None:
+        """
+        Show selection highlight immediately after programmatic select.
+
+        Deferred one event-loop tick so context-menu focus is released first; then
+        anchor the current cell, scroll if needed, focus the table, and repaint.
+        """
+
+        def _apply() -> None:
+            if anchor_rows:
+                first = min(anchor_rows)
+                ncol = self._table_model.columnCount()
+                anchor_col = 1 if ncol > 1 else 0
+                view_model = self.table.model()
+                proxy = getattr(self, "_filter_proxy_model", None)
+                if proxy is not None and view_model is proxy:
+                    pidx = proxy.mapFromSource(self._table_model.index(first, 0))
+                    if not pidx.isValid():
+                        return
+                    idx = view_model.index(pidx.row(), anchor_col)
+                else:
+                    idx = self._table_model.index(first, anchor_col)
+                sm = self.table.selectionModel()
+                if sm is not None and idx.isValid():
+                    sm.setCurrentIndex(idx, QItemSelectionModel.NoUpdate)
+                    self.table.scrollTo(idx, QAbstractItemView.EnsureVisible)
+            self.table.setFocus(Qt.OtherFocusReason)
+            self.table.viewport().update()
+
+        QTimer.singleShot(0, _apply)
+
+    def _set_selection_status(self, message: str, *, pump: bool = False) -> None:
+        self.status_label.setText(message)
+        if pump:
+            QApplication.processEvents(QEventLoop.ExcludeUserInputEvents)
+
+    def _report_table_selection_status(
+        self, n_selected: int, *, extra: str = "", pump: bool = True
+    ) -> None:
+        total = self._table_model.rowCount()
+        if total <= 0:
+            self._set_selection_status("No rows in table.", pump=pump)
+            return
+        msg = f"Selected {n_selected:,} of {total:,} row(s)."
+        if extra:
+            msg = f"{msg} {extra}"
+        self._set_selection_status(msg, pump=pump)
+
+    def _cancel_chunked_table_selection(self) -> None:
+        self._table_selection_job_gen = int(getattr(self, "_table_selection_job_gen", 0)) + 1
+        self._table_selection_ctx = None
+
+    def _maybe_status_before_large_select(self) -> None:
+        total = self._table_model.rowCount()
+        if total >= load_config().table_selection_oid_override_min:
+            self._set_selection_status(f"Selecting… (0/{total:,} rows)", pump=True)
+
+    def _use_filter_proxy_for_table(self) -> bool:
+        proxy = getattr(self, "_filter_proxy_model", None)
+        view_model = self.table.model()
+        return proxy is not None and view_model is proxy
+
+    def _is_source_row_visible(self, source_row: int) -> bool:
+        """Proxy-aware check for whether a source-model row index is currently shown."""
+        if self._use_filter_proxy_for_table():
+            proxy = self._filter_proxy_model
+            return proxy.mapFromSource(self._table_model.index(source_row, 0)).isValid()
+        return not self.table.isRowHidden(source_row)
+
+    def _visible_source_row_indices(self) -> list[int]:
+        """Source-model row indices for rows currently shown in the table view."""
+        if self._use_filter_proxy_for_table():
+            proxy = self._filter_proxy_model
+            out: list[int] = []
+            for pr in range(proxy.rowCount()):
+                pidx = proxy.index(pr, 0)
+                sidx = proxy.mapToSource(pidx)
+                if sidx.isValid():
+                    out.append(int(sidx.row()))
+            return out
+        return [r for r in range(self._table_model.rowCount()) if not self.table.isRowHidden(r)]
+
+    def _repaint_table_selection_viewport(self) -> None:
+        vp = self.table.viewport()
+        if vp is not None:
+            vp.update()
+
+    def _sync_table_selection_highlight(self) -> None:
+        """Paint row highlights from ``_selected_oids_override`` without a giant QItemSelection."""
+        override = getattr(self, "_selected_oids_override", None)
+        self._table_model.set_highlighted_oids(override)
+        self._repaint_table_selection_viewport()
+
+    def _on_user_table_selection_changed(self, *_args) -> None:
+        if getattr(self, "_in_programmatic_table_selection", False):
+            return
+        self._selected_oids_override = None
+        self._sync_table_selection_highlight()
+        schedule = getattr(self, "_schedule_sync_active_plots_from_table_selection", None)
+        if callable(schedule):
+            schedule()
+
+    def select_table_rows(self, rows: list[int], *, clear_oid_override: bool = True) -> int:
+        """Replace the selection with the given source-model row indices (skips invalid indices)."""
+        self._cancel_chunked_table_selection()
+        return self._apply_table_row_selection(rows, clear_oid_override=clear_oid_override)
+
+    def _source_rows_to_view_rows(self, source_rows: list[int]) -> list[int]:
+        view_model = self.table.model()
+        proxy = getattr(self, "_filter_proxy_model", None)
+        use_proxy = proxy is not None and view_model is proxy
+        if not use_proxy:
+            return list(source_rows)
+        view_rows: list[int] = []
+        for src_r in source_rows:
+            pidx = proxy.mapFromSource(self._table_model.index(src_r, 0))
+            if pidx.isValid():
+                view_rows.append(int(pidx.row()))
+        return view_rows
+
+    def _oids_for_source_rows(self, source_rows: list[int]) -> frozenset[int]:
+        oids: set[int] = set()
+        for r in source_rows:
+            try:
+                oids.add(int(self._table_model.row_oid(r)))
+            except (IndexError, ValueError, TypeError):
+                continue
+        return frozenset(oids)
+
+    def _apply_qt_view_row_selection(
+        self,
+        source_rows: list[int],
+        view_rows: list[int],
+        *,
+        clear_oid_override: bool,
+        mode_flags=None,
+    ) -> int:
+        if clear_oid_override:
+            self._selected_oids_override = None
+        sm = self.table.selectionModel()
+        view_model = self.table.model()
+        if sm is None or view_model is None or not view_rows:
+            return 0
+        last_col = max(0, view_model.columnCount() - 1)
+        flags = mode_flags or (QItemSelectionModel.ClearAndSelect | QItemSelectionModel.Rows)
+        prev_mode = self.table.selectionMode()
+        prev_behavior = self.table.selectionBehavior()
+        self.table.setSelectionMode(QAbstractItemView.MultiSelection)
+        self.table.setSelectionBehavior(QAbstractItemView.SelectRows)
+        self._in_programmatic_table_selection = True
+        try:
+            if flags & QItemSelectionModel.Clear:
+                sm.clearSelection()
+            selection = item_selection_for_view_rows(view_model, view_rows, last_col=last_col)
+            if not selection.isEmpty():
+                sm.select(selection, flags)
+        finally:
+            self._in_programmatic_table_selection = False
+        self.table.setSelectionMode(prev_mode)
+        self.table.setSelectionBehavior(prev_behavior)
+        self._sync_table_selection_highlight()
+        self._refresh_table_selection_visual(source_rows)
+        return len(source_rows)
+
+    def _finish_oid_override_selection(
+        self,
+        source_rows: list[int],
+        oids: frozenset[int],
+        *,
+        clear_oid_override: bool,
+        extra_status: str = "",
+    ) -> int:
+        if clear_oid_override:
+            self._selected_oids_override = None
+        sm = self.table.selectionModel()
+        self._in_programmatic_table_selection = True
+        try:
+            if sm is not None:
+                sm.clearSelection()
+            self._selected_oids_override = oids
+        finally:
+            self._in_programmatic_table_selection = False
+        anchor = [source_rows[0]] if source_rows else None
+        self._sync_table_selection_highlight()
+        self._refresh_table_selection_visual(anchor)
+        n = len(oids)
+        self._report_table_selection_status(n, extra=extra_status, pump=True)
+        return n
+
+    def _start_chunked_oid_selection(
+        self,
+        source_rows: list[int],
+        *,
+        clear_oid_override: bool,
+        extra_status: str = "",
+    ) -> int:
+        """Logical selection for large row sets (tools use OIDs; table is not fully highlighted)."""
+        if clear_oid_override:
+            self._selected_oids_override = None
+        total = len(source_rows)
+        if total <= 0:
+            self._report_table_selection_status(0)
+            return 0
+        self._cancel_chunked_table_selection()
+        self._table_selection_job_gen = int(getattr(self, "_table_selection_job_gen", 0)) + 1
+        gen = self._table_selection_job_gen
+        self._table_selection_ctx = {
+            "gen": gen,
+            "phase": "oids",
+            "source_rows": source_rows,
+            "clear_oid_override": clear_oid_override,
+            "extra_status": extra_status,
+            "idx": 0,
+            "oids": set(),
+            "chunk": max(2000, load_config().table_selection_chunk_rows),
+        }
+        self._set_selection_status(f"Selecting… (0/{total:,} rows)", pump=True)
+        QTimer.singleShot(0, self._table_selection_chunk_step)
+        return total
+
+    def _start_chunked_qt_selection(
+        self,
+        source_rows: list[int],
+        view_rows: list[int],
+        *,
+        clear_oid_override: bool,
+    ) -> int:
+        """Apply Qt selection in chunks so the UI stays responsive."""
+        if clear_oid_override:
+            self._selected_oids_override = None
+        view_model = self.table.model()
+        if view_model is None:
+            return 0
+        last_col = max(0, view_model.columnCount() - 1)
+        ranges = merge_sorted_row_indices(view_rows)
+        total = len(source_rows)
+        self._cancel_chunked_table_selection()
+        self._table_selection_job_gen = int(getattr(self, "_table_selection_job_gen", 0)) + 1
+        gen = self._table_selection_job_gen
+        sm = self.table.selectionModel()
+        prev_mode = self.table.selectionMode()
+        prev_behavior = self.table.selectionBehavior()
+        self.table.setSelectionMode(QAbstractItemView.MultiSelection)
+        self.table.setSelectionBehavior(QAbstractItemView.SelectRows)
+        if sm is not None:
+            sm.clearSelection()
+        self._table_selection_ctx = {
+            "gen": gen,
+            "phase": "qt",
+            "source_rows": source_rows,
+            "view_model": view_model,
+            "last_col": last_col,
+            "ranges": ranges,
+            "range_idx": 0,
+            "ranges_per_tick": 80,
+            "clear_oid_override": clear_oid_override,
+            "prev_mode": prev_mode,
+            "prev_behavior": prev_behavior,
+        }
+        self._set_selection_status(f"Selecting… (0/{total:,} rows)", pump=True)
+        QTimer.singleShot(0, self._table_selection_chunk_step)
+        return total
+
+    def _table_selection_chunk_step(self) -> None:
+        ctx = getattr(self, "_table_selection_ctx", None)
+        if not ctx or ctx.get("gen") != getattr(self, "_table_selection_job_gen", -1):
+            return
+        phase = ctx.get("phase")
+        if phase == "oids":
+            self._table_selection_chunk_step_oids(ctx)
+        elif phase == "qt":
+            self._table_selection_chunk_step_qt(ctx)
+
+    def _table_selection_chunk_step_oids(self, ctx: dict) -> None:
+        rows: list[int] = ctx["source_rows"]
+        total = len(rows)
+        idx = int(ctx["idx"])
+        chunk = int(ctx["chunk"])
+        end = min(idx + chunk, total)
+        oids: set[int] = ctx["oids"]
+        for j in range(idx, end):
+            try:
+                oids.add(int(self._table_model.row_oid(rows[j])))
+            except (IndexError, ValueError, TypeError):
+                continue
+        ctx["idx"] = end
+        self._table_model.set_highlighted_oids(frozenset(oids))
+        self._repaint_table_selection_viewport()
+        self._set_selection_status(f"Selecting… ({end:,}/{total:,} rows)")
+        if end < total:
+            QTimer.singleShot(0, self._table_selection_chunk_step)
+            return
+        self._table_selection_ctx = None
+        self._finish_oid_override_selection(
+            rows,
+            frozenset(oids),
+            clear_oid_override=bool(ctx.get("clear_oid_override", True)),
+            extra_status=str(ctx.get("extra_status") or ""),
+        )
+
+    def _table_selection_chunk_step_qt(self, ctx: dict) -> None:
+        sm = self.table.selectionModel()
+        view_model = ctx["view_model"]
+        last_col = int(ctx["last_col"])
+        ranges: list[tuple[int, int]] = ctx["ranges"]
+        ri = int(ctx["range_idx"])
+        per_tick = int(ctx["ranges_per_tick"])
+        source_rows: list[int] = ctx["source_rows"]
+        total = len(source_rows)
+        end_ri = min(ri + per_tick, len(ranges))
+        selection = QItemSelection()
+        for k in range(ri, end_ri):
+            lo, hi = ranges[k]
+            top = view_model.index(lo, 0)
+            bottom = view_model.index(hi, last_col)
+            if top.isValid() and bottom.isValid():
+                selection.select(top, bottom)
+        self._in_programmatic_table_selection = True
+        try:
+            if sm is not None and not selection.isEmpty():
+                flags = QItemSelectionModel.Select | QItemSelectionModel.Rows
+                if ri == 0:
+                    flags |= QItemSelectionModel.Clear
+                sm.select(selection, flags)
+        finally:
+            self._in_programmatic_table_selection = False
+        done_rows = sum(hi - lo + 1 for lo, hi in ranges[:end_ri])
+        ctx["range_idx"] = end_ri
+        self._set_selection_status(f"Selecting… ({min(done_rows, total):,}/{total:,} rows)")
+        if end_ri < len(ranges):
+            QTimer.singleShot(0, self._table_selection_chunk_step)
+            return
+        self.table.setSelectionMode(ctx["prev_mode"])
+        self.table.setSelectionBehavior(ctx["prev_behavior"])
+        self._table_selection_ctx = None
+        self._sync_table_selection_highlight()
+        self._refresh_table_selection_visual(source_rows)
+        self._report_table_selection_status(len(source_rows), pump=True)
+
+    def _apply_table_row_selection(self, rows: list[int], *, clear_oid_override: bool = True) -> int:
+        n_rows = self._table_model.rowCount()
+        if n_rows <= 0:
+            if clear_oid_override:
+                self._selected_oids_override = None
+            self._report_table_selection_status(0)
+            return 0
+        uniq = sorted({int(r) for r in rows if 0 <= int(r) < n_rows})
+        if not uniq:
+            if clear_oid_override:
+                self._selected_oids_override = None
+            self._report_table_selection_status(0)
+            return 0
+        cfg = load_config()
+        oid_min = cfg.table_selection_oid_override_min
+        chunk_thresh = cfg.table_selection_chunk_rows
+        if len(uniq) >= oid_min:
+            extra = ""
+            if len(uniq) < n_rows:
+                extra = "(tools use full selection; hidden rows included via logical selection)"
+            self._start_chunked_oid_selection(uniq, clear_oid_override=clear_oid_override, extra_status=extra)
+            return len(uniq)
+        view_rows = self._source_rows_to_view_rows(uniq)
+        if not view_rows:
+            if not clear_oid_override and self._selected_oids_override:
+                n_override = len(self._selected_oids_override)
+                self._report_table_selection_status(n_override)
+                return n_override
+            self._report_table_selection_status(0)
+            return 0
+        if len(uniq) >= chunk_thresh:
+            self._start_chunked_qt_selection(uniq, view_rows, clear_oid_override=clear_oid_override)
+            return len(uniq)
+        return self._apply_qt_view_row_selection(
+            uniq, view_rows, clear_oid_override=clear_oid_override
+        )
+
+    def _select_all_visible_rows(self) -> None:
+        """Select every row currently visible in the table (respects active filters)."""
+        self._maybe_status_before_large_select()
+        self.select_table_rows(self._visible_source_row_indices())
+
+    def _select_all_rows(self) -> None:
+        """Select every row in the table, including rows hidden by filters."""
+        self._maybe_status_before_large_select()
+        n_rows = self._table_model.rowCount()
+        if n_rows <= 0:
+            self._report_table_selection_status(0)
+            return
+        all_rows = list(range(n_rows))
+        cfg = load_config()
+        if n_rows >= cfg.table_selection_oid_override_min:
+            self._start_chunked_oid_selection(
+                all_rows,
+                clear_oid_override=False,
+                extra_status="(includes filtered-out rows)",
+            )
+            return
+        self.select_table_rows(all_rows, clear_oid_override=False)
+        self._selected_oids_override = frozenset(self._all_oids_in_table_order())
+        self._report_table_selection_status(len(self._selected_oids_override))
+
+    def clear_table_selection(self) -> None:
+        """Clear Qt and logical (large) row selection."""
+        self._cancel_chunked_table_selection()
+        self._selected_oids_override = None
+        sm = self.table.selectionModel()
+        self._in_programmatic_table_selection = True
+        try:
+            if sm is not None:
+                sm.clearSelection()
+        finally:
+            self._in_programmatic_table_selection = False
+        self._sync_table_selection_highlight()
+        self._report_table_selection_status(0)
+
+    def invert_table_selection(self) -> None:
+        """Select every table row that is not currently selected (full table, including filtered-out rows)."""
+        n_rows = self._table_model.rowCount()
+        if n_rows <= 0:
+            self.clear_table_selection()
+            return
+        selected_rows = set(self._selected_logical_rows())
+        inverted = [r for r in range(n_rows) if r not in selected_rows]
+        if not inverted:
+            self.clear_table_selection()
+            return
+        if len(inverted) >= load_config().table_selection_oid_override_min:
+            self._maybe_status_before_large_select()
+        self.select_table_rows(inverted)
+
+    def _select_first_occurrence_per_distinct_value(self, col: int) -> None:
+        """Select the first visible row for each distinct non-empty cell text in this column."""
+        self._maybe_status_before_large_select()
+        seen: set[str] = set()
+        to_sel: list[int] = []
+        for r in self._visible_source_row_indices():
+            txt = (self._table_model.cell_text(r, col) or "").strip()
+            if not txt:
+                continue
+            if txt in seen:
+                continue
+            seen.add(txt)
+            to_sel.append(r)
+        self.select_table_rows(to_sel)
+
+    def _select_empty_cells_in_column(self, col: int) -> None:
+        """Select visible rows where this column is empty or whitespace-only."""
+        self._maybe_status_before_large_select()
+        to_sel: list[int] = []
+        for r in self._visible_source_row_indices():
+            if not (self._table_model.cell_text(r, col) or "").strip():
+                to_sel.append(r)
+        self.select_table_rows(to_sel)
+
+    def _structure_column_row_is_empty(self, row: int) -> bool:
+        """True when the row has no chemical structure (fast text/mol store check)."""
+        try:
+            oid = self._table_model.row_oid(row)
+        except (IndexError, ValueError, TypeError):
+            return True
+        if self.mols.get(oid) is not None:
+            return False
+        smi_h = self._canonical_smiles_header_for_updates()
+        if smi_h and smi_h in self.headers:
+            ci = self.headers.index(smi_h)
+            if (self._table_model.cell_text(row, ci) or "").strip():
+                return False
+        ov = getattr(self, "_structure_field_override", None)
+        ov_s = str(ov).strip() if isinstance(ov, str) else ""
+        for h in self._ordered_headers_for_molecule_lookup():
+            if smi_h and h == smi_h:
+                continue
+            ci = self.headers.index(h)
+            raw = (self._table_model.cell_text(row, ci) or "").strip()
+            if not raw:
+                continue
+            if (ov_s and h == ov_s) or self._is_smiles_named_header(h) or self._header_looks_structural(h):
+                return False
+            if looks_like_mol_block(raw):
+                return False
+        return True
+
+    def _select_empty_structure_cells(self) -> None:
+        self._maybe_status_before_large_select()
+        to_sel: list[int] = []
+        for r in self._visible_source_row_indices():
+            if self._structure_column_row_is_empty(r):
+                to_sel.append(r)
+        self.select_table_rows(to_sel)
+
+    def _structure_distinct_key_for_row(
+        self, row: int, *, smiles_key_cache: dict[str, str] | None = None
+    ) -> str:
+        """Canonical structure key for Select → first occurrence on the Structure column."""
+        try:
+            oid = self._table_model.row_oid(row)
+        except (IndexError, ValueError, TypeError):
+            return ""
+        mol = self.mols.get(oid)
+        if mol is not None:
+            try:
+                raw = Chem.MolToSmiles(mol)
+            except Exception:
+                raw = ""
+            if raw:
+                return self._canonical_structure_key_cached(raw, smiles_key_cache)
+            return ""
+        try:
+            smi_col = self.headers.index("SMILES")
+        except ValueError:
+            return ""
+        raw = (self._table_model.cell_text(row, smi_col) or "").strip()
+        if not raw:
+            return ""
+        return self._canonical_structure_key_cached(raw, smiles_key_cache)
+
+    def _canonical_structure_key_cached(
+        self, smiles: str, cache: dict[str, str] | None
+    ) -> str:
+        s = (smiles or "").strip()
+        if not s:
+            return ""
+        if cache is not None and s in cache:
+            return cache[s]
+        key = self.canonical_structure_key_from_smiles(s) or s
+        if cache is not None:
+            cache[s] = key
+        return key
+
+    def _select_first_occurrence_per_distinct_structure(self) -> None:
+        self._maybe_status_before_large_select()
+        seen: set[str] = set()
+        to_sel: list[int] = []
+        smiles_key_cache: dict[str, str] = {}
+        for r in self._visible_source_row_indices():
+            key = self._structure_distinct_key_for_row(r, smiles_key_cache=smiles_key_cache)
+            if not key or key in seen:
+                continue
+            seen.add(key)
+            to_sel.append(r)
+        self.select_table_rows(to_sel)
 
     def _selected_logical_rows(self) -> list[int]:
-        """Distinct model row indices from the current selection (any column)."""
+        """Distinct source-model row indices from the current selection (any column)."""
+        override = getattr(self, "_selected_oids_override", None)
+        if override:
+            rows: list[int] = []
+            for oid in override:
+                r = self._table_model.logical_row_for_oid(int(oid))
+                if r >= 0:
+                    rows.append(r)
+            return sorted(set(rows))
         sm = self.table.selectionModel()
         if sm is None:
             return []
-        return sorted({ix.row() for ix in sm.selectedIndexes() if ix.isValid() and ix.row() >= 0})
+        view_model = self.table.model()
+        proxy = getattr(self, "_filter_proxy_model", None)
+        use_proxy = proxy is not None and view_model is proxy
+        view_rows = sorted({ix.row() for ix in sm.selectedIndexes() if ix.isValid() and ix.row() >= 0})
+        if not use_proxy:
+            return view_rows
+        source_rows: list[int] = []
+        for vr in view_rows:
+            sidx = proxy.mapToSource(view_model.index(vr, 0))
+            if sidx.isValid():
+                source_rows.append(int(sidx.row()))
+        return sorted(set(source_rows))
 
     def _selected_oids_set(self) -> set[int]:
+        override = getattr(self, "_selected_oids_override", None)
+        if override:
+            return set(override)
         oids: set[int] = set()
         for r in self._selected_logical_rows():
             t0 = self._table_model.cell_text(r, 0)
             if t0.isdigit():
                 oids.add(int(t0))
         return oids
+
+    def _selected_oids_for_delete(self) -> frozenset[int]:
+        """OIDs to delete without scanning the full table for logical row indices."""
+        override = getattr(self, "_selected_oids_override", None)
+        if override:
+            return frozenset(int(x) for x in override)
+        return frozenset(self._selected_oids_set())
+
+    def _oids_for_row_indices(self, rows: list[int]) -> frozenset[int]:
+        oids: set[int] = set()
+        for r in rows:
+            try:
+                t0 = self._table_model.cell_text(int(r), 0)
+            except (IndexError, TypeError, ValueError):
+                continue
+            if t0.isdigit():
+                oids.add(int(t0))
+        return frozenset(oids)
+
+    def _clear_table_selection_after_delete(self) -> None:
+        self._cancel_chunked_table_selection()
+        self._selected_oids_override = None
+        sm = self.table.selectionModel()
+        self._in_programmatic_table_selection = True
+        try:
+            if sm is not None:
+                sm.clearSelection()
+        finally:
+            self._in_programmatic_table_selection = False
+        self._sync_table_selection_highlight()
+
+    def _refresh_table_after_bulk_delete(self) -> None:
+        self.calculate_global_bounds()
+        self.apply_filters()
 
     def _all_oids_in_table_order(self) -> list[int]:
         """Every row OID top-to-bottom (only rows with a numeric hidden id)."""
@@ -142,38 +793,9 @@ class TableUIMixin(TableSearchMixin, FilterPanelMixin):
 
     @staticmethod
     def _header_looks_structural(name: str) -> bool:
-        if name in ("ID_HIDDEN", "Structure", "Fragments"):
-            return False
-        n = (name or "").lower().strip()
-        if not n:
-            return False
-        if "inchikey" in n:
-            return False
-        if "smiles" in n:
-            return True
-        if "inchi" in n:
-            return True
-        if n == "smi" or n.endswith("_smi") or n.endswith(".smi"):
-            return True
-        if n == "structure":
-            return True
-        if "molblock" in n or "mol_block" in n or "molfile" in n or n.endswith(".mol"):
-            return True
-        if "v2000" in n or "v3000" in n or "ctab" in n:
-            return True
-        if "sdf" in n and ("block" in n or "record" in n or n == "sdf"):
-            return True
-        if "rxn" in n or "reaction" in n:
-            return True
-        if n == "pdb" or n.endswith("_pdb") or "pdb_block" in n:
-            return True
-        if "smarts" in n or "smirks" in n:
-            return True
-        if "csmiles" in n or "cxsmiles" in n or "canonical_smiles" in n or "isomeric_smiles" in n:
-            return True
-        if "mol_string" in n or n in ("mol", "rmol") or n.endswith("_mol"):
-            return True
-        return False
+        from ...import_structure import header_looks_like_structure_text
+
+        return header_looks_like_structure_text(name)
 
     def _skip_chemistry_tool_column_dropdown(self, h: str) -> bool:
         """Exclude non-molecular columns from chemistry-tool source dropdowns."""
@@ -306,6 +928,12 @@ class TableUIMixin(TableSearchMixin, FilterPanelMixin):
         if not self.headers or row_idx < 0 or row_idx >= self._table_model.rowCount():
             return
         oid = self._table_model.row_oid(row_idx)
+        values = self._row_cells_from_mol(mol)
+        self._table_model.set_cell_text_batch(oid, values)
+
+    def _row_cells_from_mol(self, mol: Chem.Mol | None) -> dict[str, str]:
+        """Build row cell values for all data columns from one molecule."""
+        values: dict[str, str] = {}
         for _c, name in enumerate(self.headers[2:], start=2):
             if mol is None:
                 txt = ""
@@ -319,7 +947,8 @@ class TableUIMixin(TableSearchMixin, FilterPanelMixin):
                         txt = ""
             else:
                 txt = safe_mol_prop_string(mol, name)
-            self._table_model.set_cell_text(oid, name, txt)
+            values[name] = txt
+        return values
 
     def _mol_for_structure_row(self, row: int) -> Chem.Mol | None:
         """Best-effort RDKit mol: in-memory store, then any parseable chemistry in table columns."""
@@ -346,8 +975,96 @@ class TableUIMixin(TableSearchMixin, FilterPanelMixin):
                 return self._apply_structure_field_override(m)
         return None
 
+    def _column_eligible_for_table_chemistry_menu(self, row: int, col: int) -> bool:
+        """Whether the table cell's column should offer structure tools / Copy as SMILES."""
+        if col == CompoundTableModel.STRUCTURE_COL:
+            return True
+        if col <= 0 or col >= len(self.headers):
+            return False
+        h = self.headers[col]
+        if self._table_model.is_pixmap_data_column(h):
+            return False
+        if self._skip_chemistry_tool_column_dropdown(h):
+            return False
+        if self._header_looks_structural(h) or self._is_smiles_named_header(h):
+            return True
+        raw = (self._table_model.cell_text(row, col) or "").strip()
+        if not raw or (len(raw) > 20000 and not looks_like_mol_block(raw)):
+            return False
+        return parse_molecule_from_cell_text(raw) is not None
+
+    def _mol_for_table_context_menu(self, row: int, col: int) -> Chem.Mol | None:
+        """Molecule for context-menu actions: row-wide chemistry, else parseable text in the clicked cell."""
+        if not self._column_eligible_for_table_chemistry_menu(row, col):
+            return None
+        m = self._mol_for_structure_row(row)
+        if m is not None:
+            return m
+        if col == CompoundTableModel.STRUCTURE_COL:
+            return None
+        h = self.headers[col]
+        raw = (self._table_model.backing_value_for_row_header(row, h) or "").strip()
+        if not raw:
+            raw = (self._table_model.cell_text(row, col) or "").strip()
+        if not raw or (len(raw) > 20000 and not looks_like_mol_block(raw)):
+            return None
+        m = self._mol_from_structure_text(raw)
+        return self._apply_structure_field_override(m) if m is not None else None
+
     def _mol_from_structure_text(self, raw: str) -> Chem.Mol | None:
         return parse_molecule_from_cell_text(raw)
+
+    def chemistry_tool_structure_sources(self) -> list[str]:
+        """Candidate values for a tool dialog's structure-source dropdown."""
+        return ["Structure"] + self._data_headers_confirmed_for_chemistry_tools()
+
+    def collect_scoped_table_mols(
+        self,
+        src: str,
+        *,
+        only_selected: bool = False,
+        only_visible: bool = False,
+    ) -> list[tuple[int, Chem.Mol]]:
+        """
+        Iterate the table and return ``(oid, mol)`` pairs in scope for a chemistry tool.
+
+        ``src`` is ``"Structure"`` (use the row's structure column / cached mol) or a
+        data-column header name (parse the cell text as SMILES/molblock/etc.). Mols parsed
+        from data columns are cached on ``self.mols[oid]`` for subsequent calls. Used by
+        the pKa, protomer, cluster, and dimensionality-reduction dialogs.
+        """
+        allowed = self._selected_oids_set() if only_selected else None
+        col = None if src == "Structure" else self.headers.index(src)
+        visible_rows: set[int] | None = (
+            set(self._visible_source_row_indices()) if only_visible else None
+        )
+        is_pixmap_src = src != "Structure" and self._table_model.is_pixmap_data_column(src)
+        out: list[tuple[int, Chem.Mol]] = []
+        for r in range(self._table_model.rowCount()):
+            if visible_rows is not None and r not in visible_rows:
+                continue
+            oid = self._table_model.row_oid(r)
+            if allowed is not None and oid not in allowed:
+                continue
+            if src == "Structure":
+                mol = self.mols.get(oid) or self._mol_for_structure_row(r)
+            elif is_pixmap_src:
+                mol = self.mols.get(oid)
+                if mol is None:
+                    raw = self._table_model.backing_value_for_row_header(r, src)
+                    mol = self._mol_from_structure_text(raw) if raw else None
+                if mol is None:
+                    mol = self._mol_for_structure_row(r)
+                if mol is not None:
+                    self.mols[oid] = mol
+            else:
+                raw = self._table_cell_text(r, col)
+                mol = self._mol_from_structure_text(raw)
+                if mol is not None:
+                    self.mols[oid] = mol
+            if mol is not None:
+                out.append((oid, mol))
+        return out
 
     def _apply_structure_field_override(self, mol: Chem.Mol | None) -> Chem.Mol | None:
         field = getattr(self, "_structure_field_override", None)
@@ -367,6 +1084,15 @@ class TableUIMixin(TableSearchMixin, FilterPanelMixin):
 
     def _on_chembl_dialog_destroyed(self):
         self._chembl_dialog = None
+
+    def _on_patent_query_dialog_destroyed(self):
+        self._patent_query_dialog = None
+
+    def _on_boltz2_dialog_destroyed(self):
+        self._boltz2_dialog = None
+
+    def _on_vina_dock_dialog_destroyed(self):
+        self._vina_dock_dialog = None
 
     def get_row_by_id(self, original_idx):
         return self._table_model.logical_row_for_oid(int(original_idx))
@@ -390,7 +1116,34 @@ class TableUIMixin(TableSearchMixin, FilterPanelMixin):
 
         old_n = self.headers[col]
         menu = QMenu(self)
+        menu.setToolTipsVisible(True)
         sel_act = menu.addAction(f"Select column '{old_n}'")
+        select_sub = menu.addMenu("Select")
+        select_sub.setToolTipsVisible(True)
+        select_all_visible_act = select_sub.addAction("Select All Visible")
+        select_all_visible_act.setToolTip(
+            "Select every row currently visible in the table (respects active filters)."
+        )
+        select_all_act = select_sub.addAction("Select All")
+        select_all_act.setToolTip("Select every row in the table, including rows hidden by filters.")
+        select_sub.addSeparator()
+        if self.headers[col] == "Structure":
+            first_occ_act = select_sub.addAction("First Occurrence (per distinct structure)")
+            first_occ_act.setToolTip(
+                "For each distinct structure (canonical SMILES), select the first visible row where it appears."
+            )
+        else:
+            first_occ_act = select_sub.addAction("First Occurrence (per distinct value)")
+            first_occ_act.setToolTip(
+                "For each non-empty cell text, select the first visible row where that value appears (top to bottom)."
+            )
+        empty_act = select_sub.addAction("Empty cells")
+        if self.headers[col] == "Structure":
+            empty_act.setToolTip(
+                "Select visible rows with no chemical structure (no molecule in memory and no parseable SMILES or structure text)."
+            )
+        else:
+            empty_act.setToolTip("Select every visible row where this column is blank or whitespace-only.")
         sort_num_asc = sort_num_desc = sort_alpha_asc = sort_alpha_desc = None
         if self._table_model.rowCount() > 0:
             sort_top = menu.addMenu("Sort")
@@ -402,6 +1155,9 @@ class TableUIMixin(TableSearchMixin, FilterPanelMixin):
             sort_alpha_desc = alp_m.addAction("Descending")
         menu.addSeparator()
         search_act = menu.addAction("Search")
+        color_act = None
+        if col >= 2 and not self._table_model.is_pixmap_data_column(old_n):
+            color_act = menu.addAction("Color")
         menu.addSeparator()
         ren_act = dup_act = del_act = None
         if old_n != "Structure":
@@ -422,6 +1178,22 @@ class TableUIMixin(TableSearchMixin, FilterPanelMixin):
             self._apply_table_sort(col, False, "alphabetic")
         elif action == search_act:
             self.open_table_search_with_column(col)
+        elif color_act is not None and action == color_act:
+            self._open_column_color_dialog(col)
+        elif action == select_all_visible_act:
+            self._select_all_visible_rows()
+        elif action == select_all_act:
+            self._select_all_rows()
+        elif first_occ_act is not None and action == first_occ_act:
+            if self.headers[col] == "Structure":
+                self._select_first_occurrence_per_distinct_structure()
+            else:
+                self._select_first_occurrence_per_distinct_value(col)
+        elif empty_act is not None and action == empty_act:
+            if self.headers[col] == "Structure":
+                self._select_empty_structure_cells()
+            else:
+                self._select_empty_cells_in_column(col)
         elif del_act is not None and action == del_act:
             self._undo_stack.push(UndoDeleteColumnCommand(self, col))
         elif ren_act is not None and action == ren_act:
@@ -551,17 +1323,27 @@ class TableUIMixin(TableSearchMixin, FilterPanelMixin):
             return
         self._undo_stack.push(UndoPasteCellCommand(self, row, col, oid, clip))
 
-    def _confirm_and_push_delete_rows(self, rows: list[int]) -> None:
+    def _cancel_chunked_table_delete(self) -> None:
+        self._table_delete_job_gen = int(getattr(self, "_table_delete_job_gen", 0)) + 1
+        self._table_delete_ctx = None
+
+    def _confirm_and_push_delete_rows(self, rows: list[int] | None = None, *, oids: frozenset[int] | None = None) -> None:
         """Confirm then push UndoDeleteRowsCommand (shared by Edit and row header menu)."""
-        rows = sorted({int(r) for r in rows})
-        if not rows:
+        if oids is None:
+            rows = sorted({int(r) for r in (rows or [])})
+            if not rows:
+                QMessageBox.information(self, "Delete Selection", "No rows selected.")
+                return
+            oids = self._oids_for_row_indices(rows)
+        n = len(oids)
+        if n <= 0:
             QMessageBox.information(self, "Delete Selection", "No rows selected.")
             return
-        title = "Delete Row" if len(rows) == 1 else "Delete Selection"
+        title = "Delete Row" if n == 1 else "Delete Selection"
         msg = (
             "Delete this row? This cannot be undone except with Edit → Undo."
-            if len(rows) == 1
-            else f"Delete {len(rows)} selected rows? This cannot be undone except with Edit → Undo."
+            if n == 1
+            else f"Delete {n:,} selected rows? This cannot be undone except with Edit → Undo."
         )
         reply = QMessageBox.question(
             self,
@@ -572,15 +1354,96 @@ class TableUIMixin(TableSearchMixin, FilterPanelMixin):
         )
         if reply != QMessageBox.Yes:
             return
-        cmd = UndoDeleteRowsCommand(self, rows)
+        if n >= load_config().table_delete_batch_min:
+            self._start_chunked_delete_prepare(oids)
+            return
+        cmd = UndoDeleteRowsCommand(self, oids=oids)
         if cmd.snapshot_count() == 0:
             QMessageBox.information(self, "Delete Selection", "No valid rows to delete.")
             return
         self._undo_stack.push(cmd)
 
+    def _start_chunked_delete_prepare(self, oids: frozenset[int]) -> None:
+        """Build undo snapshots in chunks so the UI stays responsive before delete runs."""
+        self._cancel_chunked_table_delete()
+        self._table_delete_job_gen = int(getattr(self, "_table_delete_job_gen", 0)) + 1
+        gen = self._table_delete_job_gen
+        total = len(oids)
+        light = total >= load_config().table_delete_batch_min
+        self._table_delete_ctx = {
+            "gen": gen,
+            "oids": frozenset(int(x) for x in oids),
+            "light": light,
+            "snapshots": [],
+            "row_idx": 0,
+            "total_rows": self._table_model.rowCount(),
+        }
+        self._set_selection_status(f"Preparing delete… (0/{total:,} rows)", pump=True)
+        QTimer.singleShot(0, self._table_delete_prepare_step)
+
+    def _table_delete_prepare_step(self) -> None:
+        ctx = getattr(self, "_table_delete_ctx", None)
+        if not ctx or ctx.get("gen") != getattr(self, "_table_delete_job_gen", -1):
+            return
+        kill: frozenset[int] = ctx["oids"]
+        light = bool(ctx["light"])
+        data_headers = [h for h in self.headers[2:] if h != "Structure"]
+        model = self._table_model
+        rows = model._rows  # noqa: SLF001
+        total_rows = len(rows)
+        total_delete = len(kill)
+        idx = int(ctx["row_idx"])
+        chunk = max(2000, load_config().table_delete_chunk_rows)
+        end = min(idx + chunk, total_rows)
+        snapshots: list[DeleteRowSnapshot] = ctx["snapshots"]
+        found_before = len(snapshots)
+        for j in range(idx, end):
+            row = rows[j]
+            oid = int(row.oid)
+            if oid not in kill:
+                continue
+            cells = {h: str(row.values.get(h, "") or "") for h in data_headers}
+            if light:
+                snapshots.append(DeleteRowSnapshot(orig_row=j, oid=oid, cells=cells, light=True))
+            else:
+                pm = self.mols.get(oid)
+                mol_copy = Chem.Mol(pm) if pm is not None else None
+                spm = model.structure_pixmap_copy(oid)
+                extra = model.extra_column_pixmaps_copy(oid)
+                snapshots.append(
+                    DeleteRowSnapshot(
+                        orig_row=j,
+                        oid=oid,
+                        cells=cells,
+                        mol_copy=mol_copy,
+                        structure_pixmap=spm,
+                        extra_pixmaps=extra,
+                        light=False,
+                    )
+                )
+        ctx["row_idx"] = end
+        found = len(snapshots) - found_before
+        done_delete = len(snapshots)
+        self._set_selection_status(
+            f"Preparing delete… ({done_delete:,}/{total_delete:,} rows, scanned {end:,}/{total_rows:,})"
+        )
+        if end < total_rows:
+            QTimer.singleShot(0, self._table_delete_prepare_step)
+            return
+        self._table_delete_ctx = None
+        if not snapshots:
+            QMessageBox.information(self, "Delete Selection", "No valid rows to delete.")
+            self._set_selection_status("Delete cancelled — no matching rows.", pump=True)
+            return
+        if found < total_delete:
+            # Rows may have been removed while preparing; keep only snapshots we collected.
+            pass
+        cmd = UndoDeleteRowsCommand(self, snapshots=snapshots)
+        self._undo_stack.push(cmd)
+
     def edit_delete_selection(self) -> None:
         """Remove every row that has at least one selected cell."""
-        self._confirm_and_push_delete_rows(self._selected_logical_rows())
+        self._confirm_and_push_delete_rows(oids=self._selected_oids_for_delete())
 
     def clear_table_after_confirm(self) -> None:
         """Clear the entire table only after explicit user confirmation."""
@@ -655,8 +1518,6 @@ class TableUIMixin(TableSearchMixin, FilterPanelMixin):
         menu = QMenu(self)
         t0 = self._table_model.cell_text(row, 0)
         oid = int(t0) if t0.isdigit() else None
-        mol = self.mols.get(oid) if oid is not None else None
-        mol_row = self._mol_for_structure_row(row)
 
         packed_confs_b64 = None
         if 0 <= col < len(self.headers):
@@ -664,18 +1525,21 @@ class TableUIMixin(TableSearchMixin, FilterPanelMixin):
             raw_cell = self._table_model.backing_value_for_row_header(row, hdr)
             packed_confs_b64 = resolve_blocks_b64_for_viewer(raw_cell, hdr, oid, getattr(self, "_confs_blocks_sidecar", {}))
 
-        sketch_act = view_conformers_act = view3d_act = view2d_act = render2d_act = None
+        chem_col = self._column_eligible_for_table_chemistry_menu(row, col)
+        mol_ctx = self._mol_for_table_context_menu(row, col) if chem_col else None
+
+        sketch_act = view_conformers_act = view3d_act = view2d_act = render2d_act = copy_smiles_act = None
         structure_menu = False
-        if mol_row is not None:
+        if chem_col and mol_ctx is not None:
             sketch_act = menu.addAction("Open in Sketcher…")
             structure_menu = True
         if packed_confs_b64 is not None:
             view_conformers_act = menu.addAction("View Conformers…")
             structure_menu = True
-        if mol_row is not None and packed_confs_b64 is None:
+        if chem_col and mol_ctx is not None and packed_confs_b64 is None:
             view3d_act = menu.addAction("View in 3D…")
             structure_menu = True
-        if mol_row is not None:
+        if chem_col and mol_ctx is not None:
             view2d_act = menu.addAction("View in 2D…")
             render2d_act = menu.addAction(TOOL_RENDER_2D)
             render2d_act.setEnabled(oid is not None)
@@ -685,6 +1549,17 @@ class TableUIMixin(TableSearchMixin, FilterPanelMixin):
         can_copy, copy_text = self._copy_text_for_table_cell(row, col, oid)
         copy_act = menu.addAction("Copy")
         copy_act.setEnabled(can_copy)
+
+        copy_smiles_txt = ""
+        if chem_col and mol_ctx is not None:
+            try:
+                copy_smiles_txt = mol_to_canonical_smiles(mol_ctx).strip()
+            except Exception:
+                copy_smiles_txt = ""
+        copy_smiles_act = None
+        if chem_col:
+            copy_smiles_act = menu.addAction("Copy as SMILES")
+            copy_smiles_act.setEnabled(bool(copy_smiles_txt))
 
         can_paste = oid is not None and (
             col == CompoundTableModel.STRUCTURE_COL or self._table_model.column_accepts_text_edit(col)
@@ -700,20 +1575,23 @@ class TableUIMixin(TableSearchMixin, FilterPanelMixin):
             clear_act = menu.addAction("Clear Value")
 
         action = menu.exec_(self.table.viewport().mapToGlobal(pos))
-        if action == sketch_act and mol_row is not None:
-            self.open_sketcher(mol_row)
+        if action == sketch_act and mol_ctx is not None:
+            self.open_sketcher(mol_ctx)
         elif view_conformers_act is not None and action == view_conformers_act and packed_confs_b64 is not None:
             from ..mol_viewer_3d import open_conformation_viewer_from_blocks_payload
 
             open_conformation_viewer_from_blocks_payload(
                 self, packed_confs_b64, title="View Conformers", initial_superpose=False
             )
-        elif view3d_act is not None and action == view3d_act and mol_row is not None:
-            self.open_molecule_3d(mol_row)
-        elif view2d_act is not None and action == view2d_act and mol_row is not None:
-            self.open_molecule_2d(mol_row)
-        elif render2d_act is not None and action == render2d_act and mol_row is not None:
-            self.run_render_2d_for_table_row(row)
+        elif view3d_act is not None and action == view3d_act and mol_ctx is not None:
+            self.open_molecule_3d(mol_ctx)
+        elif view2d_act is not None and action == view2d_act and mol_ctx is not None:
+            self.open_molecule_2d(mol_ctx)
+        elif render2d_act is not None and action == render2d_act and mol_ctx is not None:
+            self.run_render_2d_for_table_row(row, col)
+        elif copy_smiles_act is not None and action == copy_smiles_act and copy_smiles_txt:
+            QApplication.clipboard().setText(copy_smiles_txt)
+            self.status_label.setText("Copied canonical SMILES to clipboard.")
         elif action == copy_act and can_copy:
             QApplication.clipboard().setText(copy_text)
         elif action == paste_act and can_paste:
@@ -767,46 +1645,33 @@ class TableUIMixin(TableSearchMixin, FilterPanelMixin):
                 seen.add(smi)
         return out
 
-    def _ensure_columns(self, col_names: list[str]) -> None:
-        """Ensure the table has these headers (adds columns to the right if needed)."""
-        if not self.headers:
-            self.headers = ["ID_HIDDEN", "Structure", "SMILES"]
-            self._table_model.set_headers(list(self.headers))
-            self.table.setColumnHidden(0, True)
-        existing = {h: i for i, h in enumerate(self.headers)}
-        for h in col_names:
-            if h in existing:
-                continue
-            col_at = len(self.headers)
-            self.headers.append(h)
-            self._table_model.insert_column_at(col_at, h, None)
-            existing[h] = col_at
-
-    def add_row_from_external_record(self, smiles: str, fields: dict[str, str]) -> None:
-        """Append a row with SMILES + additional fields; render structure when possible."""
+    def canonical_structure_key_from_smiles(self, smiles: str) -> str | None:
+        """Canonical isomeric SMILES key for duplicate detection; ``None`` if not parseable."""
         smiles = (smiles or "").strip()
         if not smiles:
-            raise ValueError("Empty SMILES.")
-        self._ensure_columns(["SMILES"] + list(fields.keys()))
+            return None
+        mol = parse_molecule_from_cell_text(smiles)
+        if mol is None:
+            return None
+        try:
+            k = mol_to_canonical_smiles(mol).strip()
+        except Exception:
+            return None
+        return k or None
 
-        self.table.setSortingEnabled(False)
-        oid = self.next_oid
-        self.next_oid += 1
-        row_cells: dict[str, str] = {}
-        for h in self.headers[2:]:
-            if h == "SMILES":
-                row_cells[h] = smiles
-            else:
-                row_cells[h] = str(fields.get(h, "") or "")
-        self._table_model.append_row(oid, row_cells)
-
-        mol = Chem.MolFromSmiles(smiles)
-        if mol is not None:
-            self.mols[oid] = mol
-            self.start_render_worker(oid, mol)
-
-        self.calculate_global_bounds()
-        self.table.setSortingEnabled(False)
+    def existing_canonical_structure_keys(self) -> set[str]:
+        """Canonical SMILES keys already present in the primary SMILES column (for de-duplication)."""
+        keys: set[str] = set()
+        h = self._canonical_smiles_header_for_updates()
+        if not h or h not in self.headers:
+            return keys
+        ci = self.headers.index(h)
+        for r in range(self._table_model.rowCount()):
+            raw = (self._table_model.cell_text(r, ci) or "").strip()
+            k = self.canonical_structure_key_from_smiles(raw)
+            if k:
+                keys.add(k)
+        return keys
 
     def clear_all(self):
         self._confs_blocks_sidecar = {}
@@ -829,10 +1694,21 @@ class TableUIMixin(TableSearchMixin, FilterPanelMixin):
         self._csv_session_ctx = None
         self._session_load_generation = int(getattr(self, "_session_load_generation", 0)) + 1
         self._invalidate_substructure_async_jobs()
+        self._sqlite_rebuild_gen = int(getattr(self, "_sqlite_rebuild_gen", 0)) + 1
+        self._sqlite_rebuild_pending_filters = False
         self._pending_batches = []
         self._processing_batches = False
         self._last_batch_received = False
         self._ingest_loading = False
+        if getattr(self, "_sqlite_store", None) is not None:
+            try:
+                self._sqlite_rebuild_in_progress = True
+                self._sqlite_store.rebuild(["ID_HIDDEN", "Structure"], [])
+                self._sqlite_store_dirty = False
+            except Exception:
+                pass
+            finally:
+                self._sqlite_rebuild_in_progress = False
         self._structures_queued = 0
         self._import_progress_active = False
         self._import_render_done = 0

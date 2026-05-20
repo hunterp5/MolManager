@@ -73,18 +73,18 @@ def test_int_fns_need_pkasolver() -> None:
     assert not int_fns_need_pkasolver(("QED", "MolWt", "LOGS_ESOL"))
 
 
-def test_logd74_value_requires_microstates() -> None:
-    mol = Chem.MolFromSmiles("O")
+def test_logd74_value_heuristic_when_no_microstates() -> None:
+    mol = Chem.MolFromSmiles("[Na+].[Cl-]")
     assert mol is not None
-    with pytest.raises(ValueError):
-        logd74_value(mol, [])
+    v = logd74_value(mol, [])
+    assert isinstance(v, float)
 
 
-def test_logs74_value_requires_microstates() -> None:
-    mol = Chem.MolFromSmiles("O")
+def test_logs74_value_intrinsic_when_no_microstates() -> None:
+    mol = Chem.MolFromSmiles("[Na+].[Cl-]")
     assert mol is not None
-    with pytest.raises(ValueError):
-        logs74_value(mol, [])
+    intrinsic = esol_logS_intrinsic(mol)
+    assert logs74_value(mol, []) == intrinsic
 
 
 def test_esol_intrinsic_ethanol() -> None:

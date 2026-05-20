@@ -9,7 +9,8 @@ Canonical citations (plain text, copy-paste friendly) live in ``chemmanager.scie
 
 When pkasolver microstates are available (``pkasolver_descriptor_support``), LogD 7.4, LogS 7.4, and the
 CNS MPO cLogD / pKa legs use those predictions plus RDKit ``Crippen.MolLogP``; otherwise cLogD / pKa fall back
-to simple heuristics. LogD 7.4 and LogS 7.4 columns require pkasolver. Neutral fractions at pH 7.4 reuse the
+to simple heuristics. LogD 7.4 and LogS 7.4 prefer pkasolver microstates and fall back to heuristics when
+none are returned. Neutral fractions at pH 7.4 reuse the
 same Henderson–Hasselbalch protomer pooling as ``estimate_protomer_populations_from_states`` (independent
 sites; approximate).
 
@@ -113,26 +114,29 @@ def esol_logS_intrinsic(mol: Chem.Mol) -> float:
 
 def logd74_value(mol: Chem.Mol, states: list | None = None) -> float:
     """
-    LogD 7.4 from RDKit cLogP and pkasolver microstates (required).
+    LogD 7.4 from RDKit cLogP and pkasolver microstates when available.
 
-    Raises ``ValueError`` if microstates are missing so the descriptor layer can show N/A.
+    If pkasolver returns no microstates (e.g. salts, quaternary centers), falls back to the
+    same monoprotic-base heuristic used for CNS MPO cLogD.
     """
+    clogp = float(Crippen.MolLogP(mol))
     st = states if states is not None else microstates_for_mol(mol)
-    if not st:
-        raise ValueError("pkasolver microstates unavailable")
-    return logd74_from_microstates(st, float(Crippen.MolLogP(mol)))
+    if st:
+        return logd74_from_microstates(st, clogp)
+    return _clogd7_heuristic(clogp, _approx_pka_most_basic(mol))
 
 
 def logs74_value(mol: Chem.Mol, states: list | None = None) -> float:
     """
     Approximate aqueous log10(S / mol L⁻¹) at pH 7.4 from ESOL intrinsic log S and pkasolver states.
 
-    Raises ``ValueError`` if microstates are missing so the descriptor layer can show N/A.
+    Without microstates, returns the intrinsic ESOL value (no ionization correction).
     """
+    intrinsic = esol_logS_intrinsic(mol)
     st = states if states is not None else microstates_for_mol(mol)
     if not st:
-        raise ValueError("pkasolver microstates unavailable")
-    return logs74_from_microstates(st, esol_logS_intrinsic(mol))
+        return intrinsic
+    return logs74_from_microstates(st, intrinsic)
 
 
 def cns_mpo_score(mol: Chem.Mol, states: list | None = None) -> float:

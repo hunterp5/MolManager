@@ -91,6 +91,39 @@ def mol_to_canonical_smiles(mol, *, isomeric: bool = True) -> str:
     return Chem.MolToSmiles(mol, canonical=True, isomericSmiles=isomeric)
 
 
+def morgan_tanimoto_to_query(
+    query_smiles: str,
+    hit_smiles: str,
+    *,
+    radius: int = 2,
+    n_bits: int = 2048,
+) -> float | None:
+    """
+    Tanimoto similarity between two SMILES strings using RDKit Morgan bit vectors.
+
+    Used when an external service (e.g. PubChem 2D similarity) does not return a
+    per-hit coefficient in the client library; values are comparable for ranking
+    but may not match the remote fingerprint definition exactly.
+    """
+    from rdkit import Chem, DataStructs
+    from rdkit.Chem import AllChem
+
+    q = (query_smiles or "").strip()
+    h = (hit_smiles or "").strip()
+    if not q or not h:
+        return None
+    mq = Chem.MolFromSmiles(q)
+    mh = Chem.MolFromSmiles(h)
+    if mq is None or mh is None:
+        return None
+    try:
+        fp1 = AllChem.GetMorganFingerprintAsBitVect(mq, radius, nBits=n_bits)
+        fp2 = AllChem.GetMorganFingerprintAsBitVect(mh, radius, nBits=n_bits)
+        return float(DataStructs.TanimotoSimilarity(fp1, fp2))
+    except Exception:
+        return None
+
+
 def safe_mol_prop_string(mol, name: str) -> str:
     """Read an RDKit string property without crashing on non-UTF-8 SD field data."""
     if mol is None or not mol.HasProp(name):

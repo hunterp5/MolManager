@@ -1,0 +1,47 @@
+from __future__ import annotations
+
+from rdkit import Chem
+
+from chemmanager.workers.cluster_worker import ClusterWorker
+from chemmanager.workers.signals import WorkerSignals
+
+
+class _StepCancel:
+    def __init__(self, trigger_at: int):
+        self._calls = 0
+        self._trigger_at = max(1, int(trigger_at))
+
+    def is_set(self) -> bool:
+        self._calls += 1
+        return self._calls >= self._trigger_at
+
+
+def test_cluster_worker_emits_partial_rows_on_cancel():
+    sigs = WorkerSignals()
+    out: dict[str, object] = {}
+    sigs.calculated.connect(lambda rows, headers: out.update({"rows": rows, "headers": headers}))
+    sigs.cluster_failed.connect(lambda msg: out.update({"failed": msg}))
+
+    rows = [
+        (1, Chem.MolFromSmiles("CCO")),
+        (2, Chem.MolFromSmiles("CCN")),
+        (3, Chem.MolFromSmiles("CCC")),
+        (4, Chem.MolFromSmiles("CCCl")),
+    ]
+    worker = ClusterWorker(
+        rows=rows,
+        fp_choice="Morgan (r=2, n=1024)",
+        method="kmeans",
+        params={"n_clusters": 2},
+        column_name="Cluster",
+        signals=sigs,
+        cancel_event=_StepCancel(trigger_at=3),
+    )
+    worker.run()
+
+    assert out.get("failed") == "Cancelled."
+    got_rows = out.get("rows")
+    assert isinstance(got_rows, list)
+    assert len(got_rows) >= 1
+    assert out.get("headers") == ["Cluster"]
+

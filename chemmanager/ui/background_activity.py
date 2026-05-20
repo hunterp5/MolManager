@@ -1,4 +1,4 @@
-"""Unified signals and helpers for background work (process queue, Render 2D, …)."""
+"""Unified signals and helpers for background work (process queue, Render 2D, Boltz-2, Vina, …)."""
 
 from __future__ import annotations
 
@@ -11,7 +11,7 @@ class BackgroundActivityHub(QObject):
     """
     Single ``changed`` signal for anything that should refresh the Processes dialog
     or other observers. Relays ``ProcessQueueManager.snapshot_changed`` and accepts
-    explicit ``notify_changed()`` for activity outside the queue (e.g. Render 2D).
+    explicit ``notify_changed()`` for activity outside the queue (e.g. Render 2D, Boltz-2, Vina).
     """
 
     changed = pyqtSignal()
@@ -30,6 +30,14 @@ class BackgroundActivityHub(QObject):
 
     def render2d_batch_active(self) -> bool:
         fn = getattr(self._app, "render2d_batch_active", None)
+        return bool(fn()) if callable(fn) else False
+
+    def boltz2_predict_active(self) -> bool:
+        fn = getattr(self._app, "boltz2_predict_active", None)
+        return bool(fn()) if callable(fn) else False
+
+    def vina_dock_active(self) -> bool:
+        fn = getattr(self._app, "vina_dock_active", None)
         return bool(fn()) if callable(fn) else False
 
     def processes_view_rows(
@@ -55,10 +63,27 @@ class BackgroundActivityHub(QObject):
         for q in snap.get("queued") or []:
             rows.append((q.get("status", "Queued"), q.get("job_id", ""), q.get("title", "")))
             metas.append({"kind": "pq_queued", "job_id": q.get("job_id", "")})
+        for fr in snap.get("fast_running") or []:
+            rows.append((fr.get("status", "Running"), fr.get("job_id", ""), fr.get("title", "Interactive job")))
+            metas.append(
+                {
+                    "kind": "pq_fast_running",
+                    "job_id": fr.get("job_id", ""),
+                    "cancellable": bool(fr.get("cancellable", True)),
+                }
+            )
 
         if self.render2d_batch_active():
             rows.insert(0, ("Running", "(render-2d)", "Render 2D — drawing structures…"))
             metas.insert(0, {"kind": "render2d"})
+
+        if self.boltz2_predict_active():
+            rows.insert(0, ("Running", "(boltz2)", "Boltz-2 — boltz predict"))
+            metas.insert(0, {"kind": "boltz2"})
+
+        if self.vina_dock_active():
+            rows.insert(0, ("Running", "(vina)", "Dock (Vina) — vina"))
+            metas.insert(0, {"kind": "vina"})
 
         return rows, metas
 
@@ -82,6 +107,18 @@ class BackgroundActivityHub(QObject):
                 return (None, "Render 2D cancelled.")
             return (("Cancel", "Render 2D is not active."), None)
 
+        if kind == "boltz2":
+            cancel = getattr(app, "cancel_boltz2_predict", None)
+            if callable(cancel) and cancel():
+                return (None, "Boltz-2 stopped.")
+            return (("Cancel", "Boltz-2 is not running."), None)
+
+        if kind == "vina":
+            cancel = getattr(app, "cancel_vina_dock", None)
+            if callable(cancel) and cancel():
+                return (None, "Vina stopped.")
+            return (("Cancel", "Vina is not running."), None)
+
         if kind == "pq_running":
             run = pq.snapshot().get("running") if pq else None
             if not run or run.get("job_id") != meta.get("job_id"):
@@ -102,6 +139,12 @@ class BackgroundActivityHub(QObject):
                 return (None, f"Removed queued job ({jid}).")
             return (("Cancel", "That job is no longer in the queue."), None)
 
+        if kind == "pq_fast_running":
+            jid = meta.get("job_id") or ""
+            if pq and pq.cancel_fast_job(jid):
+                return (None, "Cancelling interactive job…")
+            return (("Cancel", "That interactive job is no longer running."), None)
+
         return (("Cancel", "Unknown row type."), None)
 
     def clear_queued_jobs(self) -> int:
@@ -115,7 +158,15 @@ class BackgroundActivityHub(QObject):
             app._invalidate_substructure_async_jobs()
         if hasattr(app, "cancel_render_2d_batch"):
             app.cancel_render_2d_batch()
+        if hasattr(app, "cancel_boltz2_predict"):
+            app.cancel_boltz2_predict()
+        if hasattr(app, "cancel_vina_dock"):
+            app.cancel_vina_dock()
         pq = getattr(app, "process_queue", None)
         if pq is not None:
-            pq.clear_queued()
-            pq.cancel_running()
+            shutdown = getattr(pq, "shutdown_for_exit", None)
+            if callable(shutdown):
+                shutdown()
+            else:
+                pq.clear_queued()
+                pq.cancel_running()

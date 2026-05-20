@@ -2,9 +2,8 @@
 
 from __future__ import annotations
 
-from PyQt5.QtCore import Qt
 from ...config import load_config
-from ..qt_widget_utils import apply_monospace_to_text_edit
+from ..qt_widget_utils import apply_monospace_to_text_edit, make_window_minimizable
 from PyQt5.QtWidgets import (
     QCheckBox,
     QDialog,
@@ -20,7 +19,6 @@ from PyQt5.QtWidgets import (
     QSpinBox,
     QTextEdit,
     QVBoxLayout,
-    QWidget,
 )
 
 
@@ -70,7 +68,7 @@ class ExternalDBDialog(QDialog):
         src_lyt.addLayout(toggles)
 
         self.query = QTextEdit()
-        self._mono(self.query)
+        apply_monospace_to_text_edit(self.query)
         self.query.setPlaceholderText("SELECT * FROM my_table")
         src_lyt.addWidget(self.query)
 
@@ -129,6 +127,7 @@ class ExternalDBDialog(QDialog):
         self.rb_table.toggled.connect(self._sync_mode)
         self.url.textChanged.connect(self._update_driver_hint)
         self._update_driver_hint()
+        make_window_minimizable(self)
 
     def _sync_mode(self) -> None:
         is_query = self.rb_query.isChecked()

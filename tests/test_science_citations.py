@@ -16,3 +16,9 @@ def test_descriptor_footer_html_links() -> None:
     html = sc.descriptor_dialog_footer_html()
     assert "doi.org" in html
     assert "Mayr" in html
+
+
+def test_surechembl_patent_html() -> None:
+    html = sc.surechembl_patent_search_html()
+    assert "SureChEMBL" in html
+    assert "surechembl" in html.lower()

@@ -1,4 +1,4 @@
-"""Small reusable widgets; filter cards live in :mod:`chemmanager.ui.filters.cards`."""
+"""Small reusable widgets; filter cards live in :mod:`MolManager.ui.filters.cards`."""
 
 from PyQt5.QtCore import Qt
 from PyQt5.QtWidgets import QTableWidgetItem

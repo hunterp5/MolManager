@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
+from PyQt5.QtCore import QTimer
 from PyQt5.QtGui import QPixmap
 from PyQt5.QtWidgets import QUndoCommand
 from rdkit import Chem
 
+from ...config import load_config
 from ..compound_table_model import CompoundTableModel
 from ..widgets import CategoryFilterCard, FilterCard, TextFilterCard
 
@@ -21,73 +24,184 @@ __all__ = [
     "UndoDeleteColumnCommand",
     "UndoDuplicateColumnCommand",
     "UndoInsertRowCommand",
+    "collect_delete_row_snapshots",
 ]
+
+
+@dataclass
+class DeleteRowSnapshot:
+    """Captured row state for undo after delete."""
+
+    orig_row: int
+    oid: int
+    cells: dict[str, str]
+    mol_copy: Chem.Mol | None = None
+    structure_pixmap: QPixmap | None = None
+    extra_pixmaps: dict[str, QPixmap] = field(default_factory=dict)
+    light: bool = False
+
+
+def collect_delete_row_snapshots(
+    app: TableUIMixin,
+    oids: frozenset[int],
+    *,
+    light: bool,
+) -> list[DeleteRowSnapshot]:
+    """One table scan — avoids per-OID ``logical_row_for_oid`` when deleting large selections."""
+    if not oids:
+        return []
+    kill = {int(x) for x in oids}
+    data_headers = [h for h in app.headers[2:] if h != "Structure"]
+    out: list[DeleteRowSnapshot] = []
+    model = app._table_model
+    for r, row in enumerate(model._rows):  # noqa: SLF001 — bulk path; model owns rows
+        oid = int(row.oid)
+        if oid not in kill:
+            continue
+        cells = {h: str(row.values.get(h, "") or "") for h in data_headers}
+        if light:
+            out.append(DeleteRowSnapshot(orig_row=r, oid=oid, cells=cells, light=True))
+            continue
+        pm = app.mols.get(oid)
+        mol_copy = Chem.Mol(pm) if pm is not None else None
+        spm = model.structure_pixmap_copy(oid)
+        extra = model.extra_column_pixmaps_copy(oid)
+        out.append(
+            DeleteRowSnapshot(
+                orig_row=r,
+                oid=oid,
+                cells=cells,
+                mol_copy=mol_copy,
+                structure_pixmap=spm,
+                extra_pixmaps=extra,
+                light=False,
+            )
+        )
+    return out
 
 
 class UndoDeleteRowsCommand(QUndoCommand):
     """Undo/redo for removing one or more table rows (model + mols + structure pixmaps)."""
 
-    def __init__(self, app: TableUIMixin, rows: list[int]) -> None:
-        n = len(set(rows))
+    def __init__(
+        self,
+        app: TableUIMixin,
+        rows: list[int] | None = None,
+        *,
+        oids: frozenset[int] | None = None,
+        snapshots: list[DeleteRowSnapshot] | None = None,
+    ) -> None:
+        if snapshots is not None:
+            self._snapshots = list(snapshots)
+        elif oids is not None:
+            light = len(oids) >= load_config().table_delete_batch_min
+            self._snapshots = collect_delete_row_snapshots(app, oids, light=light)
+        else:
+            oid_set = app._oids_for_row_indices(rows or [])
+            light = len(oid_set) >= load_config().table_delete_batch_min
+            self._snapshots = collect_delete_row_snapshots(app, oid_set, light=light)
+        n = len(self._snapshots)
         super().__init__(f"Delete {n} row(s)" if n != 1 else "Delete row")
         self._app = app
-        self._snapshots: list[
-            tuple[int, int, dict[str, str], Chem.Mol | None, QPixmap | None, dict[str, QPixmap]]
-        ] = []
-        for r in sorted(set(rows)):
-            t0 = app._table_model.cell_text(r, 0)
-            if not t0.isdigit():
-                continue
-            oid = int(t0)
-            cells: dict[str, str] = {}
-            for h in app.headers[2:]:
-                if h == "Structure":
-                    continue
-                cells[h] = app._table_model.value_for_header(r, h)
-            pm = app.mols.get(oid)
-            mol_copy = Chem.Mol(pm) if pm is not None else None
-            spm = app._table_model.structure_pixmap_copy(oid)
-            extra = app._table_model.extra_column_pixmaps_copy(oid)
-            self._snapshots.append((r, oid, cells, mol_copy, spm, extra))
 
     def snapshot_count(self) -> int:
         return len(self._snapshots)
 
+    def _use_batch_path(self) -> bool:
+        return len(self._snapshots) >= load_config().table_delete_batch_min
+
+    def _oids_from_snapshots(self) -> frozenset[int]:
+        return frozenset(s.oid for s in self._snapshots)
+
+    def _apply_delete_to_app(self) -> None:
+        app = self._app
+        oids = self._oids_from_snapshots()
+        if self._use_batch_path():
+            app._table_model.remove_rows_by_oids(oids)
+        else:
+            for oid in sorted(oids, key=lambda o: -app._table_model.logical_row_for_oid(o)):
+                r = app._table_model.logical_row_for_oid(oid)
+                if r >= 0:
+                    app._table_model.remove_row_at(r)
+        for oid in oids:
+            app.mols.pop(oid, None)
+            app.zoomed_ids.discard(oid)
+        app._confs_sidecar_discard_oids(list(oids))
+        app._clear_table_selection_after_delete()
+
+    def _restore_rows_to_app(self) -> None:
+        app = self._app
+        ordered = sorted(self._snapshots, key=lambda s: s.orig_row)
+        if self._use_batch_path():
+            batch = [(s.orig_row, s.oid, dict(s.cells)) for s in ordered]
+            app._table_model.insert_rows_batch(batch)
+            for snap in ordered:
+                self._restore_row_assets(app, snap)
+        else:
+            for k, snap in enumerate(ordered):
+                insert_at = snap.orig_row + k
+                app._table_model.insert_row_at(insert_at, snap.oid, dict(snap.cells))
+                self._restore_row_assets(app, snap)
+
+    @staticmethod
+    def _restore_row_assets(app: TableUIMixin, snap: DeleteRowSnapshot) -> None:
+        if snap.light:
+            return
+        if snap.mol_copy is not None:
+            app.mols[snap.oid] = Chem.Mol(snap.mol_copy)
+        else:
+            app.mols.pop(snap.oid, None)
+        if snap.structure_pixmap is not None:
+            app._table_model.set_structure_pixmap(snap.oid, snap.structure_pixmap)
+        else:
+            app._table_model.set_structure_pixmap(snap.oid, None)
+        for h, pm in snap.extra_pixmaps.items():
+            app._table_model.set_column_pixmap(snap.oid, h, pm)
+
+    def _refresh_after_table_mutation(self) -> None:
+        app = self._app
+        mark = getattr(app, "_mark_sqlite_store_dirty", None)
+        if callable(mark):
+            mark()
+        if self._use_batch_path():
+            QTimer.singleShot(0, app._refresh_table_after_bulk_delete)
+        else:
+            app.calculate_global_bounds()
+            app.apply_filters()
+
     def redo(self) -> None:
         app = self._app
         app.table.setSortingEnabled(False)
-        oids = [s[1] for s in self._snapshots]
-        for oid in sorted(oids, key=lambda o: -app._table_model.logical_row_for_oid(o)):
-            r = app._table_model.logical_row_for_oid(oid)
-            if r >= 0:
-                app._table_model.remove_row_at(r)
-                app.mols.pop(oid, None)
-                app.zoomed_ids.discard(oid)
-        app._confs_sidecar_discard_oids(oids)
-        app.calculate_global_bounds()
-        app.apply_filters()
+        try:
+            app.table.setUpdatesEnabled(False)
+        except Exception:
+            pass
+        try:
+            self._apply_delete_to_app()
+        finally:
+            try:
+                app.table.setUpdatesEnabled(True)
+            except Exception:
+                pass
+        self._refresh_after_table_mutation()
         app.table.setSortingEnabled(False)
         app.status_label.setText(f"Deleted {len(self._snapshots)} row(s).")
 
     def undo(self) -> None:
         app = self._app
         app.table.setSortingEnabled(False)
-        for k, snap in enumerate(sorted(self._snapshots, key=lambda s: s[0])):
-            orig_row, oid, cells, mol_copy, spm, extra = snap
-            insert_at = orig_row + k
-            app._table_model.insert_row_at(insert_at, oid, dict(cells))
-            if mol_copy is not None:
-                app.mols[oid] = Chem.Mol(mol_copy)
-            else:
-                app.mols.pop(oid, None)
-            if spm is not None:
-                app._table_model.set_structure_pixmap(oid, spm)
-            else:
-                app._table_model.set_structure_pixmap(oid, None)
-            for h, pm in extra.items():
-                app._table_model.set_column_pixmap(oid, h, pm)
-        app.calculate_global_bounds()
-        app.apply_filters()
+        try:
+            app.table.setUpdatesEnabled(False)
+        except Exception:
+            pass
+        try:
+            self._restore_rows_to_app()
+        finally:
+            try:
+                app.table.setUpdatesEnabled(True)
+            except Exception:
+                pass
+        self._refresh_after_table_mutation()
         app.table.setSortingEnabled(False)
         app.status_label.setText(f"Undo: restored {len(self._snapshots)} row(s).")
 
@@ -168,6 +282,35 @@ class UndoCellTextChangeCommand(QUndoCommand):
         app.status_label.setText("Undo: cell value reverted.")
 
 
+def _sync_filters_after_column_removed(app: TableUIMixin, hdr: str) -> None:
+    """Update filter UI after a column is removed (no full-table bounds/filter pass)."""
+    app.global_bounds.pop(hdr, None)
+    cols = app._filterable_data_column_names()
+    to_rem = []
+    for f in app.filters:
+        if isinstance(f, FilterCard):
+            if f.update_prop_list(list(app.global_bounds.keys()), hdr, None):
+                to_rem.append(f)
+        elif isinstance(f, (TextFilterCard, CategoryFilterCard)):
+            if f.update_prop_list(cols, hdr, None):
+                to_rem.append(f)
+    for f in to_rem:
+        app.remove_filter(f)
+
+
+def _sync_bounds_after_column_restored(app: TableUIMixin, hdr: str) -> None:
+    """Rescan bounds for one restored column and refresh filter property lists."""
+    meta = app._table_model.numeric_bounds_for_header(hdr)
+    if meta is not None:
+        app.global_bounds[hdr] = meta
+    cols = app._filterable_data_column_names()
+    for f in app.filters:
+        if isinstance(f, FilterCard):
+            f.update_prop_list(list(app.global_bounds.keys()))
+        elif isinstance(f, (TextFilterCard, CategoryFilterCard)):
+            f.update_prop_list(cols)
+
+
 class UndoDeleteColumnCommand(QUndoCommand):
     """Undo/redo deleting a data column (not ID or Structure)."""
 
@@ -180,17 +323,10 @@ class UndoDeleteColumnCommand(QUndoCommand):
         self._was_pixmap = app._table_model.is_pixmap_data_column(hdr)
         self._text_by_oid: dict[int, str] = {}
         self._pixmap_by_oid: dict[int, QPixmap] = {}
-        for r in range(app._table_model.rowCount()):
-            t0 = app._table_model.cell_text(r, 0)
-            if not t0.isdigit():
-                continue
-            oid = int(t0)
-            if self._was_pixmap:
-                pm = app._table_model.column_pixmap_copy(oid, hdr)
-                if pm is not None:
-                    self._pixmap_by_oid[oid] = pm
-            else:
-                self._text_by_oid[oid] = app._table_model.value_for_header(r, hdr)
+        if self._was_pixmap:
+            self._pixmap_by_oid = app._table_model.column_pixmaps_by_oid(hdr)
+        else:
+            self._text_by_oid = app._table_model.column_text_by_oid(hdr)
 
     def redo(self) -> None:
         app = self._app
@@ -199,38 +335,45 @@ class UndoDeleteColumnCommand(QUndoCommand):
         except ValueError:
             return
         app._session_sort = None
-        app._table_model.remove_column_at(idx)
-        app.headers.pop(idx)
-        app.global_bounds.pop(self._hdr, None)
-        cols = app._filterable_data_column_names()
-        to_rem = []
-        for f in app.filters:
-            if isinstance(f, FilterCard):
-                if f.update_prop_list(list(app.global_bounds.keys()), self._hdr, None):
-                    to_rem.append(f)
-            elif isinstance(f, (TextFilterCard, CategoryFilterCard)):
-                if f.update_prop_list(cols, self._hdr, None):
-                    to_rem.append(f)
-        for f in to_rem:
-            app.remove_filter(f)
-        app.calculate_global_bounds()
-        app.apply_filters()
+        try:
+            app.table.setUpdatesEnabled(False)
+        except Exception:
+            pass
+        try:
+            app._table_model.remove_column_at(idx)
+            app.headers.pop(idx)
+            _sync_filters_after_column_removed(app, self._hdr)
+        finally:
+            try:
+                app.table.setUpdatesEnabled(True)
+            except Exception:
+                pass
         app.status_label.setText(f"Deleted column '{self._hdr}'.")
 
     def undo(self) -> None:
         app = self._app
         idx = min(self._logical_col, len(app.headers))
-        app.headers.insert(idx, self._hdr)
-        app._table_model.insert_column_at(idx, self._hdr, copy_from_logical=None)
-        if self._was_pixmap:
-            app._table_model.register_pixmap_column(self._hdr)
-            for oid, pm in self._pixmap_by_oid.items():
-                app._table_model.set_column_pixmap(oid, self._hdr, pm)
-        else:
-            for oid, txt in self._text_by_oid.items():
-                app._table_model.set_cell_text(oid, self._hdr, txt)
-        app.calculate_global_bounds()
-        app.apply_filters()
+        try:
+            app.table.setUpdatesEnabled(False)
+        except Exception:
+            pass
+        try:
+            app.headers.insert(idx, self._hdr)
+            app._table_model.insert_column_at(idx, self._hdr, copy_from_logical=None)
+            if self._was_pixmap:
+                app._table_model.register_pixmap_column(self._hdr)
+                for oid, pm in self._pixmap_by_oid.items():
+                    app._table_model.set_column_pixmap(oid, self._hdr, pm)
+            else:
+                pairs = list(self._text_by_oid.items())
+                if pairs:
+                    app._table_model.set_column_text_by_oids(self._hdr, pairs)
+            _sync_bounds_after_column_restored(app, self._hdr)
+        finally:
+            try:
+                app.table.setUpdatesEnabled(True)
+            except Exception:
+                pass
         app.status_label.setText(f"Undo: restored column '{self._hdr}'.")
 
 
@@ -251,9 +394,19 @@ class UndoDuplicateColumnCommand(QUndoCommand):
             return
         app.table.setSortingEnabled(False)
         dup_col = src + 1
-        app.headers.insert(dup_col, self._dup_name)
-        app._table_model.insert_column_at(dup_col, self._dup_name, copy_from_logical=src)
-        app.calculate_global_bounds()
+        try:
+            app.table.setUpdatesEnabled(False)
+        except Exception:
+            pass
+        try:
+            app._table_model.duplicate_column_at(dup_col, self._dup_name, src)
+            app.headers.insert(dup_col, self._dup_name)
+            app.calculate_global_bounds()
+        finally:
+            try:
+                app.table.setUpdatesEnabled(True)
+            except Exception:
+                pass
         app.table.setSortingEnabled(False)
         app.status_label.setText(f"Duplicated column '{self._src_name}'.")
 
@@ -264,22 +417,19 @@ class UndoDuplicateColumnCommand(QUndoCommand):
         except ValueError:
             return
         app._session_sort = None
-        app._table_model.remove_column_at(idx)
-        app.headers.pop(idx)
-        app.global_bounds.pop(self._dup_name, None)
-        cols = app._filterable_data_column_names()
-        to_rem = []
-        for f in app.filters:
-            if isinstance(f, FilterCard):
-                if f.update_prop_list(list(app.global_bounds.keys()), self._dup_name, None):
-                    to_rem.append(f)
-            elif isinstance(f, (TextFilterCard, CategoryFilterCard)):
-                if f.update_prop_list(cols, self._dup_name, None):
-                    to_rem.append(f)
-        for f in to_rem:
-            app.remove_filter(f)
-        app.calculate_global_bounds()
-        app.apply_filters()
+        try:
+            app.table.setUpdatesEnabled(False)
+        except Exception:
+            pass
+        try:
+            app._table_model.remove_column_at(idx)
+            app.headers.pop(idx)
+            _sync_filters_after_column_removed(app, self._dup_name)
+        finally:
+            try:
+                app.table.setUpdatesEnabled(True)
+            except Exception:
+                pass
         app.status_label.setText(f"Undo: removed duplicated column '{self._dup_name}'.")
 
 

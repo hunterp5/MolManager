@@ -15,6 +15,7 @@ from PyQt5.QtWidgets import (
 )
 
 from ...science_citations import descriptor_dialog_footer_html
+from ..qt_widget_utils import make_window_minimizable
 from .scope import selection_scope_checked
 
 
@@ -118,20 +119,21 @@ class PropertyDialog(QDialog):
         }
 
         categories["Fingerprints"] = {
-            "Morgan (r=2,1024) bits": "FP_Morgan_2_1024",
+            "2D pharmacophore (Gobbi) on-bits": "FP_Pharm2D_Gobbi",
             "MACCS (166) bits": "FP_MACCS_166",
+            "Morgan (r=2,1024) bits": "FP_Morgan_2_1024",
             "RDKit path FP (2048 bits)": "FP_RDK_2048",
             "RDKit path FP (4096 bits)": "FP_RDK_4096",
-            "2D pharmacophore (Gobbi) on-bits": "FP_Pharm2D_Gobbi",
         }
 
         self.cbs = {}
-        for cat_name, props in categories.items():
+        for cat_name in sorted(categories, key=str.casefold):
+            props = categories[cat_name]
             scroll = QScrollArea()
             scroll.setWidgetResizable(True)
             tab = QWidget()
             tab_lyt = QVBoxLayout(tab)
-            for disp, internal in props.items():
+            for disp, internal in sorted(props.items(), key=lambda kv: kv[0].casefold()):
                 cb = QCheckBox(disp)
                 tab_lyt.addWidget(cb)
                 self.cbs[disp] = (cb, internal)
@@ -144,6 +146,7 @@ class PropertyDialog(QDialog):
         bb = QDialogButtonBox(QDialogButtonBox.Ok)
         bb.accepted.connect(self.accept)
         l.addWidget(bb)
+        make_window_minimizable(self)
 
     def get_selected(self):
         sel_disp, sel_int = [], []
