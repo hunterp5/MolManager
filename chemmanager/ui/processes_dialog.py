@@ -17,6 +17,8 @@ from PyQt5.QtWidgets import (
     QVBoxLayout,
 )
 
+from .qt_widget_utils import make_window_minimizable
+
 if TYPE_CHECKING:
     from .main_window import ChemicalTableApp
 
@@ -46,7 +48,7 @@ class ProcessesDialog(QDialog):
         self._btn_cancel = QPushButton("Cancel")
         self._btn_cancel.setToolTip(
             "Apply to the selected row: stop a running job (cooperative), end Render 2D, "
-            "or remove a queued job from the line without running it."
+            "stop Boltz-2 predict, stop Vina docking, or remove a queued job from the line without running it."
         )
         self._btn_clear = QPushButton("Clear queue")
         self._btn_clear.setToolTip("Remove all jobs waiting to run (does not stop the current job).")
@@ -67,6 +69,7 @@ class ProcessesDialog(QDialog):
             hub.changed.connect(self._reload)
 
         self._reload()
+        make_window_minimizable(self)
 
     def _selection_meta(self) -> dict | None:
         sel = self._table.selectedIndexes()
@@ -87,8 +90,16 @@ class ProcessesDialog(QDialog):
         if m.get("kind") == "render2d":
             hub = getattr(self._app, "background_activity", None)
             self._btn_cancel.setEnabled(bool(hub.render2d_batch_active()) if hub is not None else False)
+        elif m.get("kind") == "boltz2":
+            hub = getattr(self._app, "background_activity", None)
+            self._btn_cancel.setEnabled(bool(hub.boltz2_predict_active()) if hub is not None else False)
+        elif m.get("kind") == "vina":
+            hub = getattr(self._app, "background_activity", None)
+            self._btn_cancel.setEnabled(bool(hub.vina_dock_active()) if hub is not None else False)
         elif m.get("kind") == "pq_running":
             self._btn_cancel.setEnabled(bool(m.get("cancellable")))
+        elif m.get("kind") == "pq_fast_running":
+            self._btn_cancel.setEnabled(bool(m.get("cancellable", True)))
         elif m.get("kind") == "pq_queued":
             self._btn_cancel.setEnabled(True)
         else:
@@ -125,6 +136,10 @@ class ProcessesDialog(QDialog):
             return False
         if prev.get("kind") == "render2d":
             return True
+        if prev.get("kind") == "boltz2":
+            return True
+        if prev.get("kind") == "vina":
+            return True
         return prev.get("job_id") == cur.get("job_id")
 
     def _on_cancel(self) -> None:
@@ -140,6 +155,16 @@ class ProcessesDialog(QDialog):
                 app.status_label.setText("Render 2D cancelled.")
             else:
                 QMessageBox.information(self, "Cancel", "Render 2D is not active.")
+        elif kind == "boltz2":
+            if hasattr(app, "cancel_boltz2_predict") and app.cancel_boltz2_predict():
+                app.status_label.setText("Boltz-2 stopped.")
+            else:
+                QMessageBox.information(self, "Cancel", "Boltz-2 is not running.")
+        elif kind == "vina":
+            if hasattr(app, "cancel_vina_dock") and app.cancel_vina_dock():
+                app.status_label.setText("Vina stopped.")
+            else:
+                QMessageBox.information(self, "Cancel", "Vina is not running.")
         elif kind == "pq_running":
             run = pq.snapshot().get("running") if pq else None
             if not run or run.get("job_id") != m.get("job_id"):
@@ -158,6 +183,12 @@ class ProcessesDialog(QDialog):
                 app.status_label.setText(f"Removed queued job ({jid}).")
             else:
                 QMessageBox.information(self, "Cancel", "That job is no longer in the queue.")
+        elif kind == "pq_fast_running":
+            jid = m.get("job_id") or ""
+            if pq and pq.cancel_fast_job(jid):
+                app.status_label.setText("Cancelling interactive job…")
+            else:
+                QMessageBox.information(self, "Cancel", "That interactive job is no longer running.")
         else:
             QMessageBox.information(self, "Cancel", "Unknown row type.")
         self._reload()

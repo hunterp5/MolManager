@@ -1,7 +1,10 @@
 """Fingerprint similarity batch worker."""
 
+from __future__ import annotations
+
 import logging
 import os
+import re
 import threading
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 
@@ -15,6 +18,17 @@ from .signals import FPSimilaritySignals
 
 logger = logging.getLogger(__name__)
 
+# Labels for Tools → Fingerprint Similarity and Tools → Cluster (same strings → same fingerprints).
+SIMILARITY_FP_TYPE_LABELS: list[str] = [
+    "Morgan (r=2, n=1024)",
+    "Morgan (r=3, n=1024)",
+    "Morgan (r=2, n=2048)",
+    "RDK (2048)",
+    "MACCS (166)",
+    "Atom pair (hashed, 2048 bits)",
+    "Topological torsion (hashed, 2048 bits)",
+]
+
 
 def _rdk_fingerprint_bitvect(mol: Chem.Mol, max_path: int = 5, fp_size: int = 2048):
     """RDKit topological path fingerprint (ExplicitBitVect), compatible across RDKit versions."""
@@ -24,17 +38,50 @@ def _rdk_fingerprint_bitvect(mol: Chem.Mol, max_path: int = 5, fp_size: int = 20
     return rdmolops.RDKFingerprint(mol, minPath=1, maxPath=max_path, fpSize=fp_size)
 
 
+def _morgan_radius_and_nbits(fp_choice: str) -> tuple[int, int]:
+    """Parse ``r=`` / ``n=`` from UI labels; defaults match the original Morgan (r=2, n=1024)."""
+    r = 2
+    n = 1024
+    m_r = re.search(r"r\s*=\s*(\d+)", fp_choice, re.I)
+    m_n = re.search(r"n\s*=\s*(\d+)", fp_choice, re.I)
+    if m_r:
+        r = int(m_r.group(1))
+    if m_n:
+        n = int(m_n.group(1))
+    return r, n
+
+
+def _rdk_nbits_from_label(fp_choice: str) -> int:
+    m = re.search(r"\((\d+)\)", fp_choice)
+    if m:
+        return max(64, min(8192, int(m.group(1))))
+    return 2048
+
+
+def _hashed_nbits_from_label(fp_choice: str, default: int = 2048) -> int:
+    m = re.search(r"(\d+)\s*bits?", fp_choice, re.I)
+    if m:
+        return max(64, min(8192, int(m.group(1))))
+    return default
+
+
 def fingerprint_bitvect_for_ui_choice(mol: Chem.Mol, fp_choice: str):
-    """Bit vector for Morgan / RDK / MACCS strings used in the Fingerprint Similarity dialog."""
+    """Bit vector for fingerprint labels used in Fingerprint Similarity and Cluster dialogs."""
     try:
         if fp_choice.startswith("Morgan"):
-            r, n = 2, 1024
-            return AllChem.GetMorganFingerprintAsBitVect(mol, r, nBits=n)
+            radius, n_bits = _morgan_radius_and_nbits(fp_choice)
+            return AllChem.GetMorganFingerprintAsBitVect(mol, radius, nBits=n_bits)
         if fp_choice.startswith("RDK"):
-            n = 2048
+            n = _rdk_nbits_from_label(fp_choice)
             return _rdk_fingerprint_bitvect(mol, max_path=5, fp_size=n)
         if fp_choice.startswith("MACCS"):
             return rdMolDescriptors.GetMACCSKeysFingerprint(mol)
+        if fp_choice.startswith("Atom pair"):
+            n_bits = _hashed_nbits_from_label(fp_choice, 2048)
+            return AllChem.GetHashedAtomPairFingerprintAsBitVect(mol, nBits=n_bits)
+        if fp_choice.startswith("Topological"):
+            n_bits = _hashed_nbits_from_label(fp_choice, 2048)
+            return AllChem.GetHashedTopologicalTorsionFingerprintAsBitVect(mol, nBits=n_bits)
     except Exception:
         return None
     return None
@@ -108,7 +155,7 @@ class FPSimilarityWorker(QRunnable):
                                         pass
                                     pending.discard(f)
                             break
-                        completed, pending = wait(pending, timeout=0.35, return_when=FIRST_COMPLETED)
+                        completed, pending = wait(pending, timeout=0.08, return_when=FIRST_COMPLETED)
                         for f in completed:
                             if f.cancelled():
                                 continue
@@ -122,4 +169,3 @@ class FPSimilarityWorker(QRunnable):
         except Exception as e:
             logger.exception("FPSimilarityWorker failed")
             self.signals.failed.emit(str(e))
-

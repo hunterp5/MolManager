@@ -2,8 +2,16 @@
 
 TOOLS_ARROW_RENDER_2D = "Tools → Render 2D"
 TOOL_RENDER_2D = "Render 2D"
-TOOL_RGROUP_DECOMP = "R Group Decomposition"
+TOOL_CORE_DECOMP = "Core-Based Decomposition"
+TOOL_BRICS_DECOMP = "BRICS Decomposition"
+TOOL_RECAP_DECOMP = "RECAP Decomposition"
+TOOL_BRICS_RECOMP = "BRICS Recomposition"
+TOOL_RECAP_RECOMP = "RECAP Recomposition"
 TOOL_CALCULATOR = "Calculator"
+TOOL_SINGLE_CONFORMATION = "Generate Single Conformation"
+
+# Column header when importing similarity hits (PubChem, ChEMBL, SureChEMBL) or adding FP similarity scores.
+COLUMN_TANIMOTO_SIMILARITY = "Tanimoto Similarity"
 
 STRUCTURE_PENDING_HINT = (
     "No 2D structure yet.\n"

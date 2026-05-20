@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 from dataclasses import dataclass
 
@@ -20,7 +20,9 @@ from PyQt5.QtWidgets import (
 )
 
 from ...workers import ConformerGenParams, SuperposeParams
-from ..strings import DISCONNECT_FRAGMENTS_HELP, TOOL_RGROUP_DECOMP
+from ..qt_widget_utils import make_window_minimizable
+from ..strings import DISCONNECT_FRAGMENTS_HELP, TOOL_CORE_DECOMP, TOOL_SINGLE_CONFORMATION
+from ...fragment_decomposition import detect_fragment_column_prefixes
 from .scope import selection_scope_checked
 
 
@@ -79,6 +81,7 @@ class DisconnectFragmentsDialog(QDialog):
         box.rejected.connect(self.reject)
         root.addWidget(box)
         self._sync_name_enabled()
+        make_window_minimizable(self)
 
     def _sync_name_enabled(self) -> None:
         self.name_edit.setEnabled(self.radio_newcol.isChecked())
@@ -108,6 +111,70 @@ class DisconnectFragmentsDialog(QDialog):
         new_col = None if replace_structure else (self.name_edit.text() or "").strip()
         only_sel = selection_scope_checked(self)
         return src, replace_structure, new_col, only_sel
+
+
+class GenerateSingleConformationDialog(QDialog):
+    """Embed one conformer per row, minimize, and store in the ``confs`` column."""
+
+    def __init__(self, selected_row_count: int = 0, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle(TOOL_SINGLE_CONFORMATION)
+        self.resize(460, 320)
+        self._have_selection = selected_row_count > 0
+        root = QVBoxLayout(self)
+        intro = QLabel(
+            "For each row, embed a single 3D conformer with ETKDG, minimize with MMFF94 or UFF, "
+            "and write the result to the \"confs\" column (one lowest-energy geometry per structure). "
+            "Right-click the cell and choose \"View Conformers…\" to open the 3D viewer. "
+            "The working Structure column is unchanged."
+        )
+        intro.setWordWrap(True)
+        root.addWidget(intro)
+        form = QFormLayout()
+        self.ff_combo = QComboBox()
+        self.ff_combo.addItems(["MMFF", "UFF"])
+        self.ff_combo.setToolTip("MMFF94 when parameters exist; otherwise falls back to UFF automatically.")
+        form.addRow("Minimize with:", self.ff_combo)
+
+        self.seed_sb = QSpinBox()
+        self.seed_sb.setRange(0, 2_147_483_647)
+        self.seed_sb.setValue(0xC0FFEE)
+        self.seed_sb.setToolTip("Random seed passed to the ETKDG embedder.")
+        form.addRow("Random seed:", self.seed_sb)
+
+        self.max_iters_sb = QSpinBox()
+        self.max_iters_sb.setRange(20, 2000)
+        self.max_iters_sb.setValue(200)
+        self.max_iters_sb.setToolTip("Maximum minimizer iterations for the conformer.")
+        form.addRow("Max minimizer iterations:", self.max_iters_sb)
+        root.addLayout(form)
+
+        scope_box = QGroupBox("Scope")
+        scope_lyt = QVBoxLayout(scope_box)
+        self.only_selected_cb = QCheckBox("Only selected rows")
+        self._only_selected_scope_prefix = "Only selected rows"
+        if self._have_selection:
+            self.only_selected_cb.setText(f"{self._only_selected_scope_prefix} ({selected_row_count} row(s))")
+        else:
+            self.only_selected_cb.setEnabled(False)
+        scope_lyt.addWidget(self.only_selected_cb)
+        root.addWidget(scope_box)
+
+        box = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        box.accepted.connect(self.accept)
+        box.rejected.connect(self.reject)
+        root.addWidget(box)
+        make_window_minimizable(self)
+
+    def only_selected_rows(self) -> bool:
+        return selection_scope_checked(self)
+
+    def params(self) -> ConformerGenParams:
+        return ConformerGenParams.single_lowest_energy(
+            force_field=str(self.ff_combo.currentText()),
+            random_seed=int(self.seed_sb.value()),
+            max_iterations=int(self.max_iters_sb.value()),
+        )
 
 
 class GenerateConformationsDialog(QDialog):
@@ -192,6 +259,7 @@ class GenerateConformationsDialog(QDialog):
         box.accepted.connect(self.accept)
         box.rejected.connect(self.reject)
         root.addWidget(box)
+        make_window_minimizable(self)
 
     def only_selected_rows(self) -> bool:
         return selection_scope_checked(self)
@@ -285,6 +353,7 @@ class SuperposeConformersDialog(QDialog):
         box.accepted.connect(self.accept)
         box.rejected.connect(self.reject)
         root.addWidget(box)
+        make_window_minimizable(self)
 
     def only_selected_rows(self) -> bool:
         return selection_scope_checked(self)
@@ -301,8 +370,192 @@ class SuperposeConformersDialog(QDialog):
 
 
 @dataclass(frozen=True)
-class RGroupDecompDialogParams:
-    """Arguments from :class:`RGroupDecompositionDialog` for the worker."""
+class FragmentDecompDialogParams:
+    """Arguments from :class:`FragmentDecompositionDialog` for the worker."""
+
+    structure_source: str
+    column_prefix: str
+    method: str  # "brics" | "recap"
+    tool_title: str
+
+
+class FragmentDecompositionDialog(QDialog):
+    """Structure source, column prefix, and scope for BRICS or RECAP decomposition."""
+
+    def __init__(
+        self,
+        *,
+        window_title: str,
+        intro: str,
+        default_prefix: str,
+        method: str,
+        structure_sources: list[str],
+        selected_row_count: int,
+        parent=None,
+    ):
+        super().__init__(parent)
+        self._method = method
+        self._tool_title = window_title
+        self.setWindowTitle(window_title)
+        self.setMinimumWidth(420)
+        self.resize(480, 0)
+        self._have_selection = selected_row_count > 0
+
+        root = QVBoxLayout(self)
+        root.setContentsMargins(10, 10, 10, 8)
+        root.setSpacing(8)
+
+        intro_lbl = QLabel(intro)
+        intro_lbl.setWordWrap(True)
+        root.addWidget(intro_lbl)
+
+        form = QFormLayout()
+        self.src_combo = QComboBox()
+        self.src_combo.addItems(structure_sources)
+        form.addRow("Molecules from:", self.src_combo)
+
+        self.prefix_edit = QLineEdit()
+        self.prefix_edit.setText(default_prefix)
+        self.prefix_edit.setToolTip("New columns are named PREFIX_1, PREFIX_2, … (one per fragment).")
+        form.addRow("Column name prefix:", self.prefix_edit)
+        root.addLayout(form)
+
+        scope_box = QGroupBox("Scope")
+        scope_lyt = QVBoxLayout(scope_box)
+        self.only_selected_cb = QCheckBox("Only selected rows")
+        self._only_selected_scope_prefix = "Only selected rows"
+        if self._have_selection:
+            self.only_selected_cb.setText(f"{self._only_selected_scope_prefix} ({selected_row_count} row(s))")
+        else:
+            self.only_selected_cb.setEnabled(False)
+        scope_lyt.addWidget(self.only_selected_cb)
+        root.addWidget(scope_box)
+
+        box = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        box.accepted.connect(self.accept)
+        box.rejected.connect(self.reject)
+        root.addWidget(box)
+        make_window_minimizable(self)
+
+    def only_selected_rows(self) -> bool:
+        return selection_scope_checked(self)
+
+    def params(self) -> FragmentDecompDialogParams:
+        return FragmentDecompDialogParams(
+            structure_source=self.src_combo.currentText(),
+            column_prefix=(self.prefix_edit.text() or "").strip(),
+            method=self._method,
+            tool_title=self._tool_title,
+        )
+
+
+@dataclass(frozen=True)
+class FragmentRecompDialogParams:
+    """Arguments from :class:`FragmentRecompositionDialog` for the worker."""
+
+    column_prefix: str
+    method: str  # "brics" | "recap"
+    max_depth: int
+    max_products: int
+    tool_title: str
+
+
+class FragmentRecompositionDialog(QDialog):
+    """Pool fragment SMILES columns and run BRICS or RECAP recomposition."""
+
+    def __init__(
+        self,
+        *,
+        window_title: str,
+        intro: str,
+        default_prefix: str,
+        method: str,
+        table_headers: list[str],
+        selected_row_count: int,
+        parent=None,
+    ):
+        super().__init__(parent)
+        self._method = method
+        self._tool_title = window_title
+        self._table_headers = list(table_headers)
+        self.setWindowTitle(window_title)
+        self.setMinimumWidth(420)
+        self.resize(480, 0)
+        self._have_selection = selected_row_count > 0
+
+        root = QVBoxLayout(self)
+        root.setContentsMargins(10, 10, 10, 8)
+        root.setSpacing(8)
+
+        intro_lbl = QLabel(intro)
+        intro_lbl.setWordWrap(True)
+        root.addWidget(intro_lbl)
+
+        form = QFormLayout()
+        self.prefix_combo = QComboBox()
+        self.prefix_combo.setEditable(True)
+        prefixes = detect_fragment_column_prefixes(self._table_headers)
+        if default_prefix not in prefixes:
+            prefixes = [default_prefix] + prefixes
+        self.prefix_combo.addItems(prefixes)
+        self.prefix_combo.setCurrentText(default_prefix)
+        self.prefix_combo.setToolTip(
+            "Use fragment columns from decomposition (e.g. BRICS_1, BRICS_2 or RECAP_1, …)."
+        )
+        form.addRow("Fragment column prefix:", self.prefix_combo)
+
+        self.max_depth_sb = QSpinBox()
+        self.max_depth_sb.setRange(1, 8)
+        self.max_depth_sb.setValue(3)
+        self.max_depth_sb.setToolTip("Maximum BRICS coupling depth when assembling products.")
+        form.addRow("Max coupling depth:", self.max_depth_sb)
+
+        self.max_products_sb = QSpinBox()
+        self.max_products_sb.setRange(10, 50_000)
+        self.max_products_sb.setValue(2000)
+        self.max_products_sb.setToolTip("Stop after this many unique product SMILES are generated.")
+        form.addRow("Max products:", self.max_products_sb)
+        root.addLayout(form)
+
+        scope_box = QGroupBox("Scope")
+        scope_lyt = QVBoxLayout(scope_box)
+        self.only_selected_cb = QCheckBox("Only selected rows")
+        self._only_selected_scope_prefix = "Only selected rows"
+        if self._have_selection:
+            self.only_selected_cb.setText(f"{self._only_selected_scope_prefix} ({selected_row_count} row(s))")
+        else:
+            self.only_selected_cb.setEnabled(False)
+        scope_lyt.addWidget(self.only_selected_cb)
+        root.addWidget(scope_box)
+
+        box = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        box.accepted.connect(self._on_accept)
+        box.rejected.connect(self.reject)
+        root.addWidget(box)
+        make_window_minimizable(self)
+
+    def _on_accept(self) -> None:
+        if not (self.prefix_combo.currentText() or "").strip():
+            QMessageBox.warning(self, self.windowTitle(), "Enter a fragment column prefix.")
+            return
+        self.accept()
+
+    def only_selected_rows(self) -> bool:
+        return selection_scope_checked(self)
+
+    def params(self) -> FragmentRecompDialogParams:
+        return FragmentRecompDialogParams(
+            column_prefix=(self.prefix_combo.currentText() or "").strip(),
+            method=self._method,
+            max_depth=int(self.max_depth_sb.value()),
+            max_products=int(self.max_products_sb.value()),
+            tool_title=self._tool_title,
+        )
+
+
+@dataclass(frozen=True)
+class CoreBasedDecompDialogParams:
+    """Arguments from :class:`CoreBasedDecompositionDialog` for the worker."""
 
     core_query: str
     structure_source: str
@@ -312,12 +565,12 @@ class RGroupDecompDialogParams:
     matching: str  # "greedy" or "exhaustive"
 
 
-class RGroupDecompositionDialog(QDialog):
-    """Core SMARTS/SMILES, structure column, RDKit R-group decomposition options."""
+class CoreBasedDecompositionDialog(QDialog):
+    """Core SMARTS/SMILES, structure column, RDKit core-based decomposition options."""
 
     def __init__(self, structure_sources: list[str], selected_row_count: int, parent=None):
         super().__init__(parent)
-        self.setWindowTitle(TOOL_RGROUP_DECOMP)
+        self.setWindowTitle(TOOL_CORE_DECOMP)
         self.setMinimumWidth(420)
         self.resize(480, 0)
         self._have_selection = selected_row_count > 0
@@ -326,9 +579,9 @@ class RGroupDecompositionDialog(QDialog):
         root.setSpacing(8)
 
         intro = QLabel(
-            "Provide a labeled core (dummy atoms [*], [1*], â€¦ for R-group attachment). "
+            "Provide a labeled core (dummy atoms [*], [1*], … for substituent attachment). "
             "Each table row is decomposed against that core; results are written as new columns "
-            "(core scaffold and R-group SMILES per attachment)."
+            "(core scaffold and substituent SMILES per attachment)."
         )
         intro.setWordWrap(True)
         root.addWidget(intro)
@@ -381,19 +634,20 @@ class RGroupDecompositionDialog(QDialog):
         box.accepted.connect(self._on_accept)
         box.rejected.connect(self.reject)
         root.addWidget(box)
+        make_window_minimizable(self)
 
     def _on_accept(self) -> None:
         if not (self.core_edit.text() or "").strip():
-            QMessageBox.warning(self, TOOL_RGROUP_DECOMP, "Enter a core SMARTS or SMILES.")
+            QMessageBox.warning(self, TOOL_CORE_DECOMP, "Enter a core SMARTS or SMILES.")
             return
         self.accept()
 
     def only_selected_rows(self) -> bool:
         return selection_scope_checked(self)
 
-    def params(self) -> RGroupDecompDialogParams:
+    def params(self) -> CoreBasedDecompDialogParams:
         strat = self.match_combo.currentText().strip().lower()
-        return RGroupDecompDialogParams(
+        return CoreBasedDecompDialogParams(
             core_query=(self.core_edit.text() or "").strip(),
             structure_source=self.src_combo.currentText(),
             column_prefix=(self.prefix_edit.text() or "").strip() or "RGD",

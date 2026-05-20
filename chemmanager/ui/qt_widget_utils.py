@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
+from PyQt5.QtCore import Qt
 from PyQt5.QtGui import QFont
-from PyQt5.QtWidgets import QTextEdit
+from PyQt5.QtWidgets import QTextEdit, QWidget
 
 
 def monospace_text_font() -> QFont:
@@ -16,3 +17,10 @@ def monospace_text_font() -> QFont:
 
 def apply_monospace_to_text_edit(w: QTextEdit) -> None:
     w.setFont(monospace_text_font())
+
+
+def make_window_minimizable(widget: QWidget) -> None:
+    """Add minimize and maximize buttons to a secondary top-level window (e.g. ``QDialog``)."""
+    flags = widget.windowFlags()
+    flags |= Qt.WindowMinimizeButtonHint | Qt.WindowMaximizeButtonHint
+    widget.setWindowFlags(flags)

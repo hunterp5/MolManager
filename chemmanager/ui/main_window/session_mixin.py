@@ -14,6 +14,7 @@ from PyQt5.QtWidgets import QFileDialog, QMessageBox
 from rdkit import Chem
 
 from ...confs_codec import deserialize_confs_sidecar, serialize_confs_sidecar
+from ...utils import mol_to_canonical_smiles
 from ..strings import loaded_session_status
 from ..widgets import CategoryFilterCard, FilterCard, SubstructureFilterCard, TextFilterCard
 
@@ -94,7 +95,7 @@ class SessionMixin:
         fname = f"session_{time.strftime('%Y%m%d_%H%M%S')}_{os.getpid()}.cms"
         out_path = os.path.join(session_dir, fname)
         with open(out_path, "w", encoding="utf-8") as f:
-            json.dump(self._build_session_document(), f, indent=2)
+            json.dump(self._build_session_document(), f, separators=(",", ":"))
         return out_path
 
     def _build_session_document(self) -> dict:
@@ -182,11 +183,13 @@ class SessionMixin:
             "zoomed_ids": sorted(int(x) for x in self.zoomed_ids),
             "structure_field_override": getattr(self, "_structure_field_override", None),
             "filter_panel_visible": bool(self.f_panel.isVisible()),
+            "plot_panel_visible": bool(getattr(self, "_plot_panel", None) and self._plot_panel.isVisible()),
             "filters": filters_out,
             "column_logical_order": logical_order,
             "sort_column": sort_col,
             "sort_ascending": sort_asc,
             "sort_mode": sort_mode,
+            "column_colors": self._table_model.export_column_color_rules(),
             "confs_sidecar": serialize_confs_sidecar(getattr(self, "_confs_blocks_sidecar", {}) or {}),
         }
 
@@ -232,6 +235,7 @@ class SessionMixin:
         max_id = -1
         chunk = 128
         if len(rows) <= chunk:
+            batch_rows: list[tuple[int, dict[str, str]]] = []
             try:
                 self.table.setUpdatesEnabled(False)
             except Exception:
@@ -243,10 +247,11 @@ class SessionMixin:
                     cells = entry.get("cells") or {}
                     smi = (cells.get("SMILES", "") or "").strip()
                     row_cells = {cname: str(cells.get(cname, "") or "") for cname in self.headers[2:]}
-                    self._table_model.append_row(oid, row_cells)
+                    batch_rows.append((oid, row_cells))
                     mol = Chem.MolFromSmiles(smi) if smi else None
                     if mol is not None:
                         self.mols[oid] = mol
+                self._table_model.append_rows_batch(batch_rows)
             finally:
                 try:
                     self.table.setUpdatesEnabled(True)
@@ -284,6 +289,7 @@ class SessionMixin:
         max_id = int(ctx["max_id"])
         n = len(rows)
         end = min(i + chunk, n)
+        batch_rows: list[tuple[int, dict[str, str]]] = []
         for j in range(i, end):
             entry = rows[j]
             oid = int(entry["id"])
@@ -291,10 +297,11 @@ class SessionMixin:
             cells = entry.get("cells") or {}
             smi = (cells.get("SMILES", "") or "").strip()
             row_cells = {cname: str(cells.get(cname, "") or "") for cname in self.headers[2:]}
-            self._table_model.append_row(oid, row_cells)
+            batch_rows.append((oid, row_cells))
             mol = Chem.MolFromSmiles(smi) if smi else None
             if mol is not None:
                 self.mols[oid] = mol
+        self._table_model.append_rows_batch(batch_rows)
         ctx["idx"] = end
         ctx["max_id"] = max_id
         self.status_label.setText(f"Loading session… ({end}/{n} rows)")
@@ -355,6 +362,8 @@ class SessionMixin:
                 c.restore_from_session(str(spec.get("property", "") or ""), vals)
                 c.restore_filter_flags(bool(spec.get("enabled", True)), bool(spec.get("inverted", False)))
         self.f_panel.setVisible(bool(doc.get("filter_panel_visible", False)))
+        if getattr(self, "_plot_panel", None) is not None and getattr(self, "_docked_plot_widget", None) is not None:
+            self._plot_panel.setVisible(bool(doc.get("plot_panel_visible", False)))
         co = doc.get("column_logical_order")
         if isinstance(co, list):
             self._restore_column_visual_order([int(x) for x in co])
@@ -369,9 +378,14 @@ class SessionMixin:
             self._session_sort = {"column": sc, "ascending": asc, "mode": mode}
         else:
             self._session_sort = None
+        col_colors = doc.get("column_colors")
+        if isinstance(col_colors, dict):
+            self._table_model.restore_column_color_rules(col_colors)
         self.apply_filters()
         rows_n = self._table_model.rowCount()
         self.status_label.setText(loaded_session_status(rows_n))
+        if getattr(self, "_sqlite_store", None) is not None:
+            self._sqlite_store_dirty = True
         side = deserialize_confs_sidecar(doc.get("confs_sidecar"))
         if side:
             cs = getattr(self, "_confs_blocks_sidecar", None)
@@ -392,7 +406,7 @@ class SessionMixin:
             path += ".cms"
         try:
             with open(path, "w", encoding="utf-8") as f:
-                json.dump(self._build_session_document(), f, indent=2)
+                json.dump(self._build_session_document(), f, separators=(",", ":"))
             self.status_label.setText(f"Session saved to {path}")
         except Exception as e:
             logger.exception("Save session failed: %s", path)
@@ -453,30 +467,31 @@ class SessionMixin:
             self._clear_filter_target_smiles_cache()
             self.global_bounds = {}
             self.next_oid = 0
-            rows = list(reader)
-
-        chunk = 128
-        if len(rows) <= chunk:
-            for row in rows:
-                oid = self.next_oid
-                self.next_oid += 1
-                smi = (row.get("SMILES", "") or "").strip()
-                row_cells = {c: str(row.get(c, "") or "") for c in cols}
-                self._table_model.append_row(oid, row_cells)
-                mol = Chem.MolFromSmiles(smi) if smi else None
-                if mol is not None:
-                    self.mols[oid] = mol
-            self._finalize_session_csv_load()
-        else:
-            self._csv_session_ctx = {
-                "gen": int(getattr(self, "_session_load_generation", 0)),
-                "rows": rows,
-                "cols": cols,
-                "idx": 0,
-                "chunk": chunk,
-            }
-            self.status_label.setText(f"Loading session… (0/{len(rows)} rows)")
-            QTimer.singleShot(0, self._load_session_csv_step)
+            chunk = 256
+            loaded = 0
+            while True:
+                pack: list[tuple[int, dict[str, str]]] = []
+                for _ in range(chunk):
+                    try:
+                        row = next(reader)
+                    except StopIteration:
+                        row = None
+                    if row is None:
+                        break
+                    oid = self.next_oid
+                    self.next_oid += 1
+                    smi = (row.get("SMILES", "") or "").strip()
+                    row_cells = {c: str(row.get(c, "") or "") for c in cols}
+                    pack.append((oid, row_cells))
+                    mol = Chem.MolFromSmiles(smi) if smi else None
+                    if mol is not None:
+                        self.mols[oid] = mol
+                if not pack:
+                    break
+                self._table_model.append_rows_batch(pack)
+                loaded += len(pack)
+                self.status_label.setText(f"Loading session… ({loaded} rows)")
+        self._finalize_session_csv_load()
 
     def _load_session_csv_step(self) -> None:
         ctx = getattr(self, "_csv_session_ctx", None)
@@ -510,4 +525,9 @@ class SessionMixin:
         self.calculate_global_bounds()
         self.table.setSortingEnabled(False)
         rows_n = self._table_model.rowCount()
+        if getattr(self, "_sqlite_store", None) is not None:
+            self._sqlite_store_dirty = True
+            schedule = getattr(self, "_schedule_sqlite_rebuild", None)
+            if callable(schedule) and rows_n > 0:
+                schedule()
         self.status_label.setText(loaded_session_status(rows_n))

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+from typing import Any
 
 from PyQt5.QtCore import QPoint, QRect, Qt
 from PyQt5.QtWidgets import QAction, QMenu, QMessageBox, QWidget
@@ -20,10 +21,11 @@ class SketchWidgetEventsMixin:
             self.releaseMouse()
 
     def mousePressEvent(self, ev):
-        pt = ev.pos()
+        wpt = ev.pos()
+        pt = self._widget_point_to_model(wpt)
         if ev.button() == Qt.LeftButton:
             hit = self._hit_node(pt)
-            self._mouse_down_pos = pt
+            self._mouse_down_pos = QPoint(wpt)
 
             if self.select_mode:
                 if hit is not None:
@@ -31,12 +33,12 @@ class SketchWidgetEventsMixin:
                         self.selected_nodes = [hit["id"]]
                     self._sync_selected_bonds_from_nodes()
                     self._maybe_move = True
-                    self._move_start_pos = pt
+                    self._move_start_pos = QPoint(pt)
                 else:
                     bi_m, _ = self._hit_bond(pt)
                     if bi_m is not None and bi_m in self.selected_bond_indices:
                         self._maybe_move = True
-                        self._move_start_pos = pt
+                        self._move_start_pos = QPoint(pt)
                         self._selecting = False
                         self._select_start = None
                         self.update()
@@ -46,7 +48,7 @@ class SketchWidgetEventsMixin:
                         s0 = self._selected_node_set()
                         if a0 in s0 and b0 in s0:
                             self._maybe_move = True
-                            self._move_start_pos = pt
+                            self._move_start_pos = QPoint(pt)
                             self._selecting = False
                             self._select_start = None
                             self.update()
@@ -58,7 +60,7 @@ class SketchWidgetEventsMixin:
                     self._moving = False
                     self._move_orig = {}
                     self._selecting = True
-                    self._select_start = pt
+                    self._select_start = QPoint(wpt)
                     self._selection_rect = None
                     self.grabMouse()
                 self.update()
@@ -200,7 +202,7 @@ class SketchWidgetEventsMixin:
     def mouseDoubleClickEvent(self, ev):
         if ev.button() != Qt.LeftButton:
             return super().mouseDoubleClickEvent(ev)
-        pt = ev.pos()
+        pt = self._widget_point_to_model(ev.pos())
         hit = self._hit_node(pt)
         bi, _bd = self._hit_bond(pt)
         if hit is None and bi is None:
@@ -236,7 +238,8 @@ class SketchWidgetEventsMixin:
         self._after_sketch_edit()
 
     def mouseMoveEvent(self, ev):
-        pt = ev.pos()
+        wpt = ev.pos()
+        pt = self._widget_point_to_model(wpt)
 
         if self.select_mode:
             if self._moving and self._move_start_pos is not None:
@@ -252,15 +255,19 @@ class SketchWidgetEventsMixin:
                 return
             if self._selecting and self._select_start is not None:
                 sx, sy = self._select_start.x(), self._select_start.y()
-                minx, maxx = min(sx, pt.x()), max(sx, pt.x())
-                miny, maxy = min(sy, pt.y()), max(sy, pt.y())
+                minx, maxx = min(sx, wpt.x()), max(sx, wpt.x())
+                miny, maxy = min(sy, wpt.y()), max(sy, wpt.y())
                 self._selection_rect = QRect(minx, miny, maxx - minx, maxy - miny)
+                model_rect = self._widget_rect_to_model(self._selection_rect)
                 self.selected_nodes = [
                     n["id"]
                     for n in self.nodes
-                    if (n["pos"].x() >= minx and n["pos"].x() <= maxx and n["pos"].y() >= miny and n["pos"].y() <= maxy)
+                    if (
+                        model_rect.left() <= n["pos"].x() <= model_rect.right()
+                        and model_rect.top() <= n["pos"].y() <= model_rect.bottom()
+                    )
                 ]
-                self._sync_selected_bonds_from_marquee_rect(self._selection_rect)
+                self._sync_selected_bonds_from_marquee_rect(model_rect)
                 self.update()
                 return
             if self._maybe_move and self._move_start_pos is not None:
@@ -276,16 +283,16 @@ class SketchWidgetEventsMixin:
                     return
 
         if self._drag_candidate is not None and not self._is_dragging and self._mouse_down_pos is not None:
-            dx = pt.x() - self._mouse_down_pos.x()
-            dy = pt.y() - self._mouse_down_pos.y()
+            dx = wpt.x() - self._mouse_down_pos.x()
+            dy = wpt.y() - self._mouse_down_pos.y()
             if dx * dx + dy * dy >= (6**2):
                 self._is_dragging = True
                 self._drag_start = self._drag_candidate
-                self._drag_pos = pt
+                self._drag_pos = QPoint(pt)
                 self.setCursor(Qt.ClosedHandCursor)
 
         if self._is_dragging:
-            self._drag_pos = pt
+            self._drag_pos = QPoint(pt)
             hit = self._hit_node(pt)
             self.hover = hit["id"] if hit else None
             self.setCursor(Qt.ClosedHandCursor)
@@ -380,7 +387,7 @@ class SketchWidgetEventsMixin:
         if self._is_dragging:
             self._is_dragging = False
             self.setCursor(Qt.ArrowCursor)
-            end_pt = ev.pos()
+            end_pt = self._widget_point_to_model(ev.pos())
             start_id = self._drag_start
             self._drag_start = None
             self._drag_pos = None
@@ -447,7 +454,7 @@ class SketchWidgetEventsMixin:
                     self._after_sketch_edit()
             return
 
-        end_pt = ev.pos()
+        end_pt = self._widget_point_to_model(ev.pos())
 
         # charge placement
         if self.active_charge and self._drag_candidate is not None:

@@ -1,10 +1,13 @@
 from __future__ import annotations
 
 import re
+import threading
+from contextlib import nullcontext
 
 from PyQt5.QtCore import QTimer
 from PyQt5.QtWidgets import QFileDialog, QMessageBox
 
+from ...config import load_config
 from ...workers import ExportWorker, UniversalLoadWorker
 from ..strings import LOADING_DETAIL_APPEND, LOADING_DETAIL_READING_DISK
 
@@ -24,6 +27,7 @@ class IngestExportMixin:
 
     def load_file(self, path: str) -> None:
         self._ingest_append_mode = False
+        self._structure_field_override = None
         self.clear_all()
         self._ingest_loading = True
         self._structures_queued = 0
@@ -31,9 +35,13 @@ class IngestExportMixin:
         self._table_stack.setCurrentIndex(0)
         self._loading_detail.setText(LOADING_DETAIL_READING_DISK)
         self.status_label.setText("Reading file…")
+        self._ensure_structure_choice_event().set()
+        batch_size = load_config().ingest_worker_batch_size
         self.process_queue.enqueue(
             f"Open file: {path}",
-            lambda ev, p=path, s=self.signals: UniversalLoadWorker(p, s, cancel_event=ev),
+            lambda ev, p=path, s=self.signals, sce=self._structure_choice_event, bs=batch_size: UniversalLoadWorker(
+                p, s, batch_size=bs, cancel_event=ev, structure_choice_event=sce
+            ),
         )
 
     def import_file(self, path: str) -> None:
@@ -41,6 +49,7 @@ class IngestExportMixin:
         self._pending_batches = []
         self._processing_batches = False
         self._last_batch_received = False
+        self._structure_field_override = None
         self._ingest_append_mode = True
         self._ingest_loading = True
         self._structures_queued = 0
@@ -50,10 +59,22 @@ class IngestExportMixin:
             LOADING_DETAIL_APPEND
         )
         self.status_label.setText("Importing…")
+        self._ensure_structure_choice_event().set()
+        batch_size = load_config().ingest_worker_batch_size
         self.process_queue.enqueue(
             f"Import data: {path}",
-            lambda ev, p=path, s=self.signals: UniversalLoadWorker(p, s, cancel_event=ev),
+            lambda ev, p=path, s=self.signals, sce=self._structure_choice_event, bs=batch_size: UniversalLoadWorker(
+                p, s, batch_size=bs, cancel_event=ev, structure_choice_event=sce
+            ),
         )
+
+    def _ensure_structure_choice_event(self) -> threading.Event:
+        ev = getattr(self, "_structure_choice_event", None)
+        if ev is None:
+            ev = threading.Event()
+            ev.set()
+            self._structure_choice_event = ev
+        return ev
 
     def _merge_import_headers(self, incoming: list[str]) -> None:
         """Extend ``self.headers`` / the table model with columns from an appended file."""
@@ -151,13 +172,16 @@ class IngestExportMixin:
             chunk = prep["chunk"]
             start = prep["idx"]
             end = min(start + chunk, n)
-            for j in range(start, end):
-                oid = oids[j]
-                r = prep["rows"].get(oid, -1)
-                if r != -1:
-                    prep["t_data"][oid] = {h: self._export_cell_text(r, h_map[h]) for h in cols}
-                else:
-                    prep["t_data"][oid] = {h: "" for h in cols}
+            perf = getattr(self, "_perf", None)
+            scope = perf.track if perf is not None else (lambda *_args, **_kwargs: nullcontext())
+            with scope("export.snapshot_chunk"):
+                for j in range(start, end):
+                    oid = oids[j]
+                    r = prep["rows"].get(oid, -1)
+                    if r != -1:
+                        prep["t_data"][oid] = {h: self._export_cell_text(r, h_map[h]) for h in cols}
+                    else:
+                        prep["t_data"][oid] = {h: "" for h in cols}
             prep["idx"] = end
             self._on_tool_progress("Preparing export…", end, max(n, 1))
             if end < n:

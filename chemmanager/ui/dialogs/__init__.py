@@ -8,10 +8,15 @@ from .calculator import CalculatorDialog
 from .cluster import ClusterDialog
 from .fp_similarity import FPSimilarityDialog
 from .mol_tools import (
+    CoreBasedDecompDialogParams,
+    CoreBasedDecompositionDialog,
     DisconnectFragmentsDialog,
+    FragmentDecompDialogParams,
+    FragmentDecompositionDialog,
+    FragmentRecompDialogParams,
+    FragmentRecompositionDialog,
     GenerateConformationsDialog,
-    RGroupDecompDialogParams,
-    RGroupDecompositionDialog,
+    GenerateSingleConformationDialog,
     SuperposeConformersDialog,
 )
 from .pka import PKaPredictorDialog
@@ -23,15 +28,20 @@ from .scope import selection_scope_checked
 __all__ = [
     "CalculatorDialog",
     "ClusterDialog",
+    "CoreBasedDecompDialogParams",
+    "CoreBasedDecompositionDialog",
     "DisconnectFragmentsDialog",
+    "FragmentDecompDialogParams",
+    "FragmentDecompositionDialog",
+    "FragmentRecompDialogParams",
+    "FragmentRecompositionDialog",
     "FPSimilarityDialog",
     "GenerateConformationsDialog",
+    "GenerateSingleConformationDialog",
     "PKaPredictorDialog",
     "PlotDialog",
     "PropertyDialog",
     "ProtomerGeneratorDialog",
-    "RGroupDecompDialogParams",
-    "RGroupDecompositionDialog",
     "Render2DStructureDialog",
     "SketchWidget",
     "SketcherDialog",

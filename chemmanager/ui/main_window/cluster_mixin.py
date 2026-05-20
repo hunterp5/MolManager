@@ -42,7 +42,10 @@ class ClusterMixin:
 
     def on_cluster_failed(self, message: str) -> None:
         self._clear_tool_progress()
-        self.status_label.setText("Ready.")
+        if message == "Cancelled.":
+            self.status_label.setText(self._consume_partial_results_notice() or "Cancelled.")
+        else:
+            self.status_label.setText("Ready.")
         dlg = getattr(self, "_cluster_dialog", None)
         if dlg is not None:
             try:

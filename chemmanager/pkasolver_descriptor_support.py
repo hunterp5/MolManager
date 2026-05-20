@@ -14,6 +14,8 @@ from __future__ import annotations
 import logging
 import math
 import warnings
+from dataclasses import dataclass
+from types import SimpleNamespace
 
 from rdkit import Chem
 from rdkit.Chem import rdmolops
@@ -25,6 +27,7 @@ from chemmanager.workers.pka_predictor import (
     _patch_pkasolver_dimorphite,
     _quieter_pkasolver_dependency_loggers,
     isolated_sys_argv_for_embedded_cli,
+    prepare_mol_for_pkasolver,
 )
 from chemmanager.workers.protomer_generator import estimate_protomer_populations_from_states
 
@@ -33,13 +36,74 @@ logger = logging.getLogger(__name__)
 INT_FNS_NEED_PKASOLVER = frozenset({"LOGD74", "LOGS74", "CNS_MPO"})
 
 
+@dataclass(frozen=True)
+class PicklableMicrostate:
+    """Process-pool-safe snapshot of one pkasolver microstate (RDKit mols as binary blobs)."""
+
+    pka: float
+    protonated_mol: bytes | None
+    deprotonated_mol: bytes | None
+    ph7_mol: bytes | None
+
+
+def _mol_to_binary(mol: Chem.Mol | None) -> bytes | None:
+    if mol is None:
+        return None
+    try:
+        return mol.ToBinary()
+    except Exception:
+        return None
+
+
+def microstates_to_picklable(states: list) -> list[PicklableMicrostate]:
+    """Convert pkasolver microstate objects to plain data safe for multiprocessing IPC."""
+    out: list[PicklableMicrostate] = []
+    for s in states:
+        out.append(
+            PicklableMicrostate(
+                pka=float(s.pka),
+                protonated_mol=_mol_to_binary(s.protonated_mol),
+                deprotonated_mol=_mol_to_binary(s.deprotonated_mol),
+                ph7_mol=_mol_to_binary(getattr(s, "ph7_mol", None)),
+            )
+        )
+    return out
+
+
+def _mol_from_binary(blob: bytes | None) -> Chem.Mol | None:
+    if not blob:
+        return None
+    try:
+        return Chem.Mol(blob)
+    except Exception:
+        return None
+
+
+def hydrate_microstates(states: list) -> list:
+    """Restore pkasolver-like microstate objects (``SimpleNamespace``) from picklable snapshots."""
+    if not states:
+        return []
+    if isinstance(states[0], PicklableMicrostate):
+        return [
+            SimpleNamespace(
+                pka=s.pka,
+                protonated_mol=_mol_from_binary(s.protonated_mol),
+                deprotonated_mol=_mol_from_binary(s.deprotonated_mol),
+                ph7_mol=_mol_from_binary(s.ph7_mol),
+            )
+            for s in states
+        ]
+    return states
+
+
 def int_fns_need_pkasolver(int_fns) -> bool:
     return any(isinstance(f, str) and f in INT_FNS_NEED_PKASOLVER for f in int_fns)
 
 
 def microstates_for_mol(mol: Chem.Mol) -> list | None:
     """Return pkasolver microstate list, or ``None`` if pkasolver is unavailable or prediction fails."""
-    if mol is None:
+    safe = prepare_mol_for_pkasolver(mol)
+    if safe is None:
         return None
     with _quieter_pkasolver_dependency_loggers():
         try:
@@ -55,16 +119,15 @@ def microstates_for_mol(mol: Chem.Mol) -> list | None:
     try:
         with warnings.catch_warnings():
             warnings.simplefilter("ignore", FutureWarning)
-            if pka_pred._query_model_singleton is None:
-                pka_pred._query_model_singleton = QueryModel()
-            qm = pka_pred._query_model_singleton
-    except Exception:
-        logger.warning("pkasolver QueryModel load failed for descriptors", exc_info=True)
-        return None
-
-    try:
-        with _discard_stdio(), isolated_sys_argv_for_embedded_cli():
-            return calculate_microstate_pka_values(mol, query_model=qm)
+            with pka_pred._query_model_lock:
+                if pka_pred._query_model_singleton is None:
+                    pka_pred._query_model_singleton = QueryModel()
+                qm = pka_pred._query_model_singleton
+                with _discard_stdio(), isolated_sys_argv_for_embedded_cli():
+                    states = calculate_microstate_pka_values(safe, query_model=qm)
+                if not states:
+                    return None
+                return microstates_to_picklable(states)
     except Exception:
         logger.debug("microstate pKa prediction failed for descriptor row", exc_info=True)
         return None
@@ -72,6 +135,7 @@ def microstates_for_mol(mol: Chem.Mol) -> list | None:
 
 def most_basic_pka_from_states(states: list) -> float | None:
     """Highest microstate pKa (same convention as pKa tool “most basic only”)."""
+    states = hydrate_microstates(states)
     if not states:
         return None
     return max(float(s.pka) for s in states)
@@ -83,7 +147,7 @@ def neutral_fraction_from_states(states: list, ph: float = 7.4) -> float:
 
     Uses the same HH-style protomer populations as :func:`estimate_protomer_populations_from_states`.
     """
-    pops = estimate_protomer_populations_from_states(states, ph)
+    pops = estimate_protomer_populations_from_states(hydrate_microstates(states), ph)
     neutral = 0.0
     for _smi, pct, m in pops:
         if m is not None and rdmolops.GetFormalCharge(m) == 0:

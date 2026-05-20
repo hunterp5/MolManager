@@ -2,43 +2,20 @@ from __future__ import annotations
 
 import json
 import math
-import re
 from typing import Any
 
-from PyQt5.QtCore import QLineF, QPoint, QPointF, QRect, Qt, QTimer, pyqtSignal
+from PyQt5.QtCore import QLineF, QPoint, QPointF, QRect, Qt, pyqtSignal
 from PyQt5.QtGui import (
-    QBrush,
-    QColor,
     QCursor,
-    QFont,
-    QFontMetrics,
-    QKeySequence,
     QPainter,
-    QPainterPath,
-    QPen,
-    QPolygonF,
 )
 from PyQt5.QtWidgets import (
     QAction,
     QApplication,
-    QButtonGroup,
-    QCheckBox,
     QDialog,
-    QDialogButtonBox,
-    QFileDialog,
-    QFrame,
-    QGridLayout,
-    QHBoxLayout,
     QInputDialog,
-    QLabel,
     QMenu,
-    QMenuBar,
     QMessageBox,
-    QPushButton,
-    QScrollArea,
-    QShortcut,
-    QTableWidgetItem,
-    QVBoxLayout,
     QWidget,
 )
 
@@ -48,7 +25,6 @@ from .alkene_stereo import infer_alkene_ez_for_sketch_mol
 from .bonds import (
     _bond_make,
     _bond_record_ok,
-    _bond_same_undirected,
     _bond_unpack,
     reorient_wedged_bonds_tip_away_from_multiples,
 )
@@ -56,9 +32,9 @@ from .chem import _parse_atom_symbol_input
 from .sketch_graph import connected_components_from_graph, topology_fingerprint
 from .sketch_rdkit import SketchWidgetRdkitMixin
 from .constants import (
-    ACS_PUBLICATION_MEDIAN_BOND_PX,
     CLIPBOARD_PREFIX,
     DEFAULT_WILDCARD_ELEMENTS,
+    SKETCH_MEDIAN_BOND_PX,
     SKETCH_RING_TEMPLATES,
     WILDCARD_ELEMENT,
     WILDCARD_ELEMENT_CHOICES,
@@ -134,6 +110,8 @@ class SketchWidget(SketchWidgetEventsMixin, SketchWidgetPaintMixin, SketchWidget
         self._redo: list[tuple[str, Any]] = []
 
         self.radius = 14
+        self._median_bond_length_px = float(SKETCH_MEDIAN_BOND_PX)
+        self._view_scale = 1.0
         self._valence_violations: set[int] = set()
         self._charge_violations: set[int] = set()
 
@@ -254,15 +232,15 @@ class SketchWidget(SketchWidgetEventsMixin, SketchWidgetPaintMixin, SketchWidget
         return s
 
     def _clamp_selection_delta(self, dx: int, dy: int) -> tuple[int, int]:
-        """Keep all atoms in _move_orig inside the widget when moving as a group."""
+        """Keep all atoms in _move_orig inside the visible model viewport when moving as a group."""
         if not self._move_orig:
             return dx, dy
         m = int(self.radius) + 6
-        w, h = max(self.width(), 1), max(self.height(), 1)
-        lo_x = max(m - int(o.x()) for o in self._move_orig.values())
-        hi_x = min((w - m) - int(o.x()) for o in self._move_orig.values())
-        lo_y = max(m - int(o.y()) for o in self._move_orig.values())
-        hi_y = min((h - m) - int(o.y()) for o in self._move_orig.values())
+        min_x, max_x, min_y, max_y = self._model_viewport_bounds()
+        lo_x = max(min_x + m - int(o.x()) for o in self._move_orig.values())
+        hi_x = min(max_x - m - int(o.x()) for o in self._move_orig.values())
+        lo_y = max(min_y + m - int(o.y()) for o in self._move_orig.values())
+        hi_y = min(max_y - m - int(o.y()) for o in self._move_orig.values())
         if lo_x > hi_x:
             dx = int((lo_x + hi_x) / 2)
         else:
@@ -348,6 +326,60 @@ class SketchWidget(SketchWidgetEventsMixin, SketchWidgetPaintMixin, SketchWidget
     def sketch_has_wildcards(self) -> bool:
         return any(_is_wildcard_node(n) for n in self.nodes)
 
+    # ---------- View transform (zoom scales drawing proportionally) ----------
+    def _view_center(self) -> QPointF:
+        return QPointF(self.rect().center())
+
+    def _widget_point_to_model(self, pt: QPoint) -> QPoint:
+        """Map widget pixels to sketch model coordinates (inverse of paint-time view scale)."""
+        c = self._view_center()
+        s = float(self._view_scale)
+        if abs(s) < 1e-9:
+            return QPoint(pt)
+        return QPoint(
+            int(round((pt.x() - c.x()) / s + c.x())),
+            int(round((pt.y() - c.y()) / s + c.y())),
+        )
+
+    def _widget_rect_to_model(self, rect: QRect) -> QRect:
+        p1 = self._widget_point_to_model(rect.topLeft())
+        p2 = self._widget_point_to_model(rect.bottomRight())
+        left, right = min(p1.x(), p2.x()), max(p1.x(), p2.x())
+        top, bottom = min(p1.y(), p2.y()), max(p1.y(), p2.y())
+        return QRect(QPoint(left, top), QPoint(max(right, left + 1), max(bottom, top + 1))).normalized()
+
+    def _model_viewport_bounds(self) -> tuple[int, int, int, int]:
+        """Model-space axis-aligned bounds visible in the widget."""
+        r = self.rect()
+        corners = [
+            self._widget_point_to_model(r.topLeft()),
+            self._widget_point_to_model(r.topRight()),
+            self._widget_point_to_model(r.bottomLeft()),
+            self._widget_point_to_model(r.bottomRight()),
+        ]
+        return (
+            min(p.x() for p in corners),
+            max(p.x() for p in corners),
+            min(p.y() for p in corners),
+            max(p.y() for p in corners),
+        )
+
+    def _apply_view_transform(self, p: QPainter) -> None:
+        c = self._view_center()
+        p.translate(c)
+        p.scale(self._view_scale, self._view_scale)
+        p.translate(-c)
+
+    def _refresh_sketch_draw_metrics(self) -> None:
+        """Sync line weights / hit radius to the current model-space median bond length."""
+        mb = self._median_bond_length_sketch_px()
+        if mb is not None and mb > 0:
+            self._median_bond_length_px = mb
+        else:
+            self._median_bond_length_px = float(SKETCH_MEDIAN_BOND_PX)
+        ratio = self._median_bond_length_px / float(SKETCH_MEDIAN_BOND_PX)
+        self.radius = max(10, int(round(14 * ratio)))
+
     # ---------- Geometry / hits ----------
     def _hit_node(self, pt: QPoint):
         for n in self.nodes:
@@ -384,14 +416,15 @@ class SketchWidget(SketchWidgetEventsMixin, SketchWidgetPaintMixin, SketchWidget
             d2 = self._point_to_segment_distance_sq(px, py, ni["pos"].x(), ni["pos"].y(), nj["pos"].x(), nj["pos"].y())
             if best_d is None or d2 < best_d:
                 best_d, best_i = d2, bi
-        if best_d is not None and best_d <= (12**2):
+        hit_slop = max(8.0, self._median_bond_length_px * 0.2)
+        if best_d is not None and best_d <= hit_slop * hit_slop:
             return best_i, best_d
         return None, None
 
     def _refresh_hover_from_cursor(self):
         try:
             gpos = QCursor.pos()
-            lpos = self.mapFromGlobal(gpos)
+            lpos = self._widget_point_to_model(self.mapFromGlobal(gpos))
             hit = self._hit_node(lpos)
             bi, _ = self._hit_bond(lpos)
             sel = self._selected_node_set()
@@ -530,6 +563,7 @@ class SketchWidget(SketchWidgetEventsMixin, SketchWidgetPaintMixin, SketchWidget
         self._valence_violations = bad
         self._charge_violations = charge_bad
         self._recompute_chiral_highlights()
+        self._refresh_sketch_draw_metrics()
         self.update()
         if notify:
             self._notify_sketch_changed()
@@ -1097,15 +1131,11 @@ class SketchWidget(SketchWidgetEventsMixin, SketchWidgetPaintMixin, SketchWidget
         margin: int | None = None,
         max_scale: float = 5.0,
         min_scale: float = 0.06,
-        *,
-        cap_median_bond_length_px: float | None = None,
     ) -> bool:
         """
         Uniformly scale and translate the sketch so all atoms fit inside the widget rect with margin.
-        Used after RDKit loads so the structure is fully visible. Does not record undo.
-
-        If ``cap_median_bond_length_px`` is set, the fit scale is reduced when needed so the median
-        bond length does not exceed that value (publication / ACS-style sizing on load).
+        Does not record undo. Use from View → Fit Structure only; RDKit import uses the same bond
+        scale as hand drawing (``SKETCH_MEDIAN_BOND_PX``) and does not auto-fit here.
 
         Returns True if positions were scaled/translated and valence/stereo were refreshed; False
         if the sketch was left unchanged (empty sketch or viewport too small).
@@ -1130,10 +1160,6 @@ class SketchWidget(SketchWidgetEventsMixin, SketchWidgetPaintMixin, SketchWidget
         avail_w = max(float(rw - 2 * margin), 60.0)
         avail_h = max(float(rh - 2 * margin), 60.0)
         scale = min(avail_w / bw, avail_h / bh)
-        if cap_median_bond_length_px is not None:
-            mb = self._median_bond_length_sketch_px()
-            if mb is not None and mb * scale > float(cap_median_bond_length_px):
-                scale = float(cap_median_bond_length_px) / max(mb, 1e-6)
         scale = max(min(scale, max_scale), min_scale)
         tcx = float(r.center().x())
         tcy = float(r.center().y())
@@ -1144,6 +1170,8 @@ class SketchWidget(SketchWidgetEventsMixin, SketchWidgetPaintMixin, SketchWidget
             nx = int(round((x - mx) * scale + tcx))
             ny = int(round((y - my) * scale + tcy))
             n["pos"] = QPoint(nx, ny)
+        self._view_scale = 1.0
+        self._refresh_sketch_draw_metrics()
         self._after_sketch_edit(notify=True, notify_if_valence_failed=True)
         return True
 
@@ -1177,35 +1205,20 @@ class SketchWidget(SketchWidgetEventsMixin, SketchWidgetPaintMixin, SketchWidget
             self._push_undo("move_nodes", moves)
         self._after_sketch_edit(notify=True, notify_if_valence_failed=True)
 
-    def zoom_about_viewport_center(self, factor: float, push_undo: bool = True) -> None:
-        """Scale all atom positions uniformly about the widget center (undoable when ``push_undo``)."""
+    def zoom_about_viewport_center(self, factor: float, push_undo: bool = False) -> None:
+        """
+        Zoom the canvas view about the widget center (bonds, labels, and line weights scale together).
+
+        Does not move atoms in model space or record undo (use Fit Structure to resize the sketch).
+        """
+        del push_undo
         if not self.nodes or abs(factor - 1.0) < 1e-6:
             return
         factor = float(factor)
         if factor <= 0:
             return
-        r = self.rect()
-        if r.width() < 8 or r.height() < 8:
-            return
-        cx = float(r.center().x())
-        cy = float(r.center().y())
-        old_pos: dict[int, QPoint] = {n["id"]: QPoint(n["pos"]) for n in self.nodes}
-        for n in self.nodes:
-            x, y = float(n["pos"].x()), float(n["pos"].y())
-            nx = int(round((x - cx) * factor + cx))
-            ny = int(round((y - cy) * factor + cy))
-            n["pos"] = QPoint(nx, ny)
-        if push_undo:
-            moves: list[tuple[int, QPoint, QPoint]] = []
-            for n in self.nodes:
-                nid = n["id"]
-                op = old_pos[nid]
-                np = n["pos"]
-                if op.x() != np.x() or op.y() != np.y():
-                    moves.append((nid, op, np))
-            if moves:
-                self._push_undo("move_nodes", moves)
-        self._after_sketch_edit(notify=True, notify_if_valence_failed=True)
+        self._view_scale = max(0.08, min(12.0, self._view_scale * factor))
+        self.update()
 
     def _can_group_selection(self) -> bool:
         sel = self._selected_node_set()
@@ -1222,7 +1235,14 @@ class SketchWidget(SketchWidgetEventsMixin, SketchWidgetPaintMixin, SketchWidget
             menu.addAction(act)
 
     # ---------- Placement (chain / templates) ----------
-    def add_ring(self, n: int, center: QPoint | None = None, radius: int = 60, elements=None, bond_orders=None):
+    def add_ring(
+        self,
+        n: int,
+        center: QPoint | None = None,
+        radius: int = SKETCH_MEDIAN_BOND_PX,
+        elements=None,
+        bond_orders=None,
+    ):
         c = center if center is not None else self.rect().center()
         elems = elements if elements is not None else ["C"] * n
         orders = bond_orders if bond_orders is not None else [1] * n
@@ -1299,7 +1319,14 @@ class SketchWidget(SketchWidgetEventsMixin, SketchWidgetPaintMixin, SketchWidget
             self.select_mode = True
             self.erase_mode = False
 
-    def place_template(self, name: str, center: QPoint | None = None, attach_to: int | None = None, radius: int = 60, bond_length: int = 60):
+    def place_template(
+        self,
+        name: str,
+        center: QPoint | None = None,
+        attach_to: int | None = None,
+        radius: int = SKETCH_MEDIAN_BOND_PX,
+        bond_length: int = SKETCH_MEDIAN_BOND_PX,
+    ):
         tpl = SKETCH_RING_TEMPLATES.get(name)
         if tpl is None:
             return
@@ -1358,7 +1385,7 @@ class SketchWidget(SketchWidgetEventsMixin, SketchWidgetPaintMixin, SketchWidget
                 self._push_undo("add_bond", b)
         self._after_sketch_edit()
 
-    def add_carbon_to(self, atom_id: int, bond_length: int = 60):
+    def add_carbon_to(self, atom_id: int, bond_length: int = SKETCH_MEDIAN_BOND_PX):
         base = next((n for n in self.nodes if n["id"] == atom_id), None)
         if base is None:
             return
@@ -1398,14 +1425,14 @@ class SketchWidget(SketchWidgetEventsMixin, SketchWidgetPaintMixin, SketchWidget
                 self._angle_signs[atom_id] = -sign
             ux, uy = math.cos(ang_new), math.sin(ang_new)
 
-        MIN_BOND = 30
-        bond_length = max(bond_length, MIN_BOND)
+        min_bond = max(20, SKETCH_MEDIAN_BOND_PX // 2)
+        bond_length = max(bond_length, min_bond)
         nx = int(bx + ux * bond_length)
         ny = int(by + uy * bond_length)
         dist = math.hypot(nx - bx, ny - by)
-        if dist < MIN_BOND:
-            nx = int(bx + ux * MIN_BOND)
-            ny = int(by + uy * MIN_BOND)
+        if dist < min_bond:
+            nx = int(bx + ux * min_bond)
+            ny = int(by + uy * min_bond)
 
         nid = self.next_id
         self.next_id += 1

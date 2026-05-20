@@ -14,6 +14,7 @@ from PyQt5.QtWidgets import (
     QWidget,
 )
 
+from ..qt_widget_utils import make_window_minimizable
 from .constants import (
     DEFAULT_WILDCARD_ELEMENTS,
     WILDCARD_ELEMENT,
@@ -77,6 +78,7 @@ class WildcardElementsDialog(QDialog):
         bb.accepted.connect(self.accept)
         bb.rejected.connect(self.reject)
         ly.addWidget(bb)
+        make_window_minimizable(self)
 
     def selected_elements(self) -> list[str]:
         return [s for s in WILDCARD_ELEMENT_CHOICES if self._checks[s].isChecked()]

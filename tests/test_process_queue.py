@@ -5,7 +5,6 @@ from __future__ import annotations
 import threading
 import time
 
-import pytest
 from PyQt5.QtCore import QObject, QRunnable
 
 from chemmanager.ui.process_queue import ProcessQueueManager
@@ -91,4 +90,40 @@ def test_remove_queued_job_removes_waiting_job(qapp):
     assert pq.remove_queued_job(j_tail) is True
     assert pq.queued_job_count() == 0
     hold.set()
+    assert pq.wait_for_all_jobs(10000)
+
+
+def test_cancel_fast_job_stops_interactive_task(qapp):
+    parent = QObject()
+    pq = ProcessQueueManager(parent)
+    trace: list[str] = []
+
+    class FastWait(QRunnable):
+        def __init__(self, ev: threading.Event):
+            super().__init__()
+            self._ev = ev
+
+        def run(self) -> None:
+            trace.append("fast_start")
+            self._ev.wait(timeout=30.0)
+            trace.append("fast_end")
+
+    job_id = pq.enqueue_fast("interactive", lambda ev: FastWait(ev))
+
+    for _ in range(300):
+        qapp.processEvents()
+        if "fast_start" in trace:
+            break
+        time.sleep(0.01)
+
+    assert "fast_start" in trace
+    assert pq.cancel_fast_job(job_id) is True
+
+    for _ in range(300):
+        qapp.processEvents()
+        if "fast_end" in trace:
+            break
+        time.sleep(0.01)
+
+    assert "fast_end" in trace
     assert pq.wait_for_all_jobs(10000)

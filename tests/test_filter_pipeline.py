@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import pytest
 from rdkit import Chem
 
 from chemmanager.ui.main_window import ChemicalTableApp
@@ -24,12 +23,17 @@ def _setup_two_row_mw_table(w: ChemicalTableApp) -> FilterCard:
     return card
 
 
+def _src_row_visible(w: ChemicalTableApp, source_row: int) -> bool:
+    """Proxy-aware visibility check for tests."""
+    return w._is_source_row_visible(source_row)
+
+
 def test_numeric_range_filter_hides_row_outside_bounds(qapp):  # noqa: ARG001
     w = ChemicalTableApp()
     _setup_two_row_mw_table(w)
     w._apply_filters_impl_sync(None)
-    assert w.table.isRowHidden(0) is False
-    assert w.table.isRowHidden(1) is True
+    assert _src_row_visible(w, 0) is True
+    assert _src_row_visible(w, 1) is False
 
 
 def test_text_filter_partial_substring(qapp):  # noqa: ARG001
@@ -48,8 +52,8 @@ def test_text_filter_partial_substring(qapp):  # noqa: ARG001
     card.text_edit.setText("eth")
     w.filters = [card]
     w._apply_filters_impl_sync(None)
-    assert w.table.isRowHidden(0) is False
-    assert w.table.isRowHidden(1) is True
+    assert _src_row_visible(w, 0) is True
+    assert _src_row_visible(w, 1) is False
 
 
 def test_category_filter_only_checked_values_visible(qapp):  # noqa: ARG001
@@ -66,8 +70,8 @@ def test_category_filter_only_checked_values_visible(qapp):  # noqa: ARG001
     card.restore_from_session("Phase", ["prep"])
     w.filters = [card]
     w._apply_filters_impl_sync(None)
-    assert w.table.isRowHidden(0) is False
-    assert w.table.isRowHidden(1) is True
+    assert _src_row_visible(w, 0) is True
+    assert _src_row_visible(w, 1) is False
 
 
 def test_substructure_sync_benzene_smarts_hides_non_aromatic(qapp):  # noqa: ARG001
@@ -84,8 +88,8 @@ def test_substructure_sync_benzene_smarts_hides_non_aromatic(qapp):  # noqa: ARG
     card.set_smarts("c1ccccc1")
     w.filters = [card]
     w._apply_filters_impl_sync(None)
-    assert w.table.isRowHidden(0) is False
-    assert w.table.isRowHidden(1) is True
+    assert _src_row_visible(w, 0) is True
+    assert _src_row_visible(w, 1) is False
 
 
 def test_substructure_invalid_smarts_sets_status(qapp):  # noqa: ARG001
@@ -120,6 +124,6 @@ def test_substructure_async_handoff_hides_rows(qapp, monkeypatch):  # noqa: ARG0
     w.apply_filters()
     assert w.threadpool.waitForDone(120_000)
     qapp.processEvents()
-    assert w.table.isRowHidden(0) is False
+    assert _src_row_visible(w, 0) is True
     for r in range(1, 70):
-        assert w.table.isRowHidden(r) is True
+        assert _src_row_visible(w, r) is False

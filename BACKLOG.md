@@ -107,9 +107,9 @@ Legend: **P0** = ship blocker or high risk, **P1** = strong quality/scalability 
 
 ## Phase E — Packaging & distribution (desktop enterprise)
 
-### E1 — Installer & updates **(P2)**
+### E1 — Installer & updates **(P2)** — partial
 
-- **E1.1** PyInstaller/cx_Freeze (or brief) recipe + documented build steps.
+- **E1.1** ~~Starter PyInstaller spec + documented build steps (`packaging/chemmanager.spec`, `docs/PACKAGING.md`).~~ Full one-click installer still TBD.
 - **E1.2** Version string in UI title or About dialog; single source of truth (`__version__`).
 
 **Done when:** IT can install a pinned build without a Python toolchain on target machines.
@@ -118,7 +118,7 @@ Legend: **P0** = ship blocker or high risk, **P1** = strong quality/scalability 
 
 ### E2 — Dependency hygiene **(P1)** — partial
 
-- **E2.1** Pin upper bounds in `requirements.txt` or migrate to `requirements.lock` / Poetry for reproducible builds.
+- **E2.1** ~~`pyproject.toml` + `requirements-all.txt` (core + pKa + boltz); bundled tool path resolver.~~ Pin upper bounds / lockfile still optional.
 - **E2.2** ~~Quarterly process note: run `pip-audit` / dependabot.~~ (`pip-audit` in CI, `continue-on-error` so findings are visible without blocking merges.)
 
 **Done when:** CI or release checklist includes vulnerability scan. *(Tighten pins / fail build on critical CVEs when ready.)*

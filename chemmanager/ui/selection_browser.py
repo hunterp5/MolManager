@@ -21,7 +21,12 @@ from PyQt5.QtWidgets import (
     QVBoxLayout,
 )
 
+from ..display_constants import (
+    BROWSER_STRUCTURE_PREVIEW_MIN_HEIGHT,
+    BROWSER_STRUCTURE_PREVIEW_MIN_WIDTH,
+)
 from .compound_table_model import CompoundTableModel
+from .qt_widget_utils import make_window_minimizable
 
 
 class SelectionBrowserDialog(QDialog):
@@ -35,7 +40,7 @@ class SelectionBrowserDialog(QDialog):
 
         self._rows: list[int] = []
         self._idx = 0
-        self._preview_pix_cache: dict[int, QPixmap] = {}  # oid -> pixmap
+        self._preview_pix_cache: dict[tuple[int, int, int], QPixmap] = {}  # (oid, w_px, h_px) -> pixmap
 
         root = QVBoxLayout(self)
         self._cb_only_selected = QCheckBox("Browse Only Selected")
@@ -52,13 +57,16 @@ class SelectionBrowserDialog(QDialog):
         self._struct_label.setAlignment(Qt.AlignCenter)
         self._struct_label.setMinimumSize(360, 260)
         self._struct_label.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
-        self._struct_label.setStyleSheet("background: #ffffff; border: 1px solid #c5cad3; border-radius: 4px;")
+        self._struct_label.setStyleSheet(
+            "background-color: palette(base); border: 1px solid palette(mid); border-radius: 4px;"
+        )
         root.addWidget(self._struct_label, 1)
 
         self._prop_box = QGroupBox()
         # Keep this panel visually distinct (no header/title).
         self._prop_box.setStyleSheet(
-            "QGroupBox { margin-top: 10px; background: #ffffff; border: 1px solid #c5cad3; border-radius: 4px; }"
+            "QGroupBox { margin-top: 10px; background-color: palette(base); "
+            "border: 1px solid palette(mid); border-radius: 4px; }"
         )
         self._prop_form = QFormLayout(self._prop_box)
         self._prop_form.setLabelAlignment(Qt.AlignRight)
@@ -121,6 +129,12 @@ class SelectionBrowserDialog(QDialog):
             has_sel = False
         self._cb_only_selected.setChecked(has_sel)
         self.refresh_from_app()
+        make_window_minimizable(self)
+
+    def resizeEvent(self, event) -> None:
+        super().resizeEvent(event)
+        if self._rows and 0 <= self._idx < len(self._rows):
+            self._update_preview(self._rows[self._idx])
 
     def refresh_from_app(self) -> None:
         """Recompute row scope and show the first navigable row."""
@@ -133,18 +147,23 @@ class SelectionBrowserDialog(QDialog):
         self._update_ui()
 
     def _rows_for_scope(self, app: Any) -> list[int]:
+        visible = set(app._visible_source_row_indices())
         if self._cb_only_selected.isChecked():
             raw = list(app._selected_logical_rows())
-            vis = [r for r in raw if not app.table.isRowHidden(r)]
+            vis = [r for r in raw if r in visible]
             return vis if vis else raw
         # Whole-table browsing: prefer visible rows so navigation always lands on something the user can see.
         n = int(app._table_model.rowCount())
-        all_rows = list(range(n))
-        vis = [r for r in all_rows if not app.table.isRowHidden(r)]
-        return vis if vis else all_rows
+        if visible:
+            ordered = [r for r in range(n) if r in visible]
+            if ordered:
+                return ordered
+        return list(range(n))
 
     def _row_navigable(self, r: int) -> bool:
-        return 0 <= r < self._app._table_model.rowCount() and not self._app.table.isRowHidden(r)
+        if not (0 <= r < self._app._table_model.rowCount()):
+            return False
+        return self._app._is_source_row_visible(r)
 
     def _first_navigable_index(self, start: int, delta: int) -> int:
         n = len(self._rows)
@@ -340,8 +359,15 @@ class SelectionBrowserDialog(QDialog):
         ix = m.index(logical_row, CompoundTableModel.STRUCTURE_COL)
         return m.data(ix, Qt.DecorationRole)
 
-    def _render_preview_pixmap(self, logical_row: int) -> QPixmap | None:
-        """Render a preview pixmap from the stored RDKit mol if Structure column has none."""
+    def _preview_pixel_size(self) -> tuple[int, int, float]:
+        """Device-pixel width/height for a crisp Browser preview (matches label size)."""
+        dpr = max(1.0, float(self.devicePixelRatioF()))
+        lw = max(self._struct_label.width(), BROWSER_STRUCTURE_PREVIEW_MIN_WIDTH)
+        lh = max(self._struct_label.height(), BROWSER_STRUCTURE_PREVIEW_MIN_HEIGHT)
+        return int(lw * dpr), int(lh * dpr), dpr
+
+    def _render_preview_pixmap(self, logical_row: int, pw: int, ph: int) -> QPixmap | None:
+        """High-resolution 2D depiction for Browser (do not upscale the table column pixmap)."""
         try:
             from rdkit.Chem.Draw import rdMolDraw2D
         except Exception:
@@ -351,45 +377,39 @@ class SelectionBrowserDialog(QDialog):
             oid = int(app._table_model.row_oid(logical_row))
         except Exception:
             return None
-        cached = self._preview_pix_cache.get(oid)
+        cache_key = (oid, pw, ph)
+        cached = self._preview_pix_cache.get(cache_key)
         if cached is not None and not cached.isNull():
             return cached
         mol = getattr(app, "mols", {}).get(oid)
         if mol is None:
             return None
         try:
-            dpr = max(1.0, float(self.devicePixelRatioF()))
-            w = int(520 * dpr)
-            h = int(400 * dpr)
-            d = rdMolDraw2D.MolDraw2DCairo(w, h)
+            d = rdMolDraw2D.MolDraw2DCairo(pw, ph)
             rdMolDraw2D.PrepareAndDrawMolecule(d, mol)
             d.FinishDrawing()
-            png = d.GetDrawingText()
-            img = QImage.fromData(png)
+            img = QImage.fromData(d.GetDrawingText())
             pm = QPixmap.fromImage(img)
             if not pm.isNull():
-                self._preview_pix_cache[oid] = pm
+                self._preview_pix_cache[cache_key] = pm
                 return pm
         except Exception:
             return None
         return None
 
     def _update_preview(self, logical_row: int) -> None:
-        pm = self._structure_pixmap(logical_row)
-        if not (isinstance(pm, QPixmap) and not pm.isNull()):
-            pm = self._render_preview_pixmap(logical_row)
+        pw, ph, dpr = self._preview_pixel_size()
+        pm = self._render_preview_pixmap(logical_row, pw, ph)
+        if pm is None or pm.isNull():
+            table_pm = self._structure_pixmap(logical_row)
+            if isinstance(table_pm, QPixmap) and not table_pm.isNull():
+                if table_pm.width() >= pw * 0.9 and table_pm.height() >= ph * 0.9:
+                    pm = table_pm
         if isinstance(pm, QPixmap) and not pm.isNull():
-            dpr = max(1.0, float(self.devicePixelRatioF()))
-            max_w = int(420 * dpr)
-            max_h = int(320 * dpr)
-            scaled = pm.scaled(
-                int(max_w),
-                int(max_h),
-                Qt.KeepAspectRatio,
-                Qt.SmoothTransformation,
-            )
-            scaled.setDevicePixelRatio(self.devicePixelRatio())
-            self._struct_label.setPixmap(scaled)
+            if pm.width() != pw or pm.height() != ph:
+                pm = pm.scaled(pw, ph, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+            pm.setDevicePixelRatio(dpr)
+            self._struct_label.setPixmap(pm)
             self._struct_label.setText("")
         else:
             self._struct_label.clear()

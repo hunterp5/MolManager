@@ -3,12 +3,12 @@
 from __future__ import annotations
 
 import logging
+from contextlib import nullcontext
 
+from PyQt5.QtCore import QTimer
 from PyQt5.QtWidgets import QMessageBox
 
 from ...config import ChemManagerConfig, load_config
-from rdkit import Chem
-
 from ...utils import mol_to_canonical_smiles, safe_float
 from ...workers import SubstructureFilterWorker
 from .cards import CategoryFilterCard, FilterCard, SubstructureFilterCard, TextFilterCard
@@ -25,6 +25,7 @@ class FilterPanelMixin:
     def _clear_filter_target_smiles_cache(self) -> None:
         """Drop cached MolToSmiles results (e.g. after wholesale ``mols`` replacement)."""
         self._filter_target_smiles_cache = None
+        self._substructure_target_mol_cache = {}
 
     def _smiles_for_substructure_target(self, oid: int, mol) -> str:
         """Stable SMILES string for filter worker targets; cache per (oid, mol object id)."""
@@ -45,6 +46,95 @@ class FilterPanelMixin:
     def _filterable_data_column_names(self) -> list[str]:
         return [h for h in self.headers[2:] if h and not self._table_model.is_pixmap_data_column(h)]
 
+    def _sqlite_filter_matched_oids(self) -> frozenset[int] | None:
+        """Try SQL pushdown for simple enabled filters; return None when unsupported."""
+        ensure_sqlite = getattr(self, "_ensure_sqlite_store_current", None)
+        if callable(ensure_sqlite) and not ensure_sqlite():
+            return None
+        store = getattr(self, "_sqlite_store", None)
+        if store is None:
+            return None
+        where_parts: list[str] = []
+        args: list[object] = []
+        for f in self.filters:
+            if isinstance(f, SubstructureFilterCard):
+                return None
+            if isinstance(f, CategoryFilterCard):
+                if not f.filter_enabled():
+                    continue
+                prop = f.column_name()
+                if not prop or prop not in self.headers:
+                    continue
+                checked = f.checked_values()
+                qp = str(prop).replace('"', '""')
+                if not checked:
+                    where_parts.append("0")
+                else:
+                    placeholders = ", ".join(["?"] * len(checked))
+                    where_parts.append(f'"{qp}" IN ({placeholders})')
+                    args.extend(sorted(checked))
+                continue
+            if isinstance(f, FilterCard):
+                cfg = f.get_cfg()
+                if not cfg.get("enabled", True):
+                    continue
+                prop = cfg.get("p")
+                if not prop or prop not in self.headers:
+                    continue
+                qp = str(prop).replace('"', '""')
+                lo = float(cfg.get("min", 0.0))
+                hi = float(cfg.get("max", 0.0))
+                if cfg.get("inverted", False):
+                    where_parts.append(f'(CAST("{qp}" AS REAL) < ? OR CAST("{qp}" AS REAL) > ?)')
+                else:
+                    where_parts.append(f'(CAST("{qp}" AS REAL) >= ? AND CAST("{qp}" AS REAL) <= ?)')
+                args.extend([lo, hi])
+                continue
+            if isinstance(f, TextFilterCard):
+                cfg = f.get_cfg()
+                if not cfg.get("enabled", True):
+                    continue
+                prop = cfg.get("p")
+                needle = str(cfg.get("text", "") or "").strip()
+                if not prop or not needle:
+                    continue
+                qp = str(prop).replace('"', '""')
+                case_sensitive = bool(cfg.get("case_sensitive", False))
+                partial = bool(cfg.get("partial_match", True))
+                inverted = bool(cfg.get("inverted", False))
+                if partial:
+                    if case_sensitive:
+                        expr = f'"{qp}" LIKE ? ESCAPE "\\"'
+                        arg = f"%{needle}%"
+                    else:
+                        expr = f'LOWER("{qp}") LIKE ? ESCAPE "\\"'
+                        arg = f"%{needle.lower()}%"
+                else:
+                    if case_sensitive:
+                        expr = f'"{qp}" = ?'
+                        arg = needle
+                    else:
+                        expr = f'LOWER("{qp}") = ?'
+                        arg = needle.lower()
+                where_parts.append(f"(NOT ({expr}))" if inverted else f"({expr})")
+                args.append(arg)
+                continue
+            return None
+        if not where_parts:
+            return None
+        where_sql = " AND ".join(where_parts)
+        total = store.count(where_sql=where_sql, args=tuple(args))
+        page = max(1000, int(getattr(load_config(), "sqlite_backend_page_size", 5000)))
+        out: set[int] = set()
+        offset = 0
+        while offset < total:
+            recs = store.fetch_page(limit=page, offset=offset, where_sql=where_sql, args=tuple(args), sort_by="oid")
+            if not recs:
+                break
+            out.update(int(oid) for oid, _ in recs)
+            offset += len(recs)
+        return frozenset(out)
+
     def calculate_global_bounds(self):
         self.global_bounds = self._table_model.numeric_bounds_by_column()
         data_cols = self._filterable_data_column_names()
@@ -53,6 +143,9 @@ class FilterPanelMixin:
                 f.update_prop_list(list(self.global_bounds.keys()))
             elif isinstance(f, (TextFilterCard, CategoryFilterCard)):
                 f.update_prop_list(data_cols)
+        refresh_plot_axes = getattr(self, "_refresh_active_plot_axis_columns", None)
+        if callable(refresh_plot_axes):
+            refresh_plot_axes()
 
     def _filters_include_substructure(self) -> bool:
         return any(
@@ -80,23 +173,20 @@ class FilterPanelMixin:
         self._substructure_job_smarts = None
 
     def _substructure_filter_targets(self) -> list[tuple[int, str]]:
-        """(oid, smiles) per visible table row for worker matching (aligned with filter row order)."""
+        """(oid, smiles) per row — RDKit parsing runs in ``SubstructureFilterWorker``."""
         targets: list[tuple[int, str]] = []
         smiles_col = self.headers.index("SMILES") if "SMILES" in self.headers else None
         for r in range(self._table_model.rowCount()):
             oid = self._table_model.row_oid(r)
-            mol = self.mols.get(oid)
-            if mol is None:
-                mol = self._mol_for_structure_row(r)
-            if mol is not None:
-                try:
-                    smi = self._smiles_for_substructure_target(oid, mol)
-                except Exception:
-                    smi = ""
-            elif smiles_col is not None:
+            smi = ""
+            if smiles_col is not None:
                 smi = (self._table_model.cell_text(r, smiles_col) or "").strip()
-            else:
-                smi = ""
+            if not smi:
+                mol = self.mols.get(oid)
+                if mol is None:
+                    mol = self._mol_for_structure_row(r)
+                if mol is not None:
+                    smi = self._smiles_for_substructure_target(oid, mol)
             targets.append((oid, smi))
         return targets
 
@@ -123,100 +213,148 @@ class FilterPanelMixin:
         self._invalidate_substructure_async_jobs()
         self._apply_filters_impl_sync(None)
 
+    def _apply_substructure_override_to_visible(
+        self,
+        base: frozenset[int],
+        override_smarts: str,
+        override_oids: frozenset[int],
+    ) -> set[int]:
+        for f in self.filters:
+            if not isinstance(f, SubstructureFilterCard) or not f.filter_enabled():
+                continue
+            if override_smarts != (f.smarts_edit.text() or "").strip():
+                continue
+            inv = f.filter_inverted()
+            if inv:
+                return {oid for oid in base if oid not in override_oids}
+            return {oid for oid in base if oid in override_oids}
+        return set(base)
+
     def _apply_filters_impl_sync(self, substructure_matches: tuple[str, frozenset] | None) -> None:
         """Apply all filters on the UI thread. If ``substructure_matches`` is ``(smarts, oids)``, use that for the matching SMARTS."""
         n_rows = self._table_model.rowCount()
+        proxy = self._filter_proxy_model
+        perf = getattr(self, "_perf", None)
+        scope = perf.track if perf is not None else (lambda *_args, **_kwargs: nullcontext())
         if not self.filters:
-            self.table.setUpdatesEnabled(False)
-            try:
-                for r in range(n_rows):
-                    self.table.setRowHidden(r, False)
-            finally:
-                self.table.setUpdatesEnabled(True)
+            with scope("filters.apply_sync"):
+                proxy.set_visible_oids(None)
             self.status_label.setText(f"Showing {n_rows} / {len(self.mols)} molecules")
             return
 
         override_smarts = substructure_matches[0] if substructure_matches else None
         override_oids = substructure_matches[1] if substructure_matches else None
+        sqlite_oids = self._sqlite_filter_matched_oids()
 
         h_map = {h: i for i, h in enumerate(self.headers)}
         vis = 0
-        self.table.setUpdatesEnabled(False)
+        visible_oids: set[int] = set()
+        table = getattr(self, "table", None)
+        if table is not None:
+            table.setUpdatesEnabled(False)
         try:
-            for r in range(n_rows):
-                hide = False
-                oid = self._table_model.row_oid(r)
-                for f in self.filters:
-                    if isinstance(f, SubstructureFilterCard):
-                        if not f.filter_enabled():
-                            continue
-                        inv = f.filter_inverted()
-                        if (
-                            override_smarts is not None
-                            and override_oids is not None
-                            and override_smarts == (f.smarts_edit.text() or "").strip()
-                        ):
-                            matched = oid in override_oids
-                            if inv:
-                                if matched:
+            with scope("filters.apply_sync"):
+                if sqlite_oids is not None and override_oids is None:
+                    visible_oids = set(sqlite_oids)
+                    vis = len(visible_oids)
+                elif sqlite_oids is not None and override_oids is not None and override_smarts is not None:
+                    visible_oids = self._apply_substructure_override_to_visible(
+                        sqlite_oids, override_smarts, override_oids
+                    )
+                    vis = len(visible_oids)
+                elif (
+                    override_oids is not None
+                    and override_smarts is not None
+                    and sqlite_oids is None
+                    and len([f for f in self.filters if f.filter_enabled()]) == 1
+                ):
+                    for f in self.filters:
+                        if isinstance(f, SubstructureFilterCard) and f.filter_enabled():
+                            inv = f.filter_inverted()
+                            visible_oids = (
+                                {oid for oid in self.mols if oid not in override_oids}
+                                if inv
+                                else set(override_oids)
+                            )
+                            vis = len(visible_oids)
+                            break
+                else:
+                    for r in range(n_rows):
+                        hide = False
+                        oid = self._table_model.row_oid(r)
+                        if sqlite_oids is not None:
+                            hide = oid not in sqlite_oids
+                        for f in ([] if sqlite_oids is not None else self.filters):
+                            if isinstance(f, SubstructureFilterCard):
+                                if not f.filter_enabled():
+                                    continue
+                                inv = f.filter_inverted()
+                                if (
+                                    override_smarts is not None
+                                    and override_oids is not None
+                                    and override_smarts == (f.smarts_edit.text() or "").strip()
+                                ):
+                                    matched = oid in override_oids
+                                    if inv:
+                                        if matched:
+                                            hide = True
+                                            break
+                                    elif not matched:
+                                        hide = True
+                                        break
+                                    continue
+                                mol = self.mols.get(oid)
+                                matched = f.match_mol(mol)
+                                if inv:
+                                    if matched:
+                                        hide = True
+                                        break
+                                elif not matched:
                                     hide = True
                                     break
-                            else:
-                                if not matched:
+                                continue
+                            if isinstance(f, TextFilterCard):
+                                if not f.filter_enabled():
+                                    continue
+                                if not f.row_matches(r):
                                     hide = True
                                     break
-                            continue
-                        mol = self.mols.get(oid)
-                        matched = f.match_mol(mol)
-                        if inv:
-                            if matched:
+                                continue
+                            if isinstance(f, CategoryFilterCard):
+                                if not f.filter_enabled():
+                                    continue
+                                if not f.row_matches(r):
+                                    hide = True
+                                    break
+                                continue
+                            if not isinstance(f, FilterCard):
+                                continue
+                            cfg = f.get_cfg()
+                            if not cfg.get("enabled", True):
+                                continue
+                            prop = cfg.get("p")
+                            if not prop or prop not in h_map:
+                                continue
+                            v = safe_float(self._table_model.value_for_header(r, prop))
+                            if v is None:
                                 hide = True
                                 break
-                        else:
-                            if not matched:
+                            lo, hi = cfg["min"], cfg["max"]
+                            inside = lo <= v <= hi
+                            if cfg.get("inverted", False):
+                                if inside:
+                                    hide = True
+                                    break
+                            elif not inside:
                                 hide = True
                                 break
-                        continue
-                    if isinstance(f, TextFilterCard):
-                        if not f.filter_enabled():
-                            continue
-                        if not f.row_matches(r):
-                            hide = True
-                            break
-                        continue
-                    if isinstance(f, CategoryFilterCard):
-                        if not f.filter_enabled():
-                            continue
-                        if not f.row_matches(r):
-                            hide = True
-                            break
-                        continue
-                    if not isinstance(f, FilterCard):
-                        continue
-                    cfg = f.get_cfg()
-                    if not cfg.get("enabled", True):
-                        continue
-                    prop = cfg.get("p")
-                    if not prop or prop not in h_map:
-                        continue
-                    v = safe_float(self._table_model.value_for_header(r, prop))
-                    if v is None:
-                        hide = True
-                        break
-                    lo, hi = cfg["min"], cfg["max"]
-                    inside = lo <= v <= hi
-                    if cfg.get("inverted", False):
-                        if inside:
-                            hide = True
-                            break
-                    else:
-                        if not inside:
-                            hide = True
-                            break
-                self.table.setRowHidden(r, hide)
-                vis += 1 if not hide else 0
+                        if not hide:
+                            visible_oids.add(oid)
+                            vis += 1
+                proxy.set_visible_oids(frozenset(visible_oids))
         finally:
-            self.table.setUpdatesEnabled(True)
+            if table is not None:
+                table.setUpdatesEnabled(True)
         invalid_smarts_msg = None
         for f in self.filters:
             if isinstance(f, SubstructureFilterCard):
@@ -233,6 +371,11 @@ class FilterPanelMixin:
         if cfg is None:
             cfg = load_config()
         n_rows = self._table_model.rowCount()
+        if self.filters and not self._filters_include_substructure():
+            ensure_sqlite = getattr(self, "_ensure_sqlite_store_current", None)
+            if callable(ensure_sqlite) and not ensure_sqlite():
+                self._sqlite_rebuild_pending_filters = True
+                return
         if not self.filters:
             self._invalidate_substructure_async_jobs()
             self._apply_filters_impl_sync(None)
@@ -266,7 +409,10 @@ class FilterPanelMixin:
         self._substructure_job_gen = int(getattr(self, "_substructure_job_gen", 0)) + 1
         gen = self._substructure_job_gen
         self._substructure_job_smarts = smarts
-        targets = self._substructure_filter_targets()
+        perf = getattr(self, "_perf", None)
+        scope = perf.track if perf is not None else (lambda *_args, **_kwargs: nullcontext())
+        with scope("filters.substructure_targets"):
+            targets = self._substructure_filter_targets()
         self.status_label.setText(f"Filtering substructure… ({n_rows} rows)")
         sigs = getattr(self, "_substructure_filter_signals", None)
         if sigs is None:
@@ -357,13 +503,23 @@ class FilterPanelMixin:
             self.remove_filter(card)
 
     def _sync_filter_panel_scroll_content(self) -> None:
-        """Keep scroll content geometry correct when widgetResizable is false."""
-        host = getattr(self, "_filter_cards_host", None)
+        """Refresh scroll-area geometry after cards are added or the panel is shown."""
         scroll = getattr(self, "_filter_scroll", None)
+        if scroll is None:
+            return
+        clamp = getattr(scroll, "_clamp_host_width", None)
+        if callable(clamp):
+            clamp()
+        host = getattr(self, "_filter_cards_host", None)
         if host is not None:
-            host.adjustSize()
-        if scroll is not None:
-            scroll.updateGeometry()
+            host.updateGeometry()
+        scroll.updateGeometry()
+
+    def toggle_filter_panel(self) -> None:
+        """Show or hide the filter panel and resync card width when opening."""
+        self.f_panel.setVisible(not self.f_panel.isVisible())
+        if self.f_panel.isVisible():
+            QTimer.singleShot(0, self._sync_filter_panel_scroll_content)
 
     def disable_all_filters_keep_panel(self) -> None:
         """Turn off every filter card but leave the filter panel open."""

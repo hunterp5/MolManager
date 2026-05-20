@@ -33,12 +33,21 @@ def __getattr__(name: str) -> Any:
 
 from .cluster_worker import ClusterExploreWorker, ClusterWorker
 from .export_worker import ExportWorker
-from .fingerprint_similarity import FPSimilarityWorker, fingerprint_bitvect_for_ui_choice
-from .load_render import Render2DBatchProcessWorker, RenderWorker, UniversalLoadWorker, WashWorker
+from .fingerprint_similarity import FPSimilarityWorker, SIMILARITY_FP_TYPE_LABELS, fingerprint_bitvect_for_ui_choice
+from .load_render import (
+    Render2DBatchHeldJob,
+    Render2DBatchProcessWorker,
+    RenderWorker,
+    UniversalLoadWorker,
+    WashWorker,
+)
 from .pka_predictor import PKaPredictorSignals, PKaPredictorWorker
 from .protomer_generator import ProtomerGeneratorSignals, ProtomerGeneratorWorker
+from .fragment_decomposition import FragmentDecompositionWorker
+from .fragment_recomposition import FragmentRecompositionWorker
 from .rgroup_decomposition import RGroupDecompositionWorker
-from .signals import FPSimilaritySignals, SubstructureFilterSignals, WorkerSignals
+from .signals import FPSimilaritySignals, SqliteRebuildSignals, SubstructureFilterSignals, WorkerSignals
+from .sqlite_rebuild import SqliteRebuildWorker
 from .substructure_filter import SubstructureFilterWorker
 
 __all__ = [
@@ -51,15 +60,21 @@ __all__ = [
     "SuperposeParams",
     "CustomCalcWorker",
     "ExportWorker",
+    "FragmentDecompositionWorker",
+    "FragmentRecompositionWorker",
     "FPSimilaritySignals",
     "FPSimilarityWorker",
+    "SIMILARITY_FP_TYPE_LABELS",
     "PKaPredictorSignals",
     "PKaPredictorWorker",
     "ProtomerGeneratorSignals",
     "ProtomerGeneratorWorker",
+    "Render2DBatchHeldJob",
     "Render2DBatchProcessWorker",
     "RenderWorker",
     "RGroupDecompositionWorker",
+    "SqliteRebuildSignals",
+    "SqliteRebuildWorker",
     "SubstructureFilterSignals",
     "SubstructureFilterWorker",
     "UniversalLoadWorker",

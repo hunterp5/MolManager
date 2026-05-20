@@ -1,4 +1,4 @@
-"""Unit tests for R-group decomposition table assembly."""
+"""Unit tests for core-based decomposition table assembly."""
 
 from chemmanager.workers.rgroup_decomposition import (
     _assemble_table_rows,

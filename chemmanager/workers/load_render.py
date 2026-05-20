@@ -6,14 +6,21 @@ import os
 import threading
 from concurrent.futures import FIRST_COMPLETED, ProcessPoolExecutor, wait
 
+from .process_pool_utils import (
+    register_process_pool,
+    should_terminate_process_pool,
+    shutdown_process_pool_executor,
+)
+
 from PyQt5.QtCore import QRunnable
 from rdkit import Chem
 
 from rdkit.Chem.Draw import rdMolDraw2D
 
 from ..display_constants import STRUCTURE_DEPICT_HEIGHT, STRUCTURE_DEPICT_WIDTH
+from ..import_structure import needs_structure_source_picker
 from ..utils import mol_to_canonical_smiles, parse_molecule_from_cell_text, safe_mol_prop_string
-from .signals import WorkerSignals
+from .signals import WorkerSignals, emit_partial_results_if_cancelled
 
 logger = logging.getLogger(__name__)
 
@@ -36,6 +43,48 @@ def _mp_render_structure_row(args: tuple):
         return int(oid), p, d.GetDrawingText(), True, int(w), int(h), sid
     except Exception:
         return int(oid), {}, b"", False, int(w), int(h), sid
+
+
+class Render2DBatchHeldJob(QRunnable):
+    """
+    Process-queue adapter for Tools → Render 2D.
+
+    Prepares the batch on the GUI thread, runs subprocess rendering, then blocks until the
+    UI has flushed results (``_render2d_batch_done_event``).
+    """
+
+    def __init__(self, app, payload: tuple, cancel_event: threading.Event | None) -> None:
+        super().__init__()
+        self._app = app
+        self._payload = payload
+        self._cancel_event = cancel_event
+
+    def run(self) -> None:
+        if self._cancel_event is not None and self._cancel_event.is_set():
+            return
+        done_ev = getattr(self._app, "_render2d_batch_done_event", None)
+        if done_ev is not None:
+            done_ev.clear()
+        try:
+            from PyQt5.QtCore import QMetaObject, Qt
+
+            self._app._render2d_queue_payload = self._payload
+            self._app._render2d_queue_cancel_event = self._cancel_event
+            QMetaObject.invokeMethod(
+                self._app,
+                "_begin_render2d_batch_from_queue",
+                Qt.BlockingQueuedConnection,
+            )
+        except Exception:
+            logger.exception("Render2D batch UI prepare failed")
+            if done_ev is not None:
+                done_ev.set()
+            return
+        if done_ev is not None:
+            if not getattr(self._app, "render2d_batch_active", lambda: False)():
+                done_ev.set()
+            else:
+                done_ev.wait()
 
 
 class Render2DBatchProcessWorker(QRunnable):
@@ -77,7 +126,7 @@ class Render2DBatchProcessWorker(QRunnable):
         it = iter(tasks)
         pending = set()
         user_cancelled = False
-        ex = ProcessPoolExecutor(max_workers=proc_workers)
+        ex = register_process_pool(ProcessPoolExecutor(max_workers=proc_workers))
 
         def _fill() -> None:
             while len(pending) < max_inflight:
@@ -89,7 +138,7 @@ class Render2DBatchProcessWorker(QRunnable):
         try:
             _fill()
             while pending:
-                if ev is not None and ev.is_set():
+                if should_terminate_process_pool(ev):
                     user_cancelled = True
                     for f in pending:
                         f.cancel()
@@ -105,20 +154,44 @@ class Render2DBatchProcessWorker(QRunnable):
                         logger.exception("Render2D batch subprocess row failed")
                 _fill()
         finally:
-            try:
-                ex.shutdown(wait=not user_cancelled, cancel_futures=True)
-            except TypeError:
-                ex.shutdown(wait=not user_cancelled)
+            shutdown_process_pool_executor(ex, kill_workers=should_terminate_process_pool(ev))
 
 
 class UniversalLoadWorker(QRunnable):
-    def __init__(self, path, signals, batch_size=400, cancel_event: threading.Event | None = None):
+    def __init__(
+        self,
+        path,
+        signals,
+        batch_size=400,
+        cancel_event: threading.Event | None = None,
+        structure_choice_event: threading.Event | None = None,
+    ):
         super().__init__()
         self.path, self.signals, self.batch_size = path, signals, batch_size
         self.cancel_event = cancel_event
+        self.structure_choice_event = structure_choice_event
 
     def _cancelled(self) -> bool:
         return self.cancel_event is not None and self.cancel_event.is_set()
+
+    def _wait_for_structure_source_choice(self, headers: list[str]) -> bool:
+        """Pause the reader until the UI picks a structure column (or load is cancelled)."""
+        ev = self.structure_choice_event
+        if ev is None or not needs_structure_source_picker(headers):
+            return True
+        ev.clear()
+        try:
+            self.signals.structure_source_probe.emit(list(headers))
+        except Exception:
+            logger.exception("structure_source_probe emit failed")
+            ev.set()
+            return True
+        while True:
+            if ev.wait(timeout=0.2):
+                return True
+            if self._cancelled():
+                ev.set()
+                return False
 
     def run(self):
         try:
@@ -139,6 +212,8 @@ class UniversalLoadWorker(QRunnable):
                     if mol:
                         if first_emit and len(batch) == 0:
                             headers.extend(sorted([str(p) for p in mol.GetPropNames()]))
+                            if not self._wait_for_structure_source_choice(headers):
+                                break
                         batch.append(mol)
                         if len(batch) >= batch_size:
                             self.signals.mols_loaded.emit(batch, headers if first_emit else [], first_emit, False)
@@ -156,6 +231,8 @@ class UniversalLoadWorker(QRunnable):
                     if smi_col:
                         headers.append("SMILES")
                         headers.extend([h for h in fieldnames if h != smi_col])
+                        if not self._wait_for_structure_source_choice(headers):
+                            smi_col = None
                     for row in reader:
                         if self._cancelled():
                             break
@@ -180,6 +257,8 @@ class UniversalLoadWorker(QRunnable):
                     if mol:
                         if first_emit and len(batch) == 0:
                             headers.extend(sorted([str(p) for p in mol.GetPropNames()]))
+                            if not self._wait_for_structure_source_choice(headers):
+                                break
                         batch.append(mol)
                         if len(batch) >= batch_size:
                             self.signals.mols_loaded.emit(batch, headers if first_emit else [], first_emit, False)
@@ -206,7 +285,7 @@ class UniversalLoadWorker(QRunnable):
                     self.signals.mols_loaded.emit([], headers, True, True)
                 else:
                     self.signals.mols_loaded.emit([], [], False, True)
-        except Exception as e:
+        except Exception:
             logger.exception("UniversalLoadWorker failed")
             try:
                 self.signals.mols_loaded.emit([], ["ID_HIDDEN", "Structure"], True, True)
@@ -266,9 +345,13 @@ class WashWorker(QRunnable):
         items = list(self.mols_data)
         total = max(len(items), 1)
         res = []
+        done_count = 0
+        cancelled = False
         for done, (i, item) in enumerate(items, start=1):
             if self.cancel_event is not None and self.cancel_event.is_set():
+                cancelled = True
                 break
+            done_count = done
             mol = None
             if self.is_smiles:
                 smi = str(item or "").strip()
@@ -295,5 +378,8 @@ class WashWorker(QRunnable):
                 self.signals.tool_progress.emit("Disconnect fragments…", done, total)
             except Exception:
                 pass
+        emit_partial_results_if_cancelled(
+            self.signals, "Disconnect fragments", done_count, total, cancelled
+        )
         self.signals.washed.emit(res)
 
