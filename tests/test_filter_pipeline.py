@@ -4,8 +4,8 @@ from __future__ import annotations
 
 from rdkit import Chem
 
-from chemmanager.ui.main_window import ChemicalTableApp
-from chemmanager.ui.widgets import CategoryFilterCard, FilterCard, SubstructureFilterCard, TextFilterCard
+from molmanager.ui.main_window import ChemicalTableApp
+from molmanager.ui.widgets import CategoryFilterCard, FilterCard, SubstructureFilterCard, TextFilterCard
 
 
 def _setup_two_row_mw_table(w: ChemicalTableApp) -> FilterCard:
@@ -108,7 +108,7 @@ def test_substructure_invalid_smarts_sets_status(qapp):  # noqa: ARG001
 
 
 def test_substructure_async_handoff_hides_rows(qapp, monkeypatch):  # noqa: ARG001
-    monkeypatch.setenv("CHEMMANAGER_SUBSTRUCTURE_ASYNC_ROWS", "64")
+    monkeypatch.setenv("MOLMANAGER_SUBSTRUCTURE_ASYNC_ROWS", "64")
     w = ChemicalTableApp()
     w.headers = ["ID_HIDDEN", "Structure", "SMILES"]
     w._table_model.set_headers(list(w.headers))

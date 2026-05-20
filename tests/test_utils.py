@@ -1,10 +1,10 @@
-"""Tests for chemmanager.utils helpers."""
+"""Tests for molmanager.utils helpers."""
 
 from __future__ import annotations
 
 from rdkit import Chem
 
-from chemmanager.utils import redact_sqlalchemy_url, safe_float, safe_mol_prop_string
+from molmanager.utils import redact_sqlalchemy_url, safe_float, safe_mol_prop_string
 
 
 def test_safe_float_none():

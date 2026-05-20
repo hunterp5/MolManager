@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from PyQt5.QtCore import QThreadPool
 
-from chemmanager.workers import SubstructureFilterSignals, SubstructureFilterWorker
+from molmanager.workers import SubstructureFilterSignals, SubstructureFilterWorker
 
 
 def test_substructure_worker_ethane_matches_c(qapp):  # noqa: ARG001

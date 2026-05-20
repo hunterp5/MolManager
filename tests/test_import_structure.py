@@ -1,6 +1,6 @@
 """Tests for import structure-source header detection."""
 
-from chemmanager.import_structure import (
+from molmanager.import_structure import (
     needs_structure_source_picker,
     structure_source_picker_candidates,
 )

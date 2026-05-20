@@ -2,7 +2,7 @@
 
 from rdkit import Chem
 
-from chemmanager.fragment_decomposition import (
+from molmanager.fragment_decomposition import (
     assemble_fragment_table_rows,
     decompose_brics,
     decompose_recap,

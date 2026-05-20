@@ -17,9 +17,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from PyQt5.QtWidgets import QApplication
 
-from chemmanager.ui.filters.cards import SubstructureFilterCard, TextFilterCard
-from chemmanager.ui.main_window import ChemicalTableApp
-from chemmanager.workers.export_worker import ExportWorker
+from molmanager.ui.filters.cards import SubstructureFilterCard, TextFilterCard
+from molmanager.ui.main_window import ChemicalTableApp
+from molmanager.workers.export_worker import ExportWorker
 
 
 class _NoopEmitter:
@@ -67,7 +67,7 @@ def _build_export_snapshot(app: ChemicalTableApp) -> dict[int, dict[str, str]]:
 
 def _bench_one(scale: int) -> dict[str, float]:
     app = ChemicalTableApp()
-    tmp_dir = Path(tempfile.mkdtemp(prefix="chemmanager_ui_bench_"))
+    tmp_dir = Path(tempfile.mkdtemp(prefix="MOLMANAGER_ui_bench_"))
     csv_path = tmp_dir / f"session_{scale}.csv"
     out_csv = tmp_dir / f"export_{scale}.csv"
     _write_session_csv(csv_path, scale)

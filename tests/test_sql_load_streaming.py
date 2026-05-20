@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import sqlite3
 
-from chemmanager.ui.main_window import ChemicalTableApp
+from molmanager.ui.main_window import ChemicalTableApp
 
 
 def test_load_from_sql_streaming_sqlite(tmp_path, qapp):  # noqa: ARG001

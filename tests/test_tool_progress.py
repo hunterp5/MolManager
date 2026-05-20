@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import threading
 
-from chemmanager.tool_progress import ToolProgressState
+from molmanager.tool_progress import ToolProgressState
 
 
 def test_tool_progress_state_threaded_updates():

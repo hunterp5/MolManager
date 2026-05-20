@@ -5,10 +5,25 @@ from __future__ import annotations
 import sys
 import types
 
+import pytest
 from rdkit import Chem
 
-from chemmanager.workers.pka_predictor import PKaPredictorSignals, PKaPredictorWorker, prepare_mol_for_pkasolver
-from chemmanager.workers.signals import WorkerSignals
+import molmanager.workers.pka_predictor as pka_predictor
+import molmanager.workers.pkasolver_parallel as pkasolver_parallel
+from molmanager.workers.pka_predictor import PKaPredictorSignals, PKaPredictorWorker, prepare_mol_for_pkasolver
+from molmanager.workers.signals import WorkerSignals
+
+
+@pytest.fixture(autouse=True)
+def _force_sequential_pka_worker(monkeypatch) -> None:
+    """Keep pKa worker tests on the in-process path (mocked pkasolver), not a process pool."""
+    monkeypatch.setenv("MOLMANAGER_PKA_PROCESS_WORKERS", "1")
+    monkeypatch.setattr(
+        pkasolver_parallel,
+        "plan_pkasolver_process_workers",
+        lambda _n, _c: (False, 1),
+    )
+    monkeypatch.setattr(pka_predictor, "_query_model_singleton", None)
 
 
 def test_prepare_mol_for_pkasolver_strips_non_utf8_sdf_prop() -> None:
@@ -52,14 +67,9 @@ def test_pka_worker_emits_partial_results_on_cancel(monkeypatch) -> None:
     fake_mod.QueryModel = _QueryModel
     fake_mod.calculate_microstate_pka_values = _calc
     monkeypatch.setitem(sys.modules, "pkasolver.query", fake_mod)
-    monkeypatch.setattr("chemmanager.workers.pka_predictor._patch_pkasolver_dimorphite", lambda: None)
-    monkeypatch.setattr("chemmanager.workers.pka_predictor._ensure_cairosvg_importable", lambda: None)
-    monkeypatch.setattr("chemmanager.workers.pka_predictor._query_model_singleton", None)
-    monkeypatch.setattr(
-        "chemmanager.workers.pkasolver_parallel.plan_pkasolver_process_workers",
-        lambda _n, _c: (False, 1),
-    )
-
+    monkeypatch.setattr("molmanager.workers.pka_predictor._patch_pkasolver_dimorphite", lambda: None)
+    monkeypatch.setattr("molmanager.workers.pka_predictor._ensure_cairosvg_importable", lambda: None)
+    monkeypatch.setattr("molmanager.workers.pka_predictor._query_model_singleton", None)
     ws = WorkerSignals()
     ps = PKaPredictorSignals()
     partial: list[tuple[str, int, int]] = []
@@ -101,14 +111,8 @@ def test_pka_worker_deduplicates_identical_structures(monkeypatch) -> None:
     fake_mod.QueryModel = _QueryModel
     fake_mod.calculate_microstate_pka_values = _calc
     monkeypatch.setitem(sys.modules, "pkasolver.query", fake_mod)
-    monkeypatch.setattr("chemmanager.workers.pka_predictor._patch_pkasolver_dimorphite", lambda: None)
-    monkeypatch.setattr("chemmanager.workers.pka_predictor._ensure_cairosvg_importable", lambda: None)
-    monkeypatch.setattr("chemmanager.workers.pka_predictor._query_model_singleton", None)
-    monkeypatch.setattr(
-        "chemmanager.workers.pkasolver_parallel.plan_pkasolver_process_workers",
-        lambda _n, _c: (False, 1),
-    )
-
+    monkeypatch.setattr("molmanager.workers.pka_predictor._patch_pkasolver_dimorphite", lambda: None)
+    monkeypatch.setattr("molmanager.workers.pka_predictor._ensure_cairosvg_importable", lambda: None)
     ws = WorkerSignals()
     ps = PKaPredictorSignals()
     finished: list[list[tuple[int | None, str]]] = []

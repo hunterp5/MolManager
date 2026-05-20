@@ -1,10 +1,10 @@
 from __future__ import annotations
 
-from chemmanager.storage import SqliteTableStore
+from molmanager.storage import SqliteTableStore
 
 
 def test_sqlite_table_store_distinct_values():
-    from chemmanager.storage.sqlite_table_store import SqliteTableStore
+    from molmanager.storage.sqlite_table_store import SqliteTableStore
 
     store = SqliteTableStore()
     store.rebuild(

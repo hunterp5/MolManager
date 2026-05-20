@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from chemmanager.surechembl_api import _similarity_options_string
+from molmanager.surechembl_api import _similarity_options_string
 
 
 def test_similarity_options_string() -> None:

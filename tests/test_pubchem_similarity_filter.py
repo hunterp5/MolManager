@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from chemmanager.ui.external.pubchem import pubchem_hit_passes_tanimoto_threshold
+from molmanager.ui.external.pubchem import pubchem_hit_passes_tanimoto_threshold
 
 
 def test_passes_at_threshold() -> None:

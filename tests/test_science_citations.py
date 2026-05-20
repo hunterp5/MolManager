@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from chemmanager import science_citations as sc
+from molmanager import science_citations as sc
 
 
 def test_plain_citations_contain_dois() -> None:

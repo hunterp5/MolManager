@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from chemmanager.performance import PerformanceTracker
+from molmanager.performance import PerformanceTracker
 
 
 def test_performance_tracker_snapshot_and_counts():

@@ -7,8 +7,8 @@ import json
 
 from rdkit import Chem
 
-from chemmanager.confs_codec import mol_from_packed_confs_cell, pack_confs_cell, unpack_confs_blocks_json_b64
-from chemmanager.workers import ConformerGenParams, run_conformer_generation, run_superpose_conformers, SuperposeParams
+from molmanager.confs_codec import mol_from_packed_confs_cell, pack_confs_cell, unpack_confs_blocks_json_b64
+from molmanager.workers import ConformerGenParams, run_conformer_generation, run_superpose_conformers, SuperposeParams
 
 
 def test_mol_from_packed_roundtrip():

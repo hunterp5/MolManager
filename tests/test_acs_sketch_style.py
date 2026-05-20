@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-from chemmanager.ui.sketcher.acs_style import acs_sketch_style
-from chemmanager.ui.sketcher.constants import SKETCH_MEDIAN_BOND_PX
+from molmanager.ui.sketcher.acs_style import acs_sketch_style
+from molmanager.ui.sketcher.constants import SKETCH_MEDIAN_BOND_PX
 
 
 def test_acs_sketch_style_default_matches_sketch_bond_length() -> None:

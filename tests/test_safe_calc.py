@@ -6,7 +6,7 @@ import math
 
 import pytest
 
-from chemmanager.safe_calc import eval_custom_calc_expression
+from molmanager.safe_calc import eval_custom_calc_expression
 
 
 def _scope():

@@ -1,5 +1,5 @@
 {
-  "format": "chemmanager_session",
+  "format": "molmanager_session",
   "version": 1,
   "headers": [
     "ID_HIDDEN",

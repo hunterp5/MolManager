@@ -4,8 +4,8 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
-from chemmanager.ui.compound_table_model import CompoundTableModel
-from chemmanager.ui.main_window.table_undo_commands import collect_delete_row_snapshots
+from molmanager.ui.compound_table_model import CompoundTableModel
+from molmanager.ui.main_window.table_undo_commands import collect_delete_row_snapshots
 
 
 def test_collect_delete_row_snapshots_light(qapp):  # noqa: ARG001

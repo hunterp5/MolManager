@@ -6,7 +6,7 @@ import threading
 import time
 from concurrent.futures import ProcessPoolExecutor
 
-from chemmanager.workers import process_pool_utils as ppu
+from molmanager.workers import process_pool_utils as ppu
 
 
 def _sleep_worker(_: int) -> int:

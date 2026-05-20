@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-from chemmanager.ui.filters.cards import TextFilterCard
-from chemmanager.ui.main_window import ChemicalTableApp
+from molmanager.ui.filters.cards import TextFilterCard
+from molmanager.ui.main_window import ChemicalTableApp
 
 
 def test_proxy_filter_mode_reduces_visible_rows(qapp):  # noqa: ARG001

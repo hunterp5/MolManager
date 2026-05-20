@@ -1,11 +1,11 @@
-Here is a concise holistic review aligned with **scalability**, **modularity**, **safety**, and **efficiency**, plus what it would take to move toward an **enterprise** posture. It is based on the current layout (`chemmanager/` PyQt5 desktop app, mixins + `workers.py` + `compound_table_model.py`, no automated tests in-repo).
+Here is a concise holistic review aligned with **scalability**, **modularity**, **safety**, and **efficiency**, plus what it would take to move toward an **enterprise** posture. It is based on the current layout (`molmanager/` PyQt5 desktop app, mixins + `workers.py` + `compound_table_model.py`, no automated tests in-repo).
 
 ---
 
 ## What is already in good shape
 
 - **Clear separation of heavy work** into `QRunnable` workers (`workers.py`) with a dedicated **render thread pool** and general **thread pool**, plus incremental **file ingest** and **chunked session restore** for large tables.
-- **Table data** is moving through a real **`QAbstractTableModel`** (`compound_table_model.py`) instead of only `QTableWidgetItem` grids—better foundation for large tables and sorting.
+- **Table data** is moving through a real **`QAbstractTableModel`** (`compound_table_model.py`) instead of only `QTableWidgetItem` gridsï¿½better foundation for large tables and sorting.
 - **SQL loading** uses identifier checks for table names and optional **connection timeouts** for SQLite/Postgres (good baseline for enterprise DB hygiene).
 
 ---
@@ -19,35 +19,35 @@ Here is a concise holistic review aligned with **scalability**, **modularity**, 
 | Area | Limiting factor |
 |------|------------------|
 | **`self.mols` + full `DataFrame` from SQL** | All structures resident in RAM; SQL path pulls full result set at once. |
-| **`numeric_bounds_by_column`** | Builds per-column lists of every numeric value ? **memory and time** scale with rows × columns. |
+| **`numeric_bounds_by_column`** | Builds per-column lists of every numeric value ? **memory and time** scale with rows ï¿½ columns. |
 | **Substructure filter** | `HasSubstructMatch` per row on the **UI thread** (debounced, but still O(rows) RDKit per filter pass). |
 | **Session / CSV** | Large files still end up as full row lists in memory for chunked CSV restore. |
 | **Single process** | One GIL-bound Python process; parallel RDKit helps only where you already thread. |
 
 **Enterprise-oriented directions**
 
-1. **Paged / lazy data**: optional “database-backed” mode—only current page of rows + SMILES/IDs in memory; mols created on demand for structure/descriptor operations.
+1. **Paged / lazy data**: optional ï¿½database-backedï¿½ modeï¿½only current page of rows + SMILES/IDs in memory; mols created on demand for structure/descriptor operations.
 2. **Streaming SQL**: server-side cursors or chunked `read_sql_query` with explicit row cap and **disk spill** (Parquet) for analytics-sized loads.
 3. **Background filter pipeline**: substructure and heavy filters produce a **bitset or list of visible row ids** on a worker, then apply in one pass on the UI thread.
-4. **Horizontal scale**: enterprise chemistry is rarely “one giant PyQt table”; usually a **web or API backend** (job queue, workers, object store for images) and a thinner client.
+4. **Horizontal scale**: enterprise chemistry is rarely ï¿½one giant PyQt tableï¿½; usually a **web or API backend** (job queue, workers, object store for images) and a thinner client.
 
 ---
 
 ## Modularity
 
-**Strengths:** feature areas are split into **mixins** (`session_mixin`, `chemistry_mixin`, …) and **dialogs**; **workers** centralize IO/RDKit batch work; **model/view** separation exists for the main grid.
+**Strengths:** feature areas are split into **mixins** (`session_mixin`, `chemistry_mixin`, ï¿½) and **dialogs**; **workers** centralize IO/RDKit batch work; **model/view** separation exists for the main grid.
 
 **Gaps for larger teams / long maintenance**
 
-- **`ChemicalTableApp` is still a “god object”** across mixins: shared mutable state (`mols`, `headers`, `filters`, thread pools) is easy to break when multiple contributors change behavior.
+- **`ChemicalTableApp` is still a ï¿½god objectï¿½** across mixins: shared mutable state (`mols`, `headers`, `filters`, thread pools) is easy to break when multiple contributors change behavior.
 - **Domain logic is mixed with Qt** (parsing, chemistry rules, file formats, and UI state in the same classes).
-- **No stable internal API layer** (e.g. “`TableRepository`”, “`StructureService`”, “`DescriptorService`”)—everything reaches through `self` on the window.
+- **No stable internal API layer** (e.g. ï¿½`TableRepository`ï¿½, ï¿½`StructureService`ï¿½, ï¿½`DescriptorService`ï¿½)ï¿½everything reaches through `self` on the window.
 
 **Enterprise-oriented directions**
 
 1. Introduce **small service modules** (pure Python, no Qt): structure parsing, descriptor dispatch, session serialize/parse, SQL load. Mixins become thin adapters that call services and emit signals.
 2. **Dependency injection** (construct services in `main()` and pass into the window) to enable **unit tests** and alternate implementations (mock DB, headless runs).
-3. **Configuration object** instead of many `os.environ` reads scattered across the codebase—single place with schema validation and defaults documented for ops.
+3. **Configuration object** instead of many `os.environ` reads scattered across the codebaseï¿½single place with schema validation and defaults documented for ops.
 
 ---
 
@@ -57,11 +57,11 @@ Here is a concise holistic review aligned with **scalability**, **modularity**, 
 
 | Risk | Notes |
 |------|--------|
-| **Custom calculator `eval`** | `__builtins__` disabled and restricted scope, but **`eval` is not a security boundary**—malicious or buggy expressions are still a concern for compliance environments. |
+| **Custom calculator `eval`** | `__builtins__` disabled and restricted scope, but **`eval` is not a security boundary**ï¿½malicious or buggy expressions are still a concern for compliance environments. |
 | **User-supplied SQL** | URLs and ad hoc queries are powerful; table names are guarded, but **arbitrary SQL** is still arbitrary. Credentials in URLs may appear in logs, crash dumps, or support bundles. |
 | **Session files (JSON/CSV)** | Can contain sensitive structures or business data; no encryption or signing described in-app. |
 | **Subprocess / file paths** | Session launch and file dialogs need consistent path validation if paths ever come from network sources. |
-| **Third-party network** | PubChem/ChEMBL go through libraries; timeouts and TLS behavior depend on those stacks—worth making explicit for regulated networks. |
+| **Third-party network** | PubChem/ChEMBL go through libraries; timeouts and TLS behavior depend on those stacksï¿½worth making explicit for regulated networks. |
 
 **Enterprise-oriented directions**
 
@@ -79,8 +79,8 @@ Here is a concise holistic review aligned with **scalability**, **modularity**, 
 **Remaining hotspots**
 
 - **`table_to_dataframe`** and similar paths that walk the full grid for analysis/export previews.
-- **`calculate_global_bounds` ? `numeric_bounds_by_column`** on every structural change—could be **incremental** or sampled for very wide tables.
-- **FPSimilarity / parallel paths** still share **query/target mols** across threads in some code paths—enterprise hardening would standardize on **thread-local or copied** mols everywhere RDKit runs concurrently.
+- **`calculate_global_bounds` ? `numeric_bounds_by_column`** on every structural changeï¿½could be **incremental** or sampled for very wide tables.
+- **FPSimilarity / parallel paths** still share **query/target mols** across threads in some code pathsï¿½enterprise hardening would standardize on **thread-local or copied** mols everywhere RDKit runs concurrently.
 - **SQLite `read_sql` + pandas** for huge tables: peak memory is often the bottleneck, not CPU.
 
 **Enterprise-oriented directions**
@@ -91,14 +91,14 @@ Here is a concise holistic review aligned with **scalability**, **modularity**, 
 
 ---
 
-## Making this “enterprise application” ready (prioritized)
+## Making this ï¿½enterprise applicationï¿½ ready (prioritized)
 
 These are the usual gaps between a solid desktop chemistry tool and something procurement / IT / compliance will accept:
 
 1. **Automated testing & CI**: unit tests for model, session round-trip, SQL guardrails, expression evaluator; minimal Qt smoke test; pinned dependencies and SBOM.
 2. **Observability**: structured logging, log levels, optional telemetry (opt-in), error reporting (e.g. Sentry) with PII scrubbing.
 3. **Security program**: threat model (SQL, eval, file formats, session sharing), regular dependency scanning, signed installers / updates.
-4. **Multi-user / data lifecycle**: if the product stays desktop—clear story for **network shares**, locking, and backup; if not—a **server + auth (SSO/OIDC)** and project/role-based access.
+4. **Multi-user / data lifecycle**: if the product stays desktopï¿½clear story for **network shares**, locking, and backup; if notï¿½a **server + auth (SSO/OIDC)** and project/role-based access.
 5. **Operational docs**: deployment guide, env vars, max scale, disaster recovery for session/project files.
 6. **Architecture choice**: for true enterprise scale and collaboration, plan a **thin client + API + worker fleet** rather than only growing the PyQt monolith.
 
@@ -112,6 +112,6 @@ These are the usual gaps between a solid desktop chemistry tool and something pr
 | **Modularity** | Extract chemistry + IO services from mixins; single config module; narrow public surface on `ChemicalTableApp`. |
 | **Safety** | Policy to disable `eval`; audit log for SQL/export; secret handling; optional encryption for session bundles. |
 | **Efficiency** | Incremental bounds updates; explicit network timeouts; consistent mol copying for all threaded RDKit use; cap/worker offload for `table_to_dataframe`. |
-| **Enterprise** | Tests + CI, RBAC story, structured logging, packaging/signing, and a roadmap for client–server split if collaboration and central governance matter. |
+| **Enterprise** | Tests + CI, RBAC story, structured logging, packaging/signing, and a roadmap for clientï¿½server split if collaboration and central governance matter. |
 
 If you want to turn this into an actionable backlog, the highest leverage next steps in *this* codebase are usually: **(1) automated tests + CI**, **(2) service extraction from the largest mixin**, **(3) worker-based substructure filtering or visibility index**, and **(4) replacing or hard-gating custom `eval`**. I can help prioritize and sequence those against your actual deployment model (lab desktop only vs. corporate rollout).

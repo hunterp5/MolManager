@@ -4,7 +4,7 @@ from pathlib import Path
 
 from plotly import graph_objects as go
 
-from chemmanager.ui.plotly_html import write_self_contained_plotly_html
+from molmanager.ui.plotly_html import write_self_contained_plotly_html
 
 
 def test_write_self_contained_plotly_html_includes_plotly(tmp_path: Path):

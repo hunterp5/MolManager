@@ -3,7 +3,7 @@
 from rdkit import Chem
 from rdkit.Chem import AllChem
 
-from chemmanager.confs_codec import (
+from molmanager.confs_codec import (
     demote_v1_cell_to_sidecar,
     deserialize_confs_sidecar,
     mol_from_packed_confs_cell,
@@ -13,7 +13,7 @@ from chemmanager.confs_codec import (
     serialize_confs_sidecar,
     unpack_confs_blocks_json_b64,
 )
-from chemmanager.workers import ConformerGenParams, run_conformer_generation
+from molmanager.workers import ConformerGenParams, run_conformer_generation
 
 
 def _simple_mol():
