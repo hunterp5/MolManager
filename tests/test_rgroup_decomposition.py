@@ -1,6 +1,6 @@
 """Unit tests for core-based decomposition table assembly."""
 
-from chemmanager.workers.rgroup_decomposition import (
+from molmanager.workers.rgroup_decomposition import (
     _assemble_table_rows,
     _collect_rg_columns,
     _rgroup_decomp_failure_message,

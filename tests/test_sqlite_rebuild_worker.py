@@ -6,8 +6,8 @@ from pathlib import Path
 
 from PyQt5.QtCore import QThreadPool
 
-from chemmanager.storage import SqliteTableStore
-from chemmanager.workers import SqliteRebuildSignals, SqliteRebuildWorker
+from molmanager.storage import SqliteTableStore
+from molmanager.workers import SqliteRebuildSignals, SqliteRebuildWorker
 
 
 def test_sqlite_rebuild_worker_builds_queryable_db(qapp, tmp_path):  # noqa: ARG001

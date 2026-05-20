@@ -4,7 +4,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from chemmanager.dimensionality_reduction import (
+from molmanager.dimensionality_reduction import (
     build_reduction_result,
     is_fingerprint_bitcount_column,
     prepare_numeric_matrix,

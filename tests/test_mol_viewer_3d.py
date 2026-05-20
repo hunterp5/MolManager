@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from rdkit import Chem
 
-from chemmanager.ui.mol_viewer_3d import (
+from molmanager.ui.mol_viewer_3d import (
     _mol_block_b64,
     _offline_index_html,
     build_3dmol_html,

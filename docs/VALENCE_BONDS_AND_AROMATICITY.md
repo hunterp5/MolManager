@@ -92,12 +92,12 @@ Chemically, “bond type” can mean **order** (single/double/triple), **polarit
 
 | Topic | Primary location |
 |--------|------------------|
-| Bond tuple layout, sanitize on load | `chemmanager/ui/sketcher/widget.py` (`load_from_rdkit_mol`, `_mol_from_node_ids`) |
+| Bond tuple layout, sanitize on load | `molmanager/ui/sketcher/widget.py` (`load_from_rdkit_mol`, `_mol_from_node_ids`) |
 | Valence sums and caps | `SketchWidget._current_valence`, `_max_valence`, `_max_bond_order_sum*` in `widget.py` |
-| Bond drawing (order 1/2/3) | `chemmanager/ui/sketcher/widget_painting.py` (`_draw_bond_line`) |
-| Element lists & maps | `chemmanager/ui/sketcher/constants.py` |
-| Atom text parsing | `chemmanager/ui/sketcher/chem.py` |
-| Element label RGB (RDKit default palette) | `chemmanager/ui/sketcher/element_colors.py` |
-| Sanitize / export fallbacks | `chemmanager/ui/sketcher/chem.py` (`_sanitize_mol_for_smiles`) |
+| Bond drawing (order 1/2/3) | `molmanager/ui/sketcher/widget_painting.py` (`_draw_bond_line`) |
+| Element lists & maps | `molmanager/ui/sketcher/constants.py` |
+| Atom text parsing | `molmanager/ui/sketcher/chem.py` |
+| Element label RGB (RDKit default palette) | `molmanager/ui/sketcher/element_colors.py` |
+| Sanitize / export fallbacks | `molmanager/ui/sketcher/chem.py` (`_sanitize_mol_for_smiles`) |
 
 When changing bond or valence behavior, update **this file** and any user-facing tooltips or status strings that mention “valence” or bond types.

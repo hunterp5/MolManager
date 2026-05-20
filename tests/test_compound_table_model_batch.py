@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from chemmanager.ui.compound_table_model import CompoundTableModel
+from molmanager.ui.compound_table_model import CompoundTableModel
 
 
 def test_append_rows_batch_inserts_all_rows():
@@ -18,4 +18,22 @@ def test_append_rows_batch_inserts_all_rows():
     bounds = model.numeric_bounds_by_column()
     assert "MW" in bounds
     assert bounds["MW"]["max"] >= bounds["MW"]["min"]
+
+
+def test_apply_columns_values_bulk_emits_sparse_row_ranges(qapp):  # noqa: ARG001
+    """Bulk column writes should not repaint the entire table when few rows change."""
+    model = CompoundTableModel(["ID_HIDDEN", "Structure", "SMILES", "pKa"])
+    for oid in range(20):
+        model.append_row(oid, {"SMILES": "C", "pKa": ""})
+    emitted: list[tuple[int, int]] = []
+
+    def _capture(_tl, br, _roles=None):
+        emitted.append((_tl.row(), br.row()))
+
+    model.dataChanged.connect(_capture)
+    model.apply_columns_values_bulk(
+        ["pKa"],
+        [(2, {"pKa": "9.1"}), (5, {"pKa": "4.2"}), (17, {"pKa": "11.0"})],
+    )
+    assert emitted == [(2, 2), (5, 5), (17, 17)]
 

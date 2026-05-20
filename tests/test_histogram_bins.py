@@ -1,6 +1,6 @@
 """Tests for histogram bin edge computation and OID lookup."""
 
-from chemmanager.ui.plot import compute_histogram_bin_edges, oids_in_histogram_bin
+from molmanager.ui.plot import compute_histogram_bin_edges, oids_in_histogram_bin
 
 
 def test_compute_histogram_bin_edges_fixed_width():

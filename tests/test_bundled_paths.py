@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from chemmanager import bundled_paths
+from molmanager import bundled_paths
 
 
 def test_default_external_executable_falls_back_to_name():
@@ -14,7 +14,7 @@ def test_default_external_executable_falls_back_to_name():
 def test_resolve_bundled_executable_when_present(tmp_path, monkeypatch):
     exe = tmp_path / "vina.exe"
     exe.write_bytes(b"")
-    monkeypatch.setenv("CHEMMANAGER_BUNDLE_DIR", str(tmp_path))
+    monkeypatch.setenv("MOLMANAGER_BUNDLE_DIR", str(tmp_path))
     assert bundled_paths.resolve_bundled_executable("vina") == exe
     assert bundled_paths.default_external_executable("vina") == str(exe)
 

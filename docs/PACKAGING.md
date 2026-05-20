@@ -1,15 +1,15 @@
-# Packaging ChemManager for distribution
+# Packaging molmanager for distribution
 
-This document supports building an installer (PyInstaller, Inno Setup, MSI, etc.) so users can run ChemManager without managing Python manually.
+This document supports building an installer (PyInstaller, Inno Setup, MSI, etc.) so users can run molmanager without managing Python manually.
 
 ## What is included
 
 | Component | How it ships |
 |-----------|----------------|
-| ChemManager app (`chemmanager` package) | PyInstaller one-folder/one-file, or `pip install -e .` |
+| molmanager app (`molmanager` package) | PyInstaller one-folder/one-file, or `pip install -e .` |
 | Python dependencies | `requirements.txt` + optional `requirements-pka.txt` + `boltz` extra |
-| 3Dmol.js | Already in `chemmanager/ui/static/` |
-| AutoDock Vina | **Optional** binary in `chemmanager/resources/bin/<platform>/` (not redistributed in git) |
+| 3Dmol.js | Already in `molmanager/ui/static/` |
+| AutoDock Vina | **Optional** binary in `molmanager/resources/bin/<platform>/` (not redistributed in git) |
 | Boltz-2 CLI | **`pip install boltz`** (or bundled copy in `resources/bin/`) |
 
 ## Recommended install commands (source / CI)
@@ -38,29 +38,29 @@ pip install -e ".[boltz]"
 ## Bundling external tools
 
 1. Run `scripts\bootstrap_optional_tools.ps1` (Windows) or `scripts/bootstrap_optional_tools.sh` (Linux/macOS) to install Python extras and print where to place Vina/Boltz binaries.
-2. Copy `vina.exe` / `boltz.exe` into `chemmanager/resources/bin/win/` (or set `CHEMMANAGER_BUNDLE_DIR`).
+2. Copy `vina.exe` / `boltz.exe` into `molmanager/resources/bin/win/` (or set `MOLMANAGER_BUNDLE_DIR`).
 3. Tools → Dock (Vina) and Tools → Boltz-2 default to bundled paths when present.
 
 ## PyInstaller (starter)
 
-A minimal spec lives in `packaging/chemmanager.spec`. Build (from repo root, venv activated):
+A minimal spec lives in `packaging/molmanager.spec`. Build (from repo root, venv activated):
 
 ```bash
 pip install pyinstaller
-pyinstaller packaging/chemmanager.spec
+pyinstaller packaging/molmanager.spec
 ```
 
-Output under `dist/ChemManager/`. You still need to ship:
+Output under `dist/molmanager/`. You still need to ship:
 
 - Qt platform plugins (PyInstaller usually collects these)
 - Optional `resources/bin/` for Vina
 - Boltz models/cache if users run Boltz offline (see Boltz docs)
 
-Tune `packaging/chemmanager.spec` hidden imports as you enable more Tools menu features.
+Tune `packaging/molmanager.spec` hidden imports as you enable more Tools menu features.
 
 ## Version
 
-Application version: `chemmanager.__version__` (shown in About when wired).
+Application version: `molmanager.__version__` (shown in About when wired).
 
 ## Performance release gate (100k rows)
 

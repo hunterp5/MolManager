@@ -2,8 +2,8 @@ from __future__ import annotations
 
 from rdkit import Chem
 
-from chemmanager.workers.signals import SubstructureFilterSignals
-from chemmanager.workers.substructure_filter import SubstructureFilterWorker
+from molmanager.workers.signals import SubstructureFilterSignals
+from molmanager.workers.substructure_filter import SubstructureFilterWorker
 
 
 def test_substructure_worker_uses_prebuilt_mol_targets():

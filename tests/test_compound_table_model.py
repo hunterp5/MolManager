@@ -6,7 +6,7 @@ import pytest
 from PyQt5.QtCore import Qt
 from PyQt5.QtGui import QColor
 
-from chemmanager.ui.compound_table_model import CompoundTableModel
+from molmanager.ui.compound_table_model import CompoundTableModel
 
 
 @pytest.fixture()

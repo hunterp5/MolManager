@@ -2,25 +2,25 @@
 
 from __future__ import annotations
 
-import chemmanager
-from chemmanager.ui.main_window import ChemicalTableApp
+import molmanager
+from molmanager.ui.main_window import ChemicalTableApp
 
 
 def test_package_version():
-    assert hasattr(chemmanager, "__version__")
-    assert isinstance(chemmanager.__version__, str)
+    assert hasattr(molmanager, "__version__")
+    assert isinstance(molmanager.__version__, str)
 
 
 def test_user_guides_html_contains_topics():
-    from chemmanager.ui.user_guides import guide_html
+    from molmanager.ui.user_guides import guide_html
 
     h = guide_html("pubchem")
     assert "PubChem" in h and "Tanimoto Similarity" in h
 
 
 def test_pubchem_similarity_results_sort_key():
-    from chemmanager.ui.external.pubchem import PubChemResult, _pubchem_similarity_sort_key
-    from chemmanager.ui.strings import COLUMN_TANIMOTO_SIMILARITY
+    from molmanager.ui.external.pubchem import PubChemResult, _pubchem_similarity_sort_key
+    from molmanager.ui.strings import COLUMN_TANIMOTO_SIMILARITY
 
     lo = PubChemResult(1, "C", {COLUMN_TANIMOTO_SIMILARITY: "0.41"})
     hi = PubChemResult(2, "CC", {COLUMN_TANIMOTO_SIMILARITY: "0.92"})
@@ -28,7 +28,7 @@ def test_pubchem_similarity_results_sort_key():
 
 
 def test_similarity_fp_type_labels_include_variants():
-    from chemmanager.workers.fingerprint_similarity import SIMILARITY_FP_TYPE_LABELS
+    from molmanager.workers.fingerprint_similarity import SIMILARITY_FP_TYPE_LABELS
 
     joined = "\n".join(SIMILARITY_FP_TYPE_LABELS)
     assert "Atom pair" in joined and "Topological" in joined
@@ -38,7 +38,7 @@ def test_similarity_fp_type_labels_include_variants():
 def test_fingerprint_bitvect_atom_pair_and_morgan_nbits():
     from rdkit import Chem
 
-    from chemmanager.workers.fingerprint_similarity import fingerprint_bitvect_for_ui_choice
+    from molmanager.workers.fingerprint_similarity import fingerprint_bitvect_for_ui_choice
 
     m = Chem.MolFromSmiles("c1ccccc1")
     ap = fingerprint_bitvect_for_ui_choice(m, "Atom pair (hashed, 2048 bits)")
@@ -52,7 +52,7 @@ def test_fingerprint_bitvect_atom_pair_and_morgan_nbits():
 def test_parse_molecule_from_cell_text_accepts_smiles_and_inchi():
     from rdkit import Chem
 
-    from chemmanager.utils import parse_molecule_from_cell_text
+    from molmanager.utils import parse_molecule_from_cell_text
 
     m1 = parse_molecule_from_cell_text("CCO")
     assert m1 is not None and m1.GetNumAtoms() == 3
@@ -62,14 +62,14 @@ def test_parse_molecule_from_cell_text_accepts_smiles_and_inchi():
 
 
 def test_vina_dock_guide_html(qapp):  # noqa: ARG001
-    from chemmanager.ui.user_guides import guide_html
+    from molmanager.ui.user_guides import guide_html
 
     h = guide_html("vina_dock")
     assert "Vina" in h and "PDBQT" in h
 
 
 def test_vina_dock_dialog_constructible(qapp):  # noqa: ARG001
-    from chemmanager.ui.vina_dock import VinaDockDialog
+    from molmanager.ui.vina_dock import VinaDockDialog
 
     d = VinaDockDialog(None)
     assert d.windowTitle()
@@ -96,6 +96,7 @@ def test_app_table_search_selects_matching_row(qapp):  # noqa: ARG001
     w.mols[1] = Chem.MolFromSmiles("C")
     w.next_oid = 2
     w.calculate_global_bounds()
+    w._rebuild_sqlite_store_from_model()
 
     w._search_panel.setVisible(True)
     w._populate_table_search_columns_combo()
@@ -104,9 +105,9 @@ def test_app_table_search_selects_matching_row(qapp):  # noqa: ARG001
         if w._search_col_combo.itemData(j) == note_col:
             w._search_col_combo.setCurrentIndex(j)
             break
-    # Partial "eth"/"etha" still hits "methane"; match the first row only via full cell text.
+    # Quoted literal matches "ethane" only (not "methane" via partial "eth").
     w._search_partial_cb.setChecked(False)
-    w._search_query_edit.setText("ethane")
+    w._search_query_edit.setText('"ethane"')
     w._search_substructure_cb.setChecked(False)
     w._run_table_search()
     qapp.processEvents()
@@ -146,7 +147,7 @@ def test_table_chemistry_context_menu_column_eligibility(qapp):  # noqa: ARG001
 def test_canonical_structure_keys_for_dedup(qapp):  # noqa: ARG001
     from rdkit import Chem
 
-    from chemmanager.utils import morgan_tanimoto_to_query
+    from molmanager.utils import morgan_tanimoto_to_query
 
     assert morgan_tanimoto_to_query("CC", "CC") == 1.0
     t = morgan_tanimoto_to_query("CCO", "CC")
@@ -165,7 +166,7 @@ def test_canonical_structure_keys_for_dedup(qapp):  # noqa: ARG001
 
 
 def test_parse_fasta_records() -> None:
-    from chemmanager.ui.external.boltz2 import _parse_fasta_records
+    from molmanager.ui.external.boltz2 import _parse_fasta_records
 
     text = ">prot1 extra\nAC\n DE\n>sp|Q|x\nLL\n"
     r = _parse_fasta_records(text)
@@ -177,7 +178,7 @@ def test_parse_fasta_records() -> None:
 def test_data_analysis_outlier_masks() -> None:
     import numpy as np
 
-    from chemmanager.ui.data_analysis import (
+    from molmanager.ui.data_analysis import (
         _outlier_mask_iqr,
         _outlier_mask_modified_z,
         _outlier_mask_zscore,

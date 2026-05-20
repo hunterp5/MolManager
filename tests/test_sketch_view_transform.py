@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from PyQt5.QtCore import QPoint
 
-from chemmanager.ui.sketcher.widget import SketchWidget
+from molmanager.ui.sketcher.widget import SketchWidget
 
 
 def test_widget_model_roundtrip_at_unit_scale(qapp) -> None:

@@ -40,9 +40,9 @@ htmlcov/
 .idea/
 
 # Optional CLI binaries placed under resources/bin (keep README + .gitkeep)
-chemmanager/resources/bin/**/*
-!chemmanager/resources/bin/**/
-!chemmanager/resources/bin/**/.gitkeep
+molmanager/resources/bin/**/*
+!molmanager/resources/bin/**/
+!molmanager/resources/bin/**/.gitkeep
 
 # Local large or throwaway inputs at repo root (remove lines if you want these tracked)
 fda_approved_full.SDF

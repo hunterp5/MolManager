@@ -4,13 +4,26 @@ from __future__ import annotations
 
 from concurrent.futures import ProcessPoolExecutor
 
+import pytest
 from rdkit import Chem
 
-from chemmanager.pkasolver_descriptor_support import PicklableMicrostate, microstates_to_picklable
-from chemmanager.workers.pkasolver_parallel import (
+import molmanager.workers.pkasolver_parallel as pkasolver_parallel
+from molmanager.pkasolver_descriptor_support import PicklableMicrostate, microstates_to_picklable
+from molmanager.workers.pkasolver_parallel import (
     _mp_compute_microstates,
     plan_pkasolver_process_workers,
 )
+
+
+@pytest.fixture(autouse=True)
+def _force_sequential_pkasolver_cache(monkeypatch) -> None:
+    """Tests that mock ``microstates_for_mol`` must not spawn a real process pool."""
+    monkeypatch.setenv("MOLMANAGER_PKA_PROCESS_WORKERS", "1")
+    monkeypatch.setattr(
+        pkasolver_parallel,
+        "plan_pkasolver_process_workers",
+        lambda _n, _c: (False, 1),
+    )
 
 
 def test_plan_pkasolver_auto_uses_mp_from_two_unique() -> None:
@@ -26,25 +39,24 @@ def test_plan_pkasolver_respects_force_sequential() -> None:
 
 
 def test_build_microstates_cache_dedupes(monkeypatch) -> None:
-    import chemmanager.workers.pkasolver_parallel as par
-
     calls: list[str] = []
 
     def _fake_microstates(mol):
+        from molmanager.workers.structure_grouping import structure_key
+
         calls.append(structure_key(mol))
         return [{"pka": 7.0}]
 
-    from chemmanager.workers.structure_grouping import structure_key
-
-    monkeypatch.setattr(par, "plan_pkasolver_process_workers", lambda _n, _c: (False, 1))
     monkeypatch.setattr(
-        "chemmanager.pkasolver_descriptor_support.microstates_for_mol",
+        "molmanager.pkasolver_descriptor_support.microstates_for_mol",
         _fake_microstates,
     )
 
     m = Chem.MolFromSmiles("CCO")
     assert m is not None
-    cache = par.build_microstates_cache_by_key([Chem.Mol(m), Chem.Mol(m), Chem.MolFromSmiles("CCN")])
+    cache = pkasolver_parallel.build_microstates_cache_by_key(
+        [Chem.Mol(m), Chem.Mol(m), Chem.MolFromSmiles("CCN")]
+    )
     assert len(calls) == 2
     assert len(cache) == 2
 

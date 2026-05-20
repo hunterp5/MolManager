@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from chemmanager.ui.theme import (
+from molmanager.ui.theme import (
     THEME_DARK,
     THEME_LIGHT,
     current_theme_name,
@@ -30,7 +30,7 @@ def test_filter_card_stylesheet_uses_palette_roles():
 def test_apply_application_theme_sets_current(qapp):
     from PyQt5.QtWidgets import QApplication
 
-    from chemmanager.ui.theme import apply_application_theme
+    from molmanager.ui.theme import apply_application_theme
 
     apply_application_theme(QApplication.instance(), THEME_DARK)
     assert current_theme_name() == THEME_DARK
@@ -41,7 +41,7 @@ def test_apply_application_theme_sets_current(qapp):
 def test_both_themes_use_fusion_without_global_stylesheet(qapp):
     from PyQt5.QtWidgets import QApplication
 
-    from chemmanager.ui.theme import apply_application_theme
+    from molmanager.ui.theme import apply_application_theme
 
     app = QApplication.instance()
     apply_application_theme(app, THEME_LIGHT)

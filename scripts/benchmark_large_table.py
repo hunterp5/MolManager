@@ -12,7 +12,7 @@ from PyQt5.QtWidgets import QApplication
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from chemmanager.ui.compound_table_model import CompoundTableModel
+from molmanager.ui.compound_table_model import CompoundTableModel
 
 
 def _build_rows(n_rows: int) -> list[tuple[int, dict[str, str]]]:

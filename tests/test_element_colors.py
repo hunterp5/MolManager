@@ -1,6 +1,6 @@
 """RDKit default MolDraw2D palette mapping for sketcher labels."""
 
-from chemmanager.ui.sketcher.element_colors import rdkit_default_element_rgb
+from molmanager.ui.sketcher.element_colors import rdkit_default_element_rgb
 
 
 def test_rdkit_default_colors_common_heteroatoms():

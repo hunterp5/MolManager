@@ -9,7 +9,7 @@ from unittest.mock import patch
 import pytest
 from rdkit import Chem
 
-from chemmanager.medchem_descriptors import (
+from molmanager.medchem_descriptors import (
     cns_mpo_score,
     esol_logS_intrinsic,
     lipinski_violations,
@@ -19,8 +19,8 @@ from chemmanager.medchem_descriptors import (
     mol_inchi_key,
     ro5_pass,
 )
-from chemmanager.pkasolver_descriptor_support import int_fns_need_pkasolver
-from chemmanager.workers.chemistry_tools import descriptor_callable_for_int_fn
+from molmanager.pkasolver_descriptor_support import int_fns_need_pkasolver
+from molmanager.workers.chemistry_tools import descriptor_callable_for_int_fn
 
 
 def test_lipinski_ethanol_zero_violations() -> None:
@@ -45,7 +45,7 @@ def test_inchi_key_and_formula_ethanol() -> None:
     assert mol_formula(mol) == "C2H6O"
 
 
-@patch("chemmanager.medchem_descriptors.microstates_for_mol", return_value=None)
+@patch("molmanager.medchem_descriptors.microstates_for_mol", return_value=None)
 def test_cns_mpo_in_range(_mock_ms: object) -> None:
     mol = Chem.MolFromSmiles("c1ccccc1CCN")
     assert mol is not None
@@ -53,7 +53,7 @@ def test_cns_mpo_in_range(_mock_ms: object) -> None:
     assert 0.0 <= s <= 6.0
 
 
-@patch("chemmanager.medchem_descriptors.microstates_for_mol", return_value=None)
+@patch("molmanager.medchem_descriptors.microstates_for_mol", return_value=None)
 def test_descriptor_dispatch_custom_ids(_mock_ms: object) -> None:
     cache: dict = {}
     mol = Chem.MolFromSmiles("CCO")

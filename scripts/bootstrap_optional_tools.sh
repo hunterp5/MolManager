@@ -23,10 +23,10 @@ fi
 
 PLAT=linux
 [[ "$(uname -s)" == "Darwin" ]] && PLAT=mac
-BINDIR="$ROOT/chemmanager/resources/bin/$PLAT"
+BINDIR="$ROOT/molmanager/resources/bin/$PLAT"
 echo ""
 echo "Optional executables (copy into): $BINDIR"
 echo "  vina   - https://vina.scripps.edu"
 echo "  boltz  - from your venv bin after: pip install boltz"
 echo ""
-echo "Or set CHEMMANAGER_BUNDLE_DIR. Run: python -m chemmanager"
+echo "Or set MOLMANAGER_BUNDLE_DIR. Run: python -m molmanager"

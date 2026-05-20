@@ -1,6 +1,6 @@
 """Tests for plot type inference from axis selections."""
 
-from chemmanager.ui.plot import (
+from molmanager.ui.plot import (
     AXIS_NONE,
     PLOT_TYPE_LINE_2D,
     PLOT_TYPE_SCATTER,

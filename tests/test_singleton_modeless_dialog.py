@@ -5,7 +5,7 @@ from __future__ import annotations
 from PyQt5.QtCore import Qt
 from PyQt5.QtWidgets import QWidget
 
-from chemmanager.ui.singleton_modeless_dialog import reuse_or_show_modeless_singleton
+from molmanager.ui.singleton_modeless_dialog import reuse_or_show_modeless_singleton
 
 
 def test_reuse_or_show_modeless_singleton_reuses_hidden_widget(qapp):  # noqa: ARG001

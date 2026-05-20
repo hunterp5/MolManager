@@ -2,8 +2,8 @@ from __future__ import annotations
 
 from rdkit import Chem
 
-from chemmanager.workers.cluster_worker import ClusterWorker
-from chemmanager.workers.signals import WorkerSignals
+from molmanager.workers.cluster_worker import ClusterWorker
+from molmanager.workers.signals import WorkerSignals
 
 
 class _StepCancel:

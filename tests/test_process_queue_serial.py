@@ -3,7 +3,7 @@ from __future__ import annotations
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
-from chemmanager.ui.process_queue import ProcessQueueManager
+from molmanager.ui.process_queue import ProcessQueueManager
 
 
 def test_process_queue_blocked_while_render2d_batch(qapp):  # noqa: ARG001

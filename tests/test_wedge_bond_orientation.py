@@ -1,6 +1,6 @@
 """Wedge/hash bond tuple orientation: tip (first atom) must not be multiply-bonded."""
 
-from chemmanager.ui.sketcher.bonds import _bond_make, reorient_wedged_bonds_tip_away_from_multiples
+from molmanager.ui.sketcher.bonds import _bond_make, reorient_wedged_bonds_tip_away_from_multiples
 
 
 def test_reorient_swaps_when_tip_on_double_bonded_atom():

@@ -1,7 +1,7 @@
 """Table selection helpers."""
 
-from chemmanager.ui.compound_table_model import CompoundTableModel
-from chemmanager.ui.table_selection import merge_sorted_row_indices
+from molmanager.ui.compound_table_model import CompoundTableModel
+from molmanager.ui.table_selection import merge_sorted_row_indices
 
 
 def test_merge_sorted_row_indices_contiguous():

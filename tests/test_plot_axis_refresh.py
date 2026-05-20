@@ -3,7 +3,7 @@
 import pytest
 from PyQt5.QtWidgets import QApplication, QComboBox
 
-from chemmanager.ui.plot import AXIS_NONE, PlotWidget, normalize_axis_name
+from molmanager.ui.plot import AXIS_NONE, PlotWidget, normalize_axis_name
 
 
 @pytest.fixture(scope="module")

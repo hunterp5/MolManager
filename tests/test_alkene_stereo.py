@@ -3,7 +3,7 @@
 from rdkit import Chem
 from rdkit.Chem.rdchem import Conformer
 
-from chemmanager.ui.sketcher.alkene_stereo import infer_alkene_ez_for_sketch_mol
+from molmanager.ui.sketcher.alkene_stereo import infer_alkene_ez_for_sketch_mol
 
 
 def _mol_fccl_trans():

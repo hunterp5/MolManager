@@ -1,6 +1,6 @@
 """Tests for structure-source column ranking (no Qt event loop)."""
 
-from chemmanager.ui.dialogs.structure_source import rank_structure_column_names
+from molmanager.ui.dialogs.structure_source import rank_structure_column_names
 
 
 def test_rank_structure_column_names_prefers_smiles():

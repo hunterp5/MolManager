@@ -8,7 +8,7 @@ from PyQt5.QtCore import Qt
 from PyQt5.QtGui import QColor
 from rdkit import Chem
 
-from chemmanager.ui.main_window import ChemicalTableApp
+from molmanager.ui.main_window import ChemicalTableApp
 
 
 def test_session_document_json_roundtrip_preserves_keys(qapp):  # noqa: ARG001

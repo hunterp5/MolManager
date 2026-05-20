@@ -2,7 +2,7 @@
 
 
 def test_point_indices_for_oids():
-    from chemmanager.ui.plotly_interactive_view import PlotlyInteractiveView
+    from molmanager.ui.plotly_interactive_view import PlotlyInteractiveView
 
     view = PlotlyInteractiveView.__new__(PlotlyInteractiveView)
     view.plotted_oids = [10, 20, 30]

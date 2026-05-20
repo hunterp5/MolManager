@@ -7,7 +7,7 @@ import time
 
 from PyQt5.QtCore import QObject, QRunnable
 
-from chemmanager.ui.process_queue import ProcessQueueManager
+from molmanager.ui.process_queue import ProcessQueueManager
 
 
 def test_cancel_running_preserves_queued_and_second_job_runs(qapp):

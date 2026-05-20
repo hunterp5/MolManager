@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from rdkit import Chem
 
-from chemmanager.workers.structure_grouping import group_rows_by_structure
+from molmanager.workers.structure_grouping import group_rows_by_structure
 
 
 def test_group_rows_by_structure_deduplicates_identical_smiles() -> None:

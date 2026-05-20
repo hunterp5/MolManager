@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from chemmanager.ui.search_query import (
+from molmanager.ui.search_query import (
     evaluate_search_condition,
     evaluate_search_conditions,
     evaluate_search_expression,
