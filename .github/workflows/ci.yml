@@ -2,13 +2,18 @@ name: CI
 
 on:
   push:
-    branches: [main, master]
+    branches: [main, master, dev]
   pull_request:
-    branches: [main, master]
+    branches: [main, master, dev]
 
 jobs:
   test:
-    runs-on: ubuntu-latest
+    name: test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
     env:
       QT_QPA_PLATFORM: offscreen
     steps:
@@ -32,9 +37,11 @@ jobs:
         run: python -m pytest tests/ -v --tb=short
 
       - name: Performance gate (100k core model)
+        if: runner.os == 'Linux'
         run: python scripts/perf_gate.py
 
       - name: Audit dependencies (informational)
+        if: runner.os == 'Linux'
         continue-on-error: true
         run: |
           pip install pip-audit
