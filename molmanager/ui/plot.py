@@ -159,6 +159,26 @@ def compute_histogram_bin_edges(
     return edges, width
 
 
+def oids_at_histogram_point_indices(oids: list[int], indices: list[int]) -> list[int]:
+    """Map Plotly histogram ``pointNumbers`` indices to row OIDs (deduped, order preserved)."""
+    n = len(oids)
+    seen: set[int] = set()
+    selected: list[int] = []
+    for raw in indices:
+        try:
+            i = int(raw)
+        except (TypeError, ValueError):
+            continue
+        if not (0 <= i < n):
+            continue
+        oid = int(oids[i])
+        if oid in seen:
+            continue
+        seen.add(oid)
+        selected.append(oid)
+    return selected
+
+
 def oids_in_histogram_bin(
     vals: list[float],
     oids: list[int],
@@ -195,6 +215,10 @@ class _PlotBridge(QObject):
     @pyqtSlot(str)
     def pointsSelected(self, points_json: str) -> None:  # noqa: N802
         self._plot_widget._on_plot_points_selected(points_json)
+
+    @pyqtSlot(str)
+    def histogramPointsSelected(self, indices_json: str) -> None:  # noqa: N802
+        self._plot_widget._on_histogram_points_selected(indices_json)
 
     @pyqtSlot(int)
     def histogramBinClicked(self, bin_index: int) -> None:  # noqa: N802
@@ -935,6 +959,18 @@ class PlotWidget(QWidget):
                 var pt = ev.points[0];
                 var trace = gd.data[pt.curveNumber];
                 if (trace && trace.type === "histogram") {{
+                  if (bridge && bridge.histogramPointsSelected) {{
+                    var nums = pt.pointNumbers;
+                    if (!Array.isArray(nums) || !nums.length) {{
+                      if (pt.pointNumber != null && pt.pointNumber !== undefined) {{
+                        nums = [pt.pointNumber];
+                      }}
+                    }}
+                    if (Array.isArray(nums) && nums.length) {{
+                      bridge.histogramPointsSelected(JSON.stringify(nums));
+                      return;
+                    }}
+                  }}
                   if (bridge && bridge.histogramBinClicked) {{
                     var bn = Number(pt.pointNumber);
                     if (Number.isFinite(bn)) bridge.histogramBinClicked(bn);
@@ -1365,6 +1401,23 @@ class PlotWidget(QWidget):
         self._present_analysis_dialog(summarize_univariate(vals, label=xname), None)
         self._push_plotly_figure(fig)
         self.parent_app.status_label.setText(f"Histogram: {len(vals):,} value(s) in {xname!r}.")
+
+    def _on_histogram_points_selected(self, indices_json: str) -> None:
+        try:
+            raw = json.loads(indices_json)
+        except json.JSONDecodeError:
+            return
+        if not isinstance(raw, list):
+            return
+        indices = [int(x) for x in raw if isinstance(x, (int, float)) and not isinstance(x, bool)]
+        oids = oids_at_histogram_point_indices(self._hist_oids, indices)
+        if not oids:
+            return
+        self._arm_ignore_plot_clear()
+        self._select_rows_for_oids(oids)
+        self.parent_app.status_label.setText(
+            f"Histogram: selected {len(oids):,} row(s) in the clicked bar."
+        )
 
     def _on_histogram_bin_clicked(self, bin_index: int) -> None:
         oids = oids_in_histogram_bin(self._hist_vals, self._hist_oids, self._hist_edges, bin_index)

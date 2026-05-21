@@ -1,6 +1,10 @@
 """Tests for histogram bin edge computation and OID lookup."""
 
-from molmanager.ui.plot import compute_histogram_bin_edges, oids_in_histogram_bin
+from molmanager.ui.plot import (
+    compute_histogram_bin_edges,
+    oids_at_histogram_point_indices,
+    oids_in_histogram_bin,
+)
 
 
 def test_compute_histogram_bin_edges_fixed_width():
@@ -10,6 +14,12 @@ def test_compute_histogram_bin_edges_fixed_width():
     assert len(edges) >= 3
     assert edges[0] <= min(vals)
     assert edges[-1] >= max(vals)
+
+
+def test_oids_at_histogram_point_indices():
+    oids = [10, 20, 30, 40, 50]
+    assert oids_at_histogram_point_indices(oids, [0, 1, 0, 99, -1]) == [10, 20]
+    assert oids_at_histogram_point_indices(oids, []) == []
 
 
 def test_oids_in_histogram_bin():
