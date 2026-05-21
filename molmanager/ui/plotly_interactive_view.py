@@ -69,9 +69,9 @@ class PlotlyInteractiveView(QWidget):
         self._selected_point_indices = {
             i for i in self._selected_point_indices if 0 <= i < len(self.plotted_oids)
         }
-        payload = fig.to_plotly_json()
-        payload["config"] = {"displaylogo": False, "responsive": True}
-        self._pending_payload_json = json.dumps(payload, separators=(",", ":"))
+        from .plotly_html import figure_payload_json
+
+        self._pending_payload_json = figure_payload_json(fig)
         self._last_browser_opened_path = None
         if self._web_ready:
             self._apply_pending_payload()

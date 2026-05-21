@@ -6,7 +6,25 @@ import json
 from pathlib import Path
 
 from plotly import graph_objects as go
+from plotly.io import to_json as plotly_to_json
 from plotly.offline import get_plotlyjs
+
+_DEFAULT_WEB_CONFIG = {"displaylogo": False, "responsive": True}
+
+
+def figure_payload_json(fig: go.Figure, *, config: dict | None = None) -> str:
+    """
+    Serialize a figure for ``JSON.parse`` in Qt WebEngine.
+
+    Standard ``json.dumps(fig.to_plotly_json())`` emits bare ``NaN`` tokens (invalid JSON)
+    when marker colors include missing numeric values.
+    """
+    payload = json.loads(plotly_to_json(fig, validate=False))
+    merged = dict(_DEFAULT_WEB_CONFIG)
+    if config:
+        merged.update(config)
+    payload["config"] = merged
+    return json.dumps(payload, separators=(",", ":"))
 
 
 def write_self_contained_plotly_html(fig: go.Figure, path: Path) -> None:
@@ -16,7 +34,7 @@ def write_self_contained_plotly_html(fig: go.Figure, path: Path) -> None:
     Escapes ``:focus-visible`` CSS (Qt/Chromium can reject it) and ``</script>`` in JS.
     """
     plotly_js = get_plotlyjs().replace(":focus-visible", ":focus").replace("</script>", "<\\/script>")
-    payload = json.dumps(fig.to_plotly_json(), separators=(",", ":"))
+    payload = figure_payload_json(fig)
     html = f"""<!doctype html>
 <html>
 <head>

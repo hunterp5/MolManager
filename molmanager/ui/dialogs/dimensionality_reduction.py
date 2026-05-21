@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import pandas as pd
 from PyQt5.QtCore import Qt
@@ -27,11 +27,16 @@ from PyQt5.QtWidgets import (
 )
 from rdkit import Chem
 
-from ...dimensionality_reduction import is_fingerprint_bitcount_column
+from ...dimensionality_reduction import DimensionReductionResult, is_fingerprint_bitcount_column
 from ...workers import SIMILARITY_FP_TYPE_LABELS
 from ...workers.dimensionality_reduction import DimensionReductionSignals, DimensionReductionWorker
 from ..data_analysis import numeric_subset, table_to_dataframe
-from ..dimred_plot import build_dimension_reduction_figure
+from ...plot_color import (
+    PLOT_COLORSCALE_CHOICES,
+    normalize_color_column,
+    resolve_plot_colorscale,
+)
+from ..dimred_plot import build_dimension_reduction_figure, dimension_reduction_result_with_color
 from ..plotly_interactive_view import PlotlyInteractiveView
 from ..qt_widget_utils import apply_monospace_to_text_edit, make_window_minimizable
 from .scope import selection_scope_checked
@@ -46,6 +51,8 @@ try:
 except ImportError:
     _HAS_WEB = False
 
+_FP_NONE_LABEL = "None"
+
 
 class DimensionReductionPanel(QWidget):
     def __init__(self, parent: ChemicalTableApp | None, *, window_title: str, method: str):
@@ -56,26 +63,9 @@ class DimensionReductionPanel(QWidget):
         n_sel = len(parent._selected_logical_rows()) if parent is not None else 0
         self._have_selection = n_sel > 0
         self._job_running = False
+        self._last_result: DimensionReductionResult | None = None
 
         root = QVBoxLayout(self)
-        scope = QHBoxLayout()
-        self.chk_visible = QCheckBox("Visible rows only (respect filters)")
-        self.chk_visible.setChecked(True)
-        self.chk_visible.stateChanged.connect(self._reload_columns)
-        scope.addWidget(self.chk_visible)
-        self.only_selected_cb = QCheckBox("Only selected rows")
-        self._only_selected_scope_prefix = "Only selected rows"
-        if self._have_selection:
-            self.only_selected_cb.setText(f"{self._only_selected_scope_prefix} ({n_sel} row(s))")
-        else:
-            self.only_selected_cb.setEnabled(False)
-        self.only_selected_cb.stateChanged.connect(self._reload_columns)
-        scope.addWidget(self.only_selected_cb)
-        scope.addStretch()
-        self.btn_refresh_cols = QPushButton("Refresh columns")
-        self.btn_refresh_cols.clicked.connect(self._reload_columns)
-        scope.addWidget(self.btn_refresh_cols)
-        root.addLayout(scope)
 
         splitter = QSplitter(Qt.Horizontal)
         root.addWidget(splitter, 1)
@@ -86,16 +76,20 @@ class DimensionReductionPanel(QWidget):
 
         src_grp = QGroupBox("Features")
         src_ly = QVBoxLayout(src_grp)
-        self.include_fp_cb = QCheckBox("Include 2D fingerprints (from structure)")
-        self.include_fp_cb.setToolTip(
-            "Concatenate a full fingerprint bit vector with any selected numeric columns."
-        )
-        self.include_fp_cb.stateChanged.connect(self._on_fp_toggled)
-        src_ly.addWidget(self.include_fp_cb)
+        self.column_list = QListWidget()
+        self.column_list.setMinimumWidth(220)
+        self.column_list.setMaximumHeight(200)
+        src_ly.addWidget(self.column_list)
+
         fp_row = QHBoxLayout()
         fp_row.addWidget(QLabel("Fingerprint:"))
         self.fp_combo = QComboBox()
+        self.fp_combo.addItem(_FP_NONE_LABEL)
         self.fp_combo.addItems(SIMILARITY_FP_TYPE_LABELS)
+        self.fp_combo.setToolTip(
+            "None: numeric columns only. Otherwise concatenate a 2D fingerprint bit vector."
+        )
+        self.fp_combo.currentIndexChanged.connect(self._on_fp_selection_changed)
         fp_row.addWidget(self.fp_combo, 1)
         src_ly.addLayout(fp_row)
         struct_row = QHBoxLayout()
@@ -103,49 +97,63 @@ class DimensionReductionPanel(QWidget):
         self.struct_src_combo = QComboBox()
         struct_row.addWidget(self.struct_src_combo, 1)
         src_ly.addLayout(struct_row)
-        self.fp_hint = QLabel(
-            "Uses full bit vectors computed from structures (same as Cluster), not the "
-            "on-bit count columns from Calculate Properties."
-        )
-        self.fp_hint.setWordWrap(True)
-        self.fp_hint.setStyleSheet("color: palette(mid); font-size: 11px;")
-        src_ly.addWidget(self.fp_hint)
-        left_ly.addWidget(src_grp)
 
-        col_grp = QGroupBox("Feature columns (numeric)")
-        col_ly = QVBoxLayout(col_grp)
-        self.column_list = QListWidget()
-        self.column_list.setMinimumWidth(220)
-        self.column_list.setMaximumHeight(200)
-        col_ly.addWidget(self.column_list)
-        col_btns = QHBoxLayout()
-        btn_all = QPushButton("Select all")
-        btn_all.clicked.connect(self._select_all_columns)
-        self._btn_col_all = btn_all
-        btn_none = QPushButton("Clear")
-        btn_none.clicked.connect(self._clear_column_checks)
-        self._btn_col_none = btn_none
-        col_btns.addWidget(btn_all)
-        col_btns.addWidget(btn_none)
-        col_btns.addStretch()
-        col_ly.addLayout(col_btns)
-        left_ly.addWidget(col_grp)
+        scope_row = QHBoxLayout()
+        self.chk_visible = QCheckBox("Visible Only")
+        self.chk_visible.setToolTip("Visible rows only (respect filters)")
+        self.chk_visible.setChecked(True)
+        self.chk_visible.stateChanged.connect(self._reload_columns)
+        scope_row.addWidget(self.chk_visible)
+
+        self.only_selected_cb = QCheckBox("Only Selected Rows")
+        self._only_selected_scope_prefix = "Only Selected Rows"
+        if self._have_selection:
+            self.only_selected_cb.setText(f"{self._only_selected_scope_prefix} ({n_sel} row(s))")
+        else:
+            self.only_selected_cb.setEnabled(False)
+        self.only_selected_cb.stateChanged.connect(self._reload_columns)
+        scope_row.addWidget(self.only_selected_cb)
+        scope_row.addStretch()
+        src_ly.addLayout(scope_row)
+
+        left_ly.addWidget(src_grp)
 
         opts = QGroupBox("Options")
         self._opts_form = QFormLayout(opts)
         left_ly.addWidget(opts)
         self._build_method_options(self._opts_form)
-
         self.standardize_cb = QCheckBox("Standardize features (zero mean, unit variance)")
         self.standardize_cb.setChecked(True)
-        left_ly.addWidget(self.standardize_cb)
+        self._opts_form.addRow(self.standardize_cb)
 
         color_row = QHBoxLayout()
         color_row.addWidget(QLabel("Color by:"))
         self.color_combo = QComboBox()
         self.color_combo.setMinimumWidth(160)
+        self.color_combo.currentIndexChanged.connect(self._on_color_column_changed)
         color_row.addWidget(self.color_combo, 1)
         left_ly.addLayout(color_row)
+
+        spectrum_row = QHBoxLayout()
+        self._spectrum_label = QLabel("Spectrum:")
+        spectrum_row.addWidget(self._spectrum_label)
+        self.colorscale_combo = QComboBox()
+        self.colorscale_combo.addItems(PLOT_COLORSCALE_CHOICES)
+        self.colorscale_combo.setToolTip("Continuous colorscale for numeric Color by columns.")
+        self.colorscale_combo.currentIndexChanged.connect(self._on_colorscale_changed)
+        spectrum_row.addWidget(self.colorscale_combo, 1)
+        left_ly.addLayout(spectrum_row)
+
+        run_row = QHBoxLayout()
+        run_row.setContentsMargins(0, 10, 0, 6)
+        run_row.addStretch()
+        self.run_btn = QPushButton(self._run_button_label())
+        self.run_btn.clicked.connect(self._on_run)
+        self.run_btn.setMinimumWidth(160)
+        self.run_btn.setStyleSheet("QPushButton { padding: 8px 28px; }")
+        run_row.addWidget(self.run_btn)
+        run_row.addStretch()
+        left_ly.addLayout(run_row)
 
         self.summary_text = QTextEdit()
         self.summary_text.setReadOnly(True)
@@ -153,16 +161,6 @@ class DimensionReductionPanel(QWidget):
         apply_monospace_to_text_edit(self.summary_text)
         left_ly.addWidget(QLabel("Results"))
         left_ly.addWidget(self.summary_text)
-
-        run_row = QHBoxLayout()
-        self.run_btn = QPushButton(self._run_button_label())
-        self.run_btn.clicked.connect(self._on_run)
-        run_row.addWidget(self.run_btn)
-        run_row.addStretch()
-        close_btn = QPushButton("Close")
-        close_btn.clicked.connect(self.close)
-        run_row.addWidget(close_btn)
-        left_ly.addLayout(run_row)
         splitter.addWidget(left)
 
         right = QWidget()
@@ -171,10 +169,6 @@ class DimensionReductionPanel(QWidget):
         if _HAS_WEB and parent is not None:
             self._plot_view = PlotlyInteractiveView(parent, right)
             self._plot_view.setMinimumHeight(320)
-            hint = QLabel("Click or lasso points to select rows in the table (same as Plotter).")
-            hint.setWordWrap(True)
-            hint.setStyleSheet("color: palette(mid); font-size: 11px;")
-            right_ly.addWidget(hint)
             right_ly.addWidget(self._plot_view, 1)
             self._plot_placeholder = None
         else:
@@ -196,7 +190,8 @@ class DimensionReductionPanel(QWidget):
 
         self._refresh_structure_sources()
         self._reload_columns()
-        self._on_fp_toggled()
+        self._on_fp_selection_changed()
+        self._update_spectrum_controls()
 
     def create_floating_dialog(self, parent_app: ChemicalTableApp) -> QDialog:
         """Re-open this panel in a floating window after undocking from the main table."""
@@ -212,11 +207,12 @@ class DimensionReductionPanel(QWidget):
     def _method_params(self) -> dict:
         raise NotImplementedError
 
-    def _on_fp_toggled(self, *_args) -> None:
-        use_fp = self.include_fp_cb.isChecked()
-        self.fp_combo.setEnabled(use_fp)
+    def _use_fingerprints(self) -> bool:
+        return self.fp_combo.currentText() != _FP_NONE_LABEL
+
+    def _on_fp_selection_changed(self, *_args) -> None:
+        use_fp = self._use_fingerprints()
         self.struct_src_combo.setEnabled(use_fp)
-        self.fp_hint.setVisible(use_fp)
         if use_fp and not self._selected_feature_columns():
             self.standardize_cb.setToolTip(
                 "When combined with fingerprints, only numeric columns are scaled; "
@@ -232,32 +228,86 @@ class DimensionReductionPanel(QWidget):
         self.struct_src_combo.addItems(self.parent_app.chemistry_tool_structure_sources())
 
     def _reload_columns(self) -> None:
+        prev_color = self.color_combo.currentText()
         self.column_list.clear()
-        self.color_combo.clear()
-        self.color_combo.addItem("(none)")
-        if self.parent_app is None:
+        self.color_combo.blockSignals(True)
+        try:
+            self.color_combo.clear()
+            self.color_combo.addItem("(none)")
+            if self.parent_app is None:
+                return
+            self._refresh_structure_sources()
+            vis = self.chk_visible.isChecked()
+            only_sel = selection_scope_checked(self)
+            df, _rows = table_to_dataframe(self.parent_app, visible_only=vis, only_selected=only_sel)
+            num = numeric_subset(df, exclude_id=True)
+            for col in num.columns:
+                item = QListWidgetItem(col)
+                item.setFlags(item.flags() | Qt.ItemIsUserCheckable)
+                item.setCheckState(Qt.Unchecked)
+                self.column_list.addItem(item)
+            for col in df.columns:
+                if col != "ID_HIDDEN":
+                    self.color_combo.addItem(col)
+            idx = self.color_combo.findText(prev_color)
+            if idx >= 0:
+                self.color_combo.setCurrentIndex(idx)
+        finally:
+            self.color_combo.blockSignals(False)
+
+    def _color_values_for_oids(self, oids: list[int], color_col: str | None) -> list[Any] | None:
+        if not color_col or color_col == "(none)" or self.parent_app is None:
+            return None
+        model = self.parent_app._table_model
+        out: list[Any] = []
+        for oid in oids:
+            row = self.parent_app.get_row_by_id(int(oid))
+            if row < 0:
+                out.append(None)
+                continue
+            raw = model.value_for_header(row, color_col)
+            out.append(raw if (raw or "").strip() else None)
+        return out
+
+    def _current_colorscale(self) -> str:
+        return resolve_plot_colorscale(self.colorscale_combo.currentText())
+
+    def _update_spectrum_controls(self) -> None:
+        enabled = self.color_combo.currentText() != "(none)"
+        self._spectrum_label.setEnabled(enabled)
+        self.colorscale_combo.setEnabled(enabled)
+
+    def _on_color_column_changed(self, _index: int = 0) -> None:
+        self._update_spectrum_controls()
+        if self._last_result is None or self._job_running:
             return
-        self._refresh_structure_sources()
-        vis = self.chk_visible.isChecked()
-        only_sel = selection_scope_checked(self)
-        df, _rows = table_to_dataframe(self.parent_app, visible_only=vis, only_selected=only_sel)
-        num = numeric_subset(df, exclude_id=True)
-        for col in num.columns:
-            item = QListWidgetItem(col)
-            item.setFlags(item.flags() | Qt.ItemIsUserCheckable)
-            item.setCheckState(Qt.Checked if num.shape[1] <= 8 else Qt.Unchecked)
-            self.column_list.addItem(item)
-        for col in df.columns:
-            if col != "ID_HIDDEN":
-                self.color_combo.addItem(col)
+        self._refresh_plot_colors()
 
-    def _select_all_columns(self) -> None:
-        for i in range(self.column_list.count()):
-            self.column_list.item(i).setCheckState(Qt.Checked)
+    def _on_colorscale_changed(self, _index: int = 0) -> None:
+        if self._last_result is None or self._job_running:
+            return
+        self._refresh_plot_colors()
 
-    def _clear_column_checks(self) -> None:
-        for i in range(self.column_list.count()):
-            self.column_list.item(i).setCheckState(Qt.Unchecked)
+    def _refresh_plot_colors(self) -> None:
+        if self._last_result is None or self._plot_view is None or self._job_running:
+            return
+        color_col = self.color_combo.currentText()
+        if color_col == "(none)":
+            color_col = None
+        color_vals = self._color_values_for_oids(self._last_result.oids, color_col)
+        color_vals, color_col = normalize_color_column(color_vals, color_col)
+        updated = dimension_reduction_result_with_color(
+            self._last_result,
+            color_values=color_vals,
+            color_label=color_col,
+        )
+        try:
+            fig = build_dimension_reduction_figure(
+                updated, colorscale=self._current_colorscale()
+            )
+            self._plot_view.push_figure(fig, list(updated.oids))
+        except Exception as exc:
+            QMessageBox.warning(self, self._window_title, f"Plot failed: {exc}")
 
     def _selected_feature_columns(self) -> list[str]:
         cols: list[str] = []
@@ -291,14 +341,15 @@ class DimensionReductionPanel(QWidget):
     def _on_run(self) -> None:
         if self._job_running or self.parent_app is None:
             return
-        use_fp = self.include_fp_cb.isChecked()
+        self._last_result = None
+        use_fp = self._use_fingerprints()
         features = self._selected_feature_columns()
         only_sel = selection_scope_checked(self)
         if only_sel and not self.parent_app._selected_oids_set():
             QMessageBox.warning(
                 self,
                 self._window_title,
-                "\u201cOnly selected rows\u201d is checked but nothing is selected.",
+                "\u201cOnly Selected Rows\u201d is checked but nothing is selected.",
             )
             return
         try:
@@ -313,7 +364,7 @@ class DimensionReductionPanel(QWidget):
             QMessageBox.warning(
                 self,
                 self._window_title,
-                "Select at least one numeric column and/or enable 2D fingerprints.",
+                "Select at least one numeric column and/or choose a fingerprint type.",
             )
             return
         if features and len(features) == 1 and is_fingerprint_bitcount_column(features[0]) and not use_fp:
@@ -322,7 +373,7 @@ class DimensionReductionPanel(QWidget):
                 self._window_title,
                 f"The column “{features[0]}” stores only the number of on-bits, not the full "
                 "fingerprint vector.\n\n"
-                "Enable “Include 2D fingerprints” or select multiple numeric descriptor columns.",
+                "Choose a fingerprint type other than None, or select multiple numeric columns.",
             )
             return
         color_col = self.color_combo.currentText()
@@ -346,7 +397,7 @@ class DimensionReductionPanel(QWidget):
             "feature_columns": features,
             "use_fingerprints": use_fp,
             "mol_rows": mol_rows,
-            "fingerprint": self.fp_combo.currentText() if use_fp else "",
+            "fingerprint": self.fp_combo.currentText() if use_fp else None,
             "standardize": self.standardize_cb.isChecked(),
             "color_column": color_col,
             **self._method_params(),
@@ -361,11 +412,24 @@ class DimensionReductionPanel(QWidget):
         self._job_running = False
         self.run_btn.setEnabled(True)
         self.summary_text.setPlainText(result.summary)
+        self._last_result = result
         if self._plot_view is None:
             return
+        color_col = self.color_combo.currentText()
+        if color_col == "(none)":
+            color_col = None
+        color_vals = self._color_values_for_oids(result.oids, color_col)
+        color_vals, color_col = normalize_color_column(color_vals, color_col)
+        plotted = dimension_reduction_result_with_color(
+            result,
+            color_values=color_vals,
+            color_label=color_col,
+        )
         try:
-            fig = build_dimension_reduction_figure(result)
-            self._plot_view.push_figure(fig, list(result.oids))
+            fig = build_dimension_reduction_figure(
+                plotted, colorscale=self._current_colorscale()
+            )
+            self._plot_view.push_figure(fig, list(plotted.oids))
             if self.parent_app is not None:
                 n = len(result.oids)
                 self.parent_app.status_label.setText(
@@ -410,9 +474,6 @@ class DimensionReductionDialog(QDialog):
         add_main.clicked.connect(self._add_to_main_window)
         foot.addWidget(add_main)
         foot.addStretch()
-        close_btn = QPushButton("Close")
-        close_btn.clicked.connect(self.close)
-        foot.addWidget(close_btn)
         root.addLayout(foot)
 
         self.setModal(False)
@@ -453,10 +514,6 @@ class PCAPlotPanel(DimensionReductionPanel):
             "Number of principal components to compute (plot uses PC1 vs PC2)."
         )
         form.addRow("Components:", self.pca_components)
-        hint = QLabel("Linear projection; best for correlated numeric descriptors.")
-        hint.setWordWrap(True)
-        hint.setStyleSheet("color: palette(mid); font-size: 11px;")
-        form.addRow(hint)
 
     def _method_params(self) -> dict:
         return {"n_components": int(self.pca_components.value())}
@@ -504,13 +561,6 @@ class TSNEPlotPanel(DimensionReductionPanel):
         self.tsne_seed.setRange(0, 999_999)
         self.tsne_seed.setValue(42)
         form.addRow("Random seed:", self.tsne_seed)
-
-        hint = QLabel(
-            "Nonlinear embedding; can be slow on large tables. Increase max iterations for denser maps."
-        )
-        hint.setWordWrap(True)
-        hint.setStyleSheet("color: palette(mid); font-size: 11px;")
-        form.addRow(hint)
 
     def _method_params(self) -> dict:
         return {
@@ -564,14 +614,6 @@ class UMAPPlotPanel(DimensionReductionPanel):
         self.umap_seed.setRange(0, 999_999)
         self.umap_seed.setValue(42)
         form.addRow("Random seed:", self.umap_seed)
-
-        hint = QLabel(
-            "Nonlinear embedding; often faster than t-SNE on large tables. "
-            "For binary fingerprints, leave standardization off."
-        )
-        hint.setWordWrap(True)
-        hint.setStyleSheet("color: palette(mid); font-size: 11px;")
-        form.addRow(hint)
 
     def _method_params(self) -> dict:
         return {

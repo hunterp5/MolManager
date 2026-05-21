@@ -12,6 +12,7 @@ from molmanager.dimensionality_reduction import (
     run_tsne,
     run_umap,
 )
+from molmanager.ui.dimred_plot import build_dimension_reduction_figure
 
 
 def test_prepare_numeric_matrix_drops_incomplete_rows():
@@ -60,6 +61,37 @@ def test_tsne_single_feature_uses_random_init():
 def test_fingerprint_bitcount_column_detection():
     assert is_fingerprint_bitcount_column("FP_Morgan_2_1024")
     assert not is_fingerprint_bitcount_column("MolWt")
+
+
+def test_build_reduction_result_tsne_subsample():
+    n = 80
+    df = pd.DataFrame({"mw": np.linspace(100.0, 200.0, n)})
+    oids = list(range(n))
+    rng = np.random.default_rng(1)
+    X = rng.normal(size=(n, 4))
+    coords, used_idx, _ = run_tsne(X, max_points=30, max_iter=300, random_state=0)
+    result = build_reduction_result(
+        "tsne", coords, df, oids, used_idx, title="t-SNE", summary="ok"
+    )
+    assert len(result.oids) == 30
+
+
+def test_dimred_figure_numeric_string_color_by():
+    df = pd.DataFrame({"mw": ["100.5", "200.25", "300.0"]})
+    coords = np.array([[0.0, 1.0], [2.0, 3.0], [4.0, 5.0]])
+    result = build_reduction_result(
+        "pca",
+        coords,
+        df,
+        [1, 2, 3],
+        np.arange(3),
+        title="PCA",
+        summary="ok",
+        color_column="mw",
+    )
+    fig = build_dimension_reduction_figure(result)
+    assert fig.data[0].marker.colorscale is not None
+    assert all(isinstance(c, float) for c in fig.data[0].marker.color)
 
 
 def test_build_reduction_result_hover():

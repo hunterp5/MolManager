@@ -54,14 +54,28 @@ from PyQt5.QtWidgets import (
     QPushButton,
     QSizePolicy,
     QShortcut,
+    QTextEdit,
     QVBoxLayout,
     QWidget,
 )
 from plotly import graph_objects as go
 from plotly.offline import get_plotlyjs
 
+from ..plot_analysis import (
+    FIT_NONE,
+    PLOT_FIT_CHOICES,
+    fit_xy_curve,
+    summarize_univariate,
+    summarize_xy,
+)
+from ..plot_color import (
+    PLOT_COLORSCALE_CHOICES,
+    normalize_color_column,
+    resolve_plot_colorscale,
+    scatter_marker_from_column_values,
+)
 from ..utils import safe_float
-from .qt_widget_utils import make_window_minimizable
+from .qt_widget_utils import apply_monospace_to_text_edit, make_window_minimizable
 
 
 def normalize_axis_name(text: str | None) -> str | None:
@@ -187,12 +201,41 @@ class _PlotBridge(QObject):
         self._plot_widget._on_histogram_bin_clicked(int(bin_index))
 
 
+class PlotStatisticsDialog(QDialog):
+    """Modeless window for plot statistics and curve-fit summaries."""
+
+    def __init__(self, parent: QWidget | None = None):
+        super().__init__(parent)
+        self.setWindowTitle("Plot statistics")
+        self.setModal(False)
+        self.setWindowModality(Qt.NonModal)
+        self.resize(380, 320)
+
+        root = QVBoxLayout(self)
+        self.summary_text = QTextEdit()
+        self.summary_text.setReadOnly(True)
+        apply_monospace_to_text_edit(self.summary_text)
+        root.addWidget(self.summary_text, 1)
+
+        close_btn = QPushButton("Close")
+        close_btn.clicked.connect(self.hide)
+        row = QHBoxLayout()
+        row.addStretch()
+        row.addWidget(close_btn)
+        root.addLayout(row)
+        make_window_minimizable(self)
+
+    def set_lines(self, lines: list[str]) -> None:
+        self.summary_text.setPlainText("\n".join(lines) if lines else "")
+
+
 class PlotWidget(QWidget):
     """Interactive Plotly plotter for numeric table columns (dialog or main-window panel)."""
 
     def __init__(self, parent_app=None):
         super().__init__(None)
         self.parent_app = parent_app
+        self._stats_dialog: PlotStatisticsDialog | None = None
 
         self._plot_shell_path = Path(tempfile.gettempdir()) / f"MOLMANAGER_plot_shell_{id(self)}.html"
         self._last_browser_opened_path: str | None = None
@@ -293,6 +336,49 @@ class PlotWidget(QWidget):
         actions_row.addStretch()
         axes_l.addLayout(actions_row)
 
+        color_row = QHBoxLayout()
+        color_row.setSpacing(6)
+        self._color_by_label = QLabel("Color by:")
+        color_row.addWidget(self._color_by_label)
+        self.color_combo = QComboBox()
+        self.color_combo.setMinimumWidth(160)
+        self.color_combo.setToolTip(
+            "Color scatter and line points by a table column (numeric or categorical)."
+        )
+        self.color_combo.currentIndexChanged.connect(self._on_color_column_changed)
+        color_row.addWidget(self.color_combo, 1)
+        axes_l.addLayout(color_row)
+
+        spectrum_row = QHBoxLayout()
+        spectrum_row.setSpacing(6)
+        self._spectrum_label = QLabel("Spectrum:")
+        spectrum_row.addWidget(self._spectrum_label)
+        self.colorscale_combo = QComboBox()
+        self.colorscale_combo.addItems(PLOT_COLORSCALE_CHOICES)
+        self.colorscale_combo.setToolTip("Continuous colorscale for numeric Color by columns.")
+        self.colorscale_combo.currentIndexChanged.connect(self._schedule_plot)
+        spectrum_row.addWidget(self.colorscale_combo, 1)
+        axes_l.addLayout(spectrum_row)
+
+        analysis_row = QHBoxLayout()
+        analysis_row.setSpacing(6)
+        self.show_stats_cb = QCheckBox("Show statistics")
+        self.show_stats_cb.setToolTip("Open a window with summary statistics for the current plot.")
+        self.show_stats_cb.stateChanged.connect(self._on_analysis_option_changed)
+        analysis_row.addWidget(self.show_stats_cb)
+        self._fit_label = QLabel("Fit:")
+        analysis_row.addWidget(self._fit_label)
+        self.fit_combo = QComboBox()
+        self.fit_combo.setMinimumWidth(120)
+        self.fit_combo.setToolTip(
+            "Add a linear or quadratic least-squares fit line (2D plots) and show the equation in the statistics window."
+        )
+        for label, key in PLOT_FIT_CHOICES:
+            self.fit_combo.addItem(label, key)
+        self.fit_combo.currentIndexChanged.connect(self._on_analysis_option_changed)
+        analysis_row.addWidget(self.fit_combo, 1)
+        axes_l.addLayout(analysis_row)
+
         ctrl_root.addWidget(gb_axes)
         root.addWidget(ctrl_wrap)
 
@@ -318,6 +404,7 @@ class PlotWidget(QWidget):
         self.zmax.editingFinished.connect(self._schedule_plot)
 
         self._load_plot_shell()
+        self._reload_color_columns()
         self._on_axis_change()
         if parent_app is not None:
             model = parent_app._table_model
@@ -358,7 +445,151 @@ class PlotWidget(QWidget):
         self._set_axis_combo_items(self.y_combo, cols, previous=y_prev, allow_none=True)
         self._set_axis_combo_items(self.z_combo, cols, previous=z_prev, allow_none=True)
         self._prev_range_axis = {"x": "", "y": "", "z": ""}
+        self._reload_color_columns()
         self._on_axis_change()
+
+    def _reload_color_columns(self) -> None:
+        prev = self.color_combo.currentText()
+        self.color_combo.blockSignals(True)
+        try:
+            self.color_combo.clear()
+            self.color_combo.addItem("(none)")
+            if self.parent_app is not None:
+                for h in self.parent_app.headers:
+                    if h and h != "ID_HIDDEN":
+                        self.color_combo.addItem(h)
+            idx = self.color_combo.findText(prev)
+            if idx >= 0:
+                self.color_combo.setCurrentIndex(idx)
+        finally:
+            self.color_combo.blockSignals(False)
+
+    def _current_color_column(self) -> str | None:
+        text = self.color_combo.currentText()
+        return None if not text or text == "(none)" else text
+
+    def _color_values_for_oids(self, oids: list[int]) -> tuple[list | None, str | None]:
+        color_col = self._current_color_column()
+        if not color_col or self.parent_app is None:
+            return None, None
+        model = self.parent_app._table_model
+        out: list = []
+        for oid in oids:
+            row = self.parent_app.get_row_by_id(int(oid))
+            if row < 0:
+                out.append(None)
+                continue
+            raw = model.value_for_header(row, color_col)
+            out.append(raw if (raw or "").strip() else None)
+        return out, color_col
+
+    def _scatter_marker_for_oids(self, oids: list[int], *, point_size: float = 6) -> dict:
+        color_vals, color_label = self._color_values_for_oids(oids)
+        color_vals, color_label = normalize_color_column(color_vals, color_label)
+        return scatter_marker_from_column_values(
+            color_vals,
+            color_label=color_label,
+            colorscale=resolve_plot_colorscale(self.colorscale_combo.currentText()),
+            point_size=point_size,
+        )
+
+    def _on_color_column_changed(self, _index: int = 0) -> None:
+        self._update_color_controls()
+        self._schedule_plot()
+
+    def _current_fit_kind(self) -> str:
+        key = self.fit_combo.currentData()
+        return str(key) if key else FIT_NONE
+
+    def _analysis_supports_fit(self) -> bool:
+        ptype = self._current_plot_type()
+        if ptype == PLOT_TYPE_LINE_2D:
+            return True
+        if ptype != PLOT_TYPE_SCATTER:
+            return False
+        return self._effective_plot_mode() == "2D"
+
+    def _on_analysis_option_changed(self, *_args) -> None:
+        if not self.show_stats_cb.isChecked() and self._current_fit_kind() == FIT_NONE:
+            self._hide_stats_dialog()
+        self._schedule_plot()
+
+    def _hide_stats_dialog(self) -> None:
+        if self._stats_dialog is not None:
+            self._stats_dialog.hide()
+
+    def _present_analysis_dialog(
+        self,
+        stats_lines: list[str] | None,
+        fit_summary: str | None,
+    ) -> None:
+        parts: list[str] = []
+        if self.show_stats_cb.isChecked() and stats_lines:
+            parts.extend(stats_lines)
+        if fit_summary:
+            if parts:
+                parts.append("")
+            parts.append("Curve fit")
+            parts.append(f"  {fit_summary}")
+            parts.append("  (orange line on plot)")
+        if not parts:
+            self._hide_stats_dialog()
+            return
+        parent = self.parent_app if self.parent_app is not None else self
+        if self._stats_dialog is None:
+            self._stats_dialog = PlotStatisticsDialog(parent)
+            self._stats_dialog.finished.connect(self._on_stats_dialog_closed)
+        self._stats_dialog.set_lines(parts)
+        self._stats_dialog.show()
+        self._stats_dialog.raise_()
+        self._stats_dialog.activateWindow()
+
+    def _on_stats_dialog_closed(self, _result: int = 0) -> None:
+        self.show_stats_cb.blockSignals(True)
+        try:
+            self.show_stats_cb.setChecked(False)
+        finally:
+            self.show_stats_cb.blockSignals(False)
+
+    def _add_xy_fit_trace(self, fig: go.Figure, x: list[float], y: list[float]) -> str | None:
+        if not self._analysis_supports_fit() or self._current_fit_kind() == FIT_NONE:
+            return None
+        fit = fit_xy_curve(x, y, self._current_fit_kind())
+        if not fit:
+            return None
+        xs, ys, name = fit
+        fig.add_trace(
+            go.Scatter(
+                x=xs,
+                y=ys,
+                mode="lines",
+                name="Fit",
+                line={"color": "#e76f51", "width": 2.5, "dash": "solid"},
+            )
+        )
+        return name.removeprefix("Fit: ").strip() if name.startswith("Fit:") else name
+
+    def _update_analysis_controls(self) -> None:
+        fit_ok = self._analysis_supports_fit()
+        self._fit_label.setEnabled(fit_ok)
+        self.fit_combo.setEnabled(fit_ok)
+
+    def _color_by_supported(self) -> bool:
+        ptype = self._current_plot_type()
+        if ptype == PLOT_TYPE_LINE_2D:
+            return True
+        if ptype != PLOT_TYPE_SCATTER:
+            return False
+        return self._effective_plot_mode() in ("2D", "3D")
+
+    def _update_color_controls(self) -> None:
+        supported = self._color_by_supported()
+        self.color_combo.setEnabled(supported)
+        self._color_by_label.setEnabled(supported)
+        spectrum_on = supported and self._current_color_column() is not None
+        self._spectrum_label.setEnabled(spectrum_on)
+        self.colorscale_combo.setEnabled(spectrum_on)
+        self._update_analysis_controls()
 
     def _schedule_plot(self) -> None:
         self._plot_debounce.start(70)
@@ -756,9 +987,9 @@ class PlotWidget(QWidget):
         self.web.load(QUrl.fromLocalFile(str(self._plot_shell_path)))
 
     def _push_plotly_figure(self, fig: go.Figure) -> None:
-        payload = fig.to_plotly_json()
-        payload["config"] = {"displaylogo": False, "responsive": True}
-        self._pending_payload_json = json.dumps(payload, separators=(",", ":"))
+        from .plotly_html import figure_payload_json
+
+        self._pending_payload_json = figure_payload_json(fig)
         self._last_browser_opened_path = None
         if self._web_ready:
             self._apply_pending_payload()
@@ -805,6 +1036,7 @@ class PlotWidget(QWidget):
         self._ignore_plot_clear_until = time.monotonic() + (ms / 1000.0)
 
     def _render_empty_plot(self, title: str) -> None:
+        self._hide_stats_dialog()
         fig = go.Figure()
         fig.update_layout(
             title=title,
@@ -906,6 +1138,7 @@ class PlotWidget(QWidget):
                     yaxis={"title": yname, **self._plotly_axis_range(ymin, ymax, [])},
                     margin={"l": 50, "r": 20, "t": 20, "b": 45},
                 )
+            self._hide_stats_dialog()
             self._push_plotly_figure(fig)
             self.parent_app.status_label.setText("Plot: no points for current axis/range/scope.")
             return
@@ -913,6 +1146,7 @@ class PlotWidget(QWidget):
         self._plotted_oids = list(foids)
         self._selected_point_indices = {i for i in self._selected_point_indices if 0 <= i < len(self._plotted_oids)}
         selected_points = sorted(self._selected_point_indices) if self._selected_point_indices else []
+        marker = self._scatter_marker_for_oids(foids, point_size=4 if is3d else 6)
 
         fig = go.Figure()
         if is3d:
@@ -922,7 +1156,7 @@ class PlotWidget(QWidget):
                     y=fy,
                     z=fz,
                     mode="markers",
-                    marker={"size": 4, "opacity": 0.85, "color": "#2a74d6"},
+                    marker=marker,
                     name="Points",
                 )
             )
@@ -948,13 +1182,19 @@ class PlotWidget(QWidget):
                 },
                 margin={"l": 20, "r": 20, "t": 20, "b": 20},
             )
+            stats_lines = (
+                summarize_univariate(fx, label=xname)
+                + summarize_univariate(fy, label=yname)
+                + summarize_univariate(fz, label=zname or "Z")
+            )
+            self._present_analysis_dialog(stats_lines, None)
         else:
             fig.add_trace(
                 go.Scatter(
                     x=fx,
                     y=fy,
                     mode="markers",
-                    marker={"size": 6, "opacity": 0.85, "color": "#2a74d6"},
+                    marker=marker,
                     selectedpoints=selected_points if selected_points else None,
                     selected={"marker": {"size": 9, "color": "#d62828", "opacity": 1.0}},
                     unselected={"marker": {"opacity": 0.35}},
@@ -965,6 +1205,11 @@ class PlotWidget(QWidget):
                 yaxis={"title": yname, **self._plotly_axis_range(ymin, ymax, fy)},
                 dragmode="lasso",
                 margin={"l": 50, "r": 20, "t": 20, "b": 45},
+            )
+            fit_summary = self._add_xy_fit_trace(fig, fx, fy)
+            self._present_analysis_dialog(
+                summarize_xy(fx, fy, x_label=xname, y_label=yname),
+                fit_summary,
             )
 
         self._push_plotly_figure(fig)
@@ -988,6 +1233,7 @@ class PlotWidget(QWidget):
                 yaxis={"title": yname, **self._plotly_axis_range(ymin, ymax, [])},
                 margin={"l": 50, "r": 20, "t": 20, "b": 45},
             )
+            self._hide_stats_dialog()
             self._push_plotly_figure(fig)
             self.parent_app.status_label.setText("Line plot: no points for current axis/range/scope.")
             return
@@ -996,6 +1242,7 @@ class PlotWidget(QWidget):
         self._plotted_oids = list(foids)
         self._selected_point_indices = {i for i in self._selected_point_indices if 0 <= i < len(self._plotted_oids)}
         selected_points = sorted(self._selected_point_indices) if self._selected_point_indices else []
+        marker = self._scatter_marker_for_oids(foids, point_size=5)
         fig = go.Figure()
         fig.add_trace(
             go.Scatter(
@@ -1003,7 +1250,7 @@ class PlotWidget(QWidget):
                 y=fy,
                 mode="lines+markers",
                 line={"color": "#2a74d6", "width": 1.5},
-                marker={"size": 5, "opacity": 0.85, "color": "#2a74d6"},
+                marker=marker,
                 selectedpoints=selected_points if selected_points else None,
                 selected={"marker": {"size": 9, "color": "#d62828", "opacity": 1.0}},
                 unselected={"marker": {"opacity": 0.35}},
@@ -1014,6 +1261,11 @@ class PlotWidget(QWidget):
             yaxis={"title": yname, **self._plotly_axis_range(ymin, ymax, fy)},
             dragmode="lasso",
             margin={"l": 50, "r": 20, "t": 20, "b": 45},
+        )
+        fit_summary = self._add_xy_fit_trace(fig, fx, fy)
+        self._present_analysis_dialog(
+            summarize_xy(fx, fy, x_label=xname, y_label=yname),
+            fit_summary,
         )
         self._push_plotly_figure(fig)
         self.parent_app.status_label.setText(f"Line plot: {len(fx):,} point(s).")
@@ -1034,6 +1286,7 @@ class PlotWidget(QWidget):
                 yaxis={"title": xname, **self._plotly_axis_range(xmin, xmax, [])},
                 margin={"l": 50, "r": 20, "t": 20, "b": 45},
             )
+            self._hide_stats_dialog()
             self._push_plotly_figure(fig)
             self.parent_app.status_label.setText(f"{label}: no values for current column/range/scope.")
             return
@@ -1055,6 +1308,7 @@ class PlotWidget(QWidget):
             showlegend=False,
             margin={"l": 50, "r": 20, "t": 20, "b": 45},
         )
+        self._present_analysis_dialog(summarize_univariate(vals, label=xname), None)
         self._push_plotly_figure(fig)
         self.parent_app.status_label.setText(f"{label}: {len(vals):,} value(s) in {xname!r}.")
 
@@ -1078,6 +1332,7 @@ class PlotWidget(QWidget):
                 yaxis={"title": "Count"},
                 margin={"l": 50, "r": 20, "t": 20, "b": 45},
             )
+            self._hide_stats_dialog()
             self._push_plotly_figure(fig)
             self.parent_app.status_label.setText("Histogram: no values for current column/range/scope.")
             return
@@ -1107,6 +1362,7 @@ class PlotWidget(QWidget):
             bargap=0.02,
             margin={"l": 50, "r": 20, "t": 20, "b": 45},
         )
+        self._present_analysis_dialog(summarize_univariate(vals, label=xname), None)
         self._push_plotly_figure(fig)
         self.parent_app.status_label.setText(f"Histogram: {len(vals):,} value(s) in {xname!r}.")
 
@@ -1261,6 +1517,7 @@ class PlotWidget(QWidget):
         zname = self._combo_axis_name(self.z_combo)
         if zname:
             self._maybe_default_axis_range_edits("z", zname, self.zmin, self.zmax)
+        self._update_color_controls()
         self._schedule_plot()
 
 class PlotDialog(QDialog):
