@@ -16,7 +16,8 @@ This document supports building an installer (PyInstaller, Inno Setup, MSI, etc.
 
 ```bash
 python -m venv .venv
-.venv\Scripts\activate          # Windows
+# Windows:  .venv\Scripts\activate
+# macOS/Linux:  source .venv/bin/activate
 pip install -U pip
 pip install -r requirements-all.txt
 ```

@@ -18,10 +18,43 @@ Or editable install: `pip install -e ".[dev]"` (see `pyproject.toml` for extras 
 `molmanager/resources/bin/win/` (`vina.exe`, `boltz.exe`) or run
 `scripts\bootstrap_optional_tools.ps1` for guided setup. See `docs/PACKAGING.md` for installer builds.
 
-Notes:
-- **RDKit** can be finicky on Windows via pip. If `rdkit-pypi` fails to install, use **conda** instead:
+### Install (macOS)
+
+Requires **Python 3.10+** (3.11 recommended). From the repo root:
+
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -U pip
+pip install -r requirements.txt
+# optional full stack (pKa / Boltz — see requirements-pka.txt for PyTorch on Apple Silicon):
+# pip install -r requirements-all.txt
+```
+
+Or editable install: `pip install -e ".[dev]"` (see `pyproject.toml` for extras `pka`, `boltz`).
+
+**Optional CLI tools:** copy macOS binaries into `molmanager/resources/bin/mac/` (`vina`, `boltz`) or run
+`scripts/bootstrap_optional_tools.sh` for guided setup. Boltz is often available on `PATH` after
+`pip install boltz` inside the same venv.
+
+If **RDKit** or **PyQtWebEngine** fail via pip, use **conda-forge** for those packages, then pip-install the rest:
+
+```bash
+conda create -n molmanager python=3.11
+conda activate molmanager
+conda install -c conda-forge rdkit pyqt
+pip install -r requirements.txt
+```
+
+**Apple Silicon:** core MolManager runs natively. Optional **pKa** (`pkasolver` + PyTorch) may need a
+CPU/MPS-compatible PyTorch build from [pytorch.org](https://pytorch.org) before `requirements-pka.txt`.
+
+### Install notes (all platforms)
+
+- **RDKit** can be finicky via pip on some setups. If `rdkit-pypi` fails, use **conda** instead:
   - `conda install -c conda-forge rdkit`
 - **NumPy 2.x** is not compatible with current `rdkit-pypi` wheels (you may see `_ARRAY_API` / import errors). This project pins **`numpy<2`** in `requirements.txt`; reinstall deps after pulling updates (`pip install -r requirements.txt`).
+- **Linux:** same venv flow as macOS; optional tools go in `molmanager/resources/bin/linux/`; use `scripts/bootstrap_optional_tools.sh`.
 
 ### Run
 
@@ -65,7 +98,7 @@ set QT_QPA_PLATFORM=offscreen
 python -m pytest tests/ -v
 ```
 
-On Linux/macOS, use `export QT_QPA_PLATFORM=offscreen`. CI runs the same suite on pushes and pull requests (see `.github/workflows/ci.yml`).
+On Linux/macOS, use `export QT_QPA_PLATFORM=offscreen`. CI runs the test suite on **Ubuntu and macOS** for pushes and pull requests to `main` and `dev` (see `.github/workflows/ci.yml`).
 
 Performance baseline benchmark:
 
