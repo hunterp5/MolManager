@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Callable, Literal
+from typing import TYPE_CHECKING, Any, Callable, Literal
 
 from PyQt5.QtCore import Qt, QTimer
 from PyQt5.QtWidgets import (
@@ -19,6 +19,7 @@ from PyQt5.QtWidgets import (
 )
 
 from ...config import load_config
+from ...plot_color import PLOT_COLORSCALE_CHOICES, resolve_plot_colorscale
 from ...utils import mol_to_canonical_smiles
 from ...medchem_space import (
     MedChemRowSnapshot,
@@ -146,10 +147,21 @@ class MedChemPlotPanel(QWidget):
         color_row.addWidget(QLabel("Color by:"))
         self.color_combo = QComboBox()
         self.color_combo.setMinimumWidth(160)
-        self.color_combo.activated.connect(self._on_color_column_changed)
+        self.color_combo.currentIndexChanged.connect(self._on_color_column_changed)
         color_row.addWidget(self.color_combo, 1)
         color_row.addStretch()
         opts.addLayout(color_row)
+
+        spectrum_row = QHBoxLayout()
+        self._spectrum_label = QLabel("Spectrum:")
+        spectrum_row.addWidget(self._spectrum_label)
+        self.colorscale_combo = QComboBox()
+        self.colorscale_combo.addItems(PLOT_COLORSCALE_CHOICES)
+        self.colorscale_combo.setToolTip("Continuous colorscale for numeric Color by columns.")
+        self.colorscale_combo.currentIndexChanged.connect(self._on_color_column_changed)
+        spectrum_row.addWidget(self.colorscale_combo, 1)
+        spectrum_row.addStretch()
+        opts.addLayout(spectrum_row)
 
         self.summary_text = QTextEdit()
         self.summary_text.setReadOnly(True)
@@ -162,6 +174,7 @@ class MedChemPlotPanel(QWidget):
 
         self._refresh_structure_sources()
         self._reload_color_columns()
+        self._update_spectrum_controls()
         self.summary_text.setPlainText("Preparing plot…")
         QTimer.singleShot(0, self._start_refresh_job)
 
@@ -209,7 +222,16 @@ class MedChemPlotPanel(QWidget):
     def _on_scope_changed(self) -> None:
         self._reload_color_columns()
 
+    def _update_spectrum_controls(self) -> None:
+        enabled = self.color_combo.currentText() != "(none)"
+        self._spectrum_label.setEnabled(enabled)
+        self.colorscale_combo.setEnabled(enabled)
+
+    def _current_colorscale(self) -> str:
+        return resolve_plot_colorscale(self.colorscale_combo.currentText())
+
     def _on_color_column_changed(self, _index: int = 0) -> None:
+        self._update_spectrum_controls()
         self._push_plot_figure()
 
     def _descriptor_column_names(self) -> tuple[str | None, str | None, str | None, str | None]:
@@ -564,22 +586,19 @@ class MedChemPlotPanel(QWidget):
             return None
         return v if v == v else None
 
-    def _color_values_for_oids(self, oids: list[int], color_col: str | None) -> list[float] | None:
-        """One numeric color value per plotted OID, in ``dataset.oids`` order."""
+    def _color_values_for_oids(self, oids: list[int], color_col: str | None) -> list[Any] | None:
+        """One color value per plotted OID, in ``dataset.oids`` order (raw table cell)."""
         if not color_col or color_col == "(none)" or self.parent_app is None:
             return None
         model = self.parent_app._table_model
-        out: list[float] = []
+        out: list[Any] = []
         for oid in oids:
             row = self.parent_app.get_row_by_id(int(oid))
             if row < 0:
-                out.append(float("nan"))
+                out.append(None)
                 continue
             raw = model.value_for_header(row, color_col)
-            v = self._parse_numeric_cell(raw)
-            out.append(float("nan") if v is None else v)
-        if not any(v == v for v in out):
-            return None
+            out.append(raw if (raw or "").strip() else None)
         return out
 
     def _push_plot_figure(self) -> None:
@@ -589,18 +608,24 @@ class MedChemPlotPanel(QWidget):
         if color_col == "(none)":
             color_col = None
         color_vals = self._color_values_for_oids(self._plot_dataset.oids, color_col)
+        from ...plot_color import normalize_color_column
+
+        color_vals, color_col = normalize_color_column(color_vals, color_col)
+        colorscale = self._current_colorscale()
         try:
             if self._plot_kind == "golden_triangle":
                 fig = build_golden_triangle_figure(
                     self._plot_dataset,
                     color_values=color_vals,
                     color_label=color_col,
+                    colorscale=colorscale,
                 )
             else:
                 fig = build_boiled_egg_figure(
                     self._plot_dataset,
                     color_values=color_vals,
                     color_label=color_col,
+                    colorscale=colorscale,
                 )
             self._plot_view.push_figure(fig, self._plot_dataset.oids)
         except Exception as exc:

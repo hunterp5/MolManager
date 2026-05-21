@@ -2,29 +2,52 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
+from typing import Any
+
 from plotly import graph_objects as go
 
 from ..dimensionality_reduction import DimensionReductionResult
+from ..plot_color import DEFAULT_PLOT_COLORSCALE, scatter_marker_from_column_values
 
 
-def build_dimension_reduction_figure(result: DimensionReductionResult) -> go.Figure:
+def dimension_reduction_result_with_color(
+    result: DimensionReductionResult,
+    *,
+    color_values: list[Any] | None,
+    color_label: str | None,
+) -> DimensionReductionResult:
+    """Return a copy of ``result`` with updated color encoding and hover text."""
+    hover: list[str] = []
+    for i, oid in enumerate(result.oids):
+        parts = [f"OID {oid}"]
+        if color_label and color_values is not None and i < len(color_values):
+            parts.append(f"{color_label}: {color_values[i]}")
+        hover.append("<br>".join(parts))
+    return replace(
+        result,
+        color_values=color_values,
+        color_label=color_label,
+        hover=hover,
+    )
+
+
+def build_dimension_reduction_figure(
+    result: DimensionReductionResult,
+    *,
+    colorscale: str = DEFAULT_PLOT_COLORSCALE,
+) -> go.Figure:
     if result.method == "pca":
         x_label, y_label = "PC1", "PC2"
     elif result.method == "umap":
         x_label, y_label = "UMAP 1", "UMAP 2"
     else:
         x_label, y_label = "t-SNE 1", "t-SNE 2"
-    marker: dict = {"size": 6, "opacity": 0.85, "color": "#2a74d6"}
-    if result.color_values is not None:
-        marker = {
-            "size": 6,
-            "opacity": 0.85,
-            "color": result.color_values,
-            "colorscale": "Viridis",
-            "showscale": True,
-        }
-        if result.color_label:
-            marker["colorbar"] = {"title": result.color_label}
+    marker = scatter_marker_from_column_values(
+        result.color_values,
+        color_label=result.color_label,
+        colorscale=colorscale,
+    )
     fig = go.Figure(
         data=[
             go.Scatter(

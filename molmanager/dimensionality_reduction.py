@@ -250,6 +250,10 @@ def build_reduction_result(
     if len(oids) != len(df):
         raise ValueError("oids must align with dataframe rows.")
     pos_arr = np.asarray(row_indices, dtype=int)
+    if coords.shape[0] != len(pos_arr):
+        raise ValueError("coordinate count must match row index count.")
+    if len(pos_arr) and (int(pos_arr.min()) < 0 or int(pos_arr.max()) >= len(oids)):
+        raise ValueError("row index out of range for oid list.")
     xs = coords[:, 0].tolist()
     ys = coords[:, 1].tolist()
     out_oids: list[int] = []

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import Any
+
 from plotly import graph_objects as go
 
 from ..medchem_space import (
@@ -10,6 +12,7 @@ from ..medchem_space import (
     gia_polygon,
     golden_triangle_polygon,
 )
+from ..plot_color import DEFAULT_PLOT_COLORSCALE
 
 
 def _path_shape(
@@ -32,29 +35,21 @@ def _path_shape(
     )
 
 
-def _scatter_marker(color_values: list[float] | None, color_label: str | None) -> dict:
-    if color_values is None:
-        return {"size": 7, "opacity": 0.88, "color": "#2a74d6"}
-    plot_colors: list[float | None] = [v if v == v else None for v in color_values]
-    finite = [v for v in plot_colors if v is not None]
-    if not finite:
-        return {"size": 7, "opacity": 0.88, "color": "#2a74d6"}
-    lo, hi = min(finite), max(finite)
-    if abs(hi - lo) < 1e-12:
-        lo -= 0.5
-        hi += 0.5
-    marker: dict = {
-        "size": 7,
-        "opacity": 0.88,
-        "color": plot_colors,
-        "colorscale": "Viridis",
-        "showscale": True,
-        "cmin": lo,
-        "cmax": hi,
-    }
-    if color_label:
-        marker["colorbar"] = {"title": color_label}
-    return marker
+def _scatter_marker(
+    color_values: list[Any] | None,
+    color_label: str | None,
+    *,
+    colorscale: str = DEFAULT_PLOT_COLORSCALE,
+) -> dict:
+    from ..plot_color import scatter_marker_from_column_values
+
+    return scatter_marker_from_column_values(
+        color_values,
+        color_label=color_label,
+        colorscale=colorscale,
+        point_size=7,
+        opacity=0.88,
+    )
 
 
 def _compound_scatter(
@@ -79,12 +74,13 @@ def _compound_scatter(
 def build_boiled_egg_figure(
     dataset: MedChemSpaceDataset,
     *,
-    color_values: list[float] | None = None,
+    color_values: list[Any] | None = None,
     color_label: str | None = None,
+    colorscale: str = DEFAULT_PLOT_COLORSCALE,
 ) -> go.Figure:
     """TPSA vs LogP with GIA (white) and BBB (yellow) regions."""
     pts = dataset.points
-    marker = _scatter_marker(color_values, color_label)
+    marker = _scatter_marker(color_values, color_label, colorscale=colorscale)
     fig = go.Figure(
         data=[
             _compound_scatter(
@@ -132,12 +128,13 @@ def build_boiled_egg_figure(
 def build_golden_triangle_figure(
     dataset: MedChemSpaceDataset,
     *,
-    color_values: list[float] | None = None,
+    color_values: list[Any] | None = None,
     color_label: str | None = None,
+    colorscale: str = DEFAULT_PLOT_COLORSCALE,
 ) -> go.Figure:
     """MW vs LogP with the golden-triangle drug-likeness region."""
     pts = dataset.points
-    marker = _scatter_marker(color_values, color_label)
+    marker = _scatter_marker(color_values, color_label, colorscale=colorscale)
     fig = go.Figure(
         data=[
             _compound_scatter(
