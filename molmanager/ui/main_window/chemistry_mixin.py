@@ -109,8 +109,7 @@ class ChemistryMixin:
         docked = getattr(self, "_docked_plot_widget", None)
         if docked is not None:
             views.extend(iter_plot_selection_views(docked))
-        plot_dlg = getattr(self, "_plot_dialog", None)
-        if plot_dlg is not None:
+        for plot_dlg in self._iter_plot_dialogs():
             pw = getattr(plot_dlg, "_plot_widget", None)
             if pw is not None:
                 views.extend(iter_plot_selection_views(pw))
@@ -155,6 +154,44 @@ class ChemistryMixin:
         if timer is None:
             return
         timer.start(40)
+
+    def _prune_plot_dialogs(self) -> None:
+        alive: list = []
+        for dlg in getattr(self, "_plot_dialogs", []):
+            try:
+                dlg.isVisible()
+                alive.append(dlg)
+            except RuntimeError:
+                pass
+        self._plot_dialogs = alive
+
+    def _iter_plot_dialogs(self) -> list:
+        self._prune_plot_dialogs()
+        return list(self._plot_dialogs)
+
+    def _register_plot_dialog(self, dlg) -> None:
+        """Track a floating plotter window (multiple instances allowed)."""
+        if not hasattr(self, "_plot_dialogs"):
+            self._plot_dialogs = []
+        self._prune_plot_dialogs()
+        self._plot_dialogs.append(dlg)
+        n = len(self._plot_dialogs)
+        dlg.setWindowTitle("Plot Data" if n == 1 else f"Plot Data ({n})")
+        dlg.destroyed.connect(lambda *_a, d=dlg: self._unregister_plot_dialog(d))
+
+    def _unregister_plot_dialog(self, dlg) -> None:
+        try:
+            self._plot_dialogs.remove(dlg)
+        except (ValueError, AttributeError):
+            pass
+        self._prune_plot_dialogs()
+
+    def _create_plot_dialog(self):
+        from ..plot import PlotDialog
+
+        d = PlotDialog(self)
+        self._prepare_tool_dialog(d)
+        return d
 
     def _attach_tool_scope_sync(self, target, *, on_finished_signal) -> None:
         """Wire table selection changes to a dialog/plot ``only_selected_cb`` until teardown."""
@@ -205,17 +242,6 @@ class ChemistryMixin:
                 self._docked_plot_widget = None
             else:
                 return False
-        existing_dlg = getattr(self, "_plot_dialog", None)
-        if existing_dlg is not None:
-            try:
-                teardown = getattr(existing_dlg, "_scope_sync_disconnect", None)
-                if callable(teardown):
-                    teardown()
-                existing_dlg._force_close = True
-                existing_dlg.close()
-            except RuntimeError:
-                pass
-            self._plot_dialog = None
 
         host = self._plot_panel_host
         lay = host.layout()
@@ -289,24 +315,12 @@ class ChemistryMixin:
         if not isinstance(plot_widget, PlotWidget):
             self._docked_plot_widget = None
             return False
-        existing_dlg = getattr(self, "_plot_dialog", None)
-        if existing_dlg is not None:
-            try:
-                QMessageBox.information(
-                    self,
-                    "Plot",
-                    "A plot window is already open. Close it before sending the docked plot to a new window.",
-                )
-                return False
-            except RuntimeError:
-                self._plot_dialog = None
 
         self._release_plot_widget_from_panel_host(plot_widget)
         self._plot_panel.setVisible(False)
 
         dlg = PlotDialog(self, plot_widget=plot_widget)
-        self._plot_dialog = dlg
-        dlg.destroyed.connect(self._on_plot_dialog_destroyed)
+        self._register_plot_dialog(dlg)
         self._prepare_tool_dialog(dlg)
         dlg.show()
         dlg.raise_()
@@ -1318,11 +1332,12 @@ class ChemistryMixin:
             return
         params = d.params()
         n = len(data)
-        self.status_label.setText("Generating conformations…")
+        ps = self._tool_progress_state
+        self._begin_tool_progress("Generate conformations", n)
         self.process_queue.enqueue(
             f"Generate conformations ({n} structures)",
-            lambda ev, d=data, p=params, sigs=self.signals: ConformerGenerationWorker(
-                d, p, sigs, cancel_event=ev
+            lambda ev, d=data, p=params, sigs=self.signals, prog=ps: ConformerGenerationWorker(
+                d, p, sigs, cancel_event=ev, progress_state=prog
             ),
         )
 
@@ -1359,11 +1374,12 @@ class ChemistryMixin:
             return
         params = d.params()
         n = len(data)
-        self.status_label.setText(f"{TOOL_SINGLE_CONFORMATION}…")
+        ps = self._tool_progress_state
+        self._begin_tool_progress(TOOL_SINGLE_CONFORMATION, n)
         self.process_queue.enqueue(
             f"{TOOL_SINGLE_CONFORMATION} ({n} structures)",
-            lambda ev, d=data, p=params, sigs=self.signals: ConformerGenerationWorker(
-                d, p, sigs, cancel_event=ev
+            lambda ev, d=data, p=params, sigs=self.signals, prog=ps: ConformerGenerationWorker(
+                d, p, sigs, cancel_event=ev, progress_state=prog
             ),
         )
 
@@ -1390,7 +1406,7 @@ class ChemistryMixin:
             )
 
     def on_conformers_finished(self, results: list) -> None:
-        self._clear_tool_progress()
+        self._finish_tool_progress("Generate conformations")
         self.table.setSortingEnabled(False)
         try:
             self.table.setUpdatesEnabled(False)
@@ -1473,16 +1489,17 @@ class ChemistryMixin:
             return
         params = d.params()
         n = len(data)
-        self.status_label.setText("Superposing conformers…")
+        ps = self._tool_progress_state
+        self._begin_tool_progress("Superpose conformers", n)
         self.process_queue.enqueue(
             f"Superpose conformers ({n} rows)",
-            lambda ev, d=data, p=params, sigs=self.signals: SuperposeConformersWorker(
-                d, p, sigs, cancel_event=ev
+            lambda ev, d=data, p=params, sigs=self.signals, prog=ps: SuperposeConformersWorker(
+                d, p, sigs, cancel_event=ev, progress_state=prog
             ),
         )
 
     def on_superpose_finished(self, results: list) -> None:
-        self._clear_tool_progress()
+        self._finish_tool_progress("Superpose conformers")
         self.table.setSortingEnabled(False)
         try:
             self.table.setUpdatesEnabled(False)
@@ -1590,9 +1607,9 @@ class ChemistryMixin:
                     f.update_prop_list(cols)
         self._refresh_active_plot_axis_columns()
 
-    def on_calc_finished(self, res, calc_h, *, finish_progress: bool = True):
+    def on_calc_finished(self, res, calc_h, *, finish_progress: bool = True, progress_label: str | None = None):
         if finish_progress:
-            self._finish_tool_progress("Calculate descriptors")
+            self._finish_tool_progress(progress_label)
         self.table.setSortingEnabled(False)
         try:
             self.table.setUpdatesEnabled(False)
@@ -1684,10 +1701,11 @@ class ChemistryMixin:
             )
             self.status_label.setText("Ready.")
             return
-        self.status_label.setText("Core-based decomposition…")
+        ps = self._tool_progress_state
+        self._begin_tool_progress("Core-based decomposition", len(data))
         self.process_queue.enqueue(
             f"Core-based decomposition ({len(data)} rows)",
-            lambda ev, dt=data, pp=p, sigs=self.signals: RGroupDecompositionWorker(
+            lambda ev, dt=data, pp=p, sigs=self.signals, prog=ps: RGroupDecompositionWorker(
                 dt,
                 pp.core_query,
                 pp.column_prefix,
@@ -1696,11 +1714,12 @@ class ChemistryMixin:
                 pp.matching,
                 sigs,
                 cancel_event=ev,
+                progress_state=prog,
             ),
         )
 
     def on_rgroup_decomp_finished(self, res, col_headers: list) -> None:
-        self.on_calc_finished(res, col_headers)
+        self.on_calc_finished(res, col_headers, progress_label=TOOL_CORE_DECOMP)
 
     def on_rgroup_decomp_failed(self, message: str) -> None:
         self._clear_tool_progress()
@@ -1779,16 +1798,18 @@ class ChemistryMixin:
             return
         prefix = p.column_prefix or ("BRICS" if p.method == "brics" else "RECAP")
         method = "brics" if p.method == "brics" else "recap"
-        self.status_label.setText(f"{p.tool_title}…")
+        ps = self._tool_progress_state
+        self._begin_tool_progress(p.tool_title, len(data))
         self.process_queue.enqueue(
             f"{p.tool_title} ({len(data)} rows)",
-            lambda ev, dt=data, m=method, pref=prefix, title=p.tool_title, sigs=self.signals: FragmentDecompositionWorker(
+            lambda ev, dt=data, m=method, pref=prefix, title=p.tool_title, sigs=self.signals, prog=ps: FragmentDecompositionWorker(
                 dt,
                 m,
                 pref,
                 title,
                 sigs,
                 cancel_event=ev,
+                progress_state=prog,
             ),
         )
 
@@ -1906,10 +1927,11 @@ class ChemistryMixin:
             self.status_label.setText("Ready.")
             return
         method = "brics" if p.method == "brics" else "recap"
-        self.status_label.setText(f"{p.tool_title}…")
+        ps = self._tool_progress_state
+        self._begin_tool_progress(p.tool_title, 1)
         self.process_queue.enqueue(
             f"{p.tool_title} ({len(fragments)} fragments)",
-            lambda ev, fr=fragments, pp=p, m=method, sigs=self.signals: FragmentRecompositionWorker(
+            lambda ev, fr=fragments, pp=p, m=method, sigs=self.signals, prog=ps: FragmentRecompositionWorker(
                 fr,
                 m,
                 pp.max_depth,
@@ -1917,6 +1939,7 @@ class ChemistryMixin:
                 pp.tool_title,
                 sigs,
                 cancel_event=ev,
+                progress_state=prog,
             ),
         )
 
@@ -2012,9 +2035,6 @@ class ChemistryMixin:
             on_reused_visible=lambda dlg: self._sync_dialog_only_selected_scope(dlg),
         )
 
-    def _on_plot_dialog_destroyed(self):
-        self._plot_dialog = None
-
     def _on_sketcher_dialog_destroyed(self):
         self._sketcher_dialog = None
 
@@ -2050,20 +2070,12 @@ class ChemistryMixin:
                 return
             except RuntimeError:
                 self._docked_plot_widget = None
-        reuse_or_show_modeless_singleton(
-            self,
-            "_plot_dialog",
-            lambda: self._plot_dialog_factory(),
-            self._on_plot_dialog_destroyed,
-            on_reused_visible=lambda dlg: self._sync_dialog_only_selected_scope(dlg),
-        )
-
-    def _plot_dialog_factory(self):
-        from ..plot import PlotDialog
-
-        d = PlotDialog(self)
-        self._prepare_tool_dialog(d)
-        return d
+        dlg = self._create_plot_dialog()
+        self._register_plot_dialog(dlg)
+        self._sync_dialog_only_selected_scope(dlg)
+        dlg.show()
+        dlg.raise_()
+        dlg.activateWindow()
 
     def open_sketcher(self, mol=None):
         # QAction.triggered passes False; never treat that as a molecule.
@@ -2471,15 +2483,15 @@ class ChemistryMixin:
         lone = [t for o, t in results if o is None]
         if table_rows:
             res = [(int(o), {"pKa": text}) for o, text in table_rows]
-            self.on_calc_finished(res, ["pKa"])
+            self.on_calc_finished(res, ["pKa"], progress_label="pKa prediction")
         if lone:
             QMessageBox.information(self, "pKa Predictor", lone[0])
         if not table_rows:
-            self._clear_tool_progress()
+            self._finish_tool_progress("pKa prediction")
             self.status_label.setText("Ready.")
 
     def _on_pka_prediction_failed(self, msg: str) -> None:
-        self._clear_tool_progress()
+        self._finish_tool_progress("pKa prediction")
         QMessageBox.warning(self, "pKa Predictor", msg or "Prediction failed.")
 
     def open_pka_predictor(self) -> None:
@@ -2518,10 +2530,10 @@ class ChemistryMixin:
             return
         calc_h = list(results[0][1].keys())
         res = [(oid, row_d) for oid, row_d in results]
-        self.on_calc_finished(res, calc_h)
+        self.on_calc_finished(res, calc_h, progress_label="Predict Permeability")
 
     def _on_permeability_prediction_failed(self, msg: str) -> None:
-        self._clear_tool_progress()
+        self._finish_tool_progress("Predict Permeability")
         QMessageBox.warning(self, "Predict Permeability", msg or "Prediction failed.")
 
     def open_permeability_predictor(self) -> None:

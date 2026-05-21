@@ -172,14 +172,16 @@ class PKaPredictorDialog(QDialog):
                 return
             rows = list(rows_m)
 
-        self.parent_app.status_label.setText("pKa prediction…")
         most_basic = bool(self.most_basic_only_cb.isChecked())
         most_acidic = bool(self.most_acidic_only_cb.isChecked())
         pka_signals = self.parent_app._ensure_pka_predictor_signals()
+        n = len(rows)
+        prog = self.parent_app._tool_progress_state
+        self.parent_app._begin_tool_progress("pKa prediction", n)
         self.parent_app.process_queue.enqueue(
-            f"pKa prediction ({len(rows)} molecules)",
-            lambda ev, r=rows, ws=self.parent_app.signals, ps=pka_signals, mb=most_basic, ma=most_acidic: PKaPredictorWorker(
-                r, ws, ps, cancel_event=ev, most_basic_only=mb, most_acidic_only=ma
+            f"pKa prediction ({n} molecules)",
+            lambda ev, r=rows, ws=self.parent_app.signals, ps=pka_signals, mb=most_basic, ma=most_acidic, st=prog: PKaPredictorWorker(
+                r, ws, ps, cancel_event=ev, most_basic_only=mb, most_acidic_only=ma, progress_state=st
             ),
         )
         self.close()

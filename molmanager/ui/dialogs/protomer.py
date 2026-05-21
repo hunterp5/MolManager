@@ -187,12 +187,14 @@ class ProtomerGeneratorDialog(QDialog):
             rows = list(rows_m)
 
         self.generate_btn.setEnabled(False)
-        self.parent_app.status_label.setText("Generate protomers…")
         pH = float(self.ph_spin.value())
+        n = len(rows)
+        prog = self.parent_app._tool_progress_state
+        self.parent_app._begin_tool_progress("Generate protomers", n)
         self.parent_app.process_queue.enqueue(
-            f"Generate protomers ({len(rows)} molecules)",
-            lambda ev, r=rows, ph=pH, ws=self.parent_app.signals, ps=self._prot_signals: ProtomerGeneratorWorker(
-                r, ph, ws, ps, cancel_event=ev
+            f"Generate protomers ({n} molecules)",
+            lambda ev, r=rows, ph=pH, ws=self.parent_app.signals, ps=self._prot_signals, st=prog: ProtomerGeneratorWorker(
+                r, ph, ws, ps, cancel_event=ev, progress_state=st
             ),
         )
 
@@ -207,12 +209,12 @@ class ProtomerGeneratorDialog(QDialog):
             self.results_table.setItem(r, 0, QTableWidgetItem(oid_txt))
             self.results_table.setItem(r, 1, QTableWidgetItem(smi))
             self.results_table.setItem(r, 2, QTableWidgetItem(f"{pct:.2f}"))
-        self.parent_app._clear_tool_progress()
+        self.parent_app._finish_tool_progress("Generate protomers")
         self.parent_app.status_label.setText(self.parent_app._consume_partial_results_notice() or "Ready.")
 
     def _on_failed(self, msg: str) -> None:
         self.generate_btn.setEnabled(True)
-        self.parent_app._clear_tool_progress()
+        self.parent_app._finish_tool_progress("Generate protomers")
         QMessageBox.warning(self, "Generate Protomers", msg or "Generation failed.")
 
     def _unique_col(self, base: str) -> str:

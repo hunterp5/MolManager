@@ -96,6 +96,8 @@ def build_microstates_cache_by_key(
     *,
     workers_cfg: int | None = None,
     cancel_event: threading.Event | None = None,
+    progress_state=None,
+    progress_message: str = "pkasolver microstates…",
 ) -> dict[str, list | None]:
     """
     Predict pkasolver microstates once per unique structure.
@@ -112,11 +114,24 @@ def build_microstates_cache_by_key(
     cfg = load_config()
     configured = workers_cfg if workers_cfg is not None else cfg.pka_process_workers
     use_mp, proc_workers = plan_pkasolver_process_workers(len(order), configured)
+    n_unique = len(order)
 
     from molmanager.pkasolver_descriptor_support import microstates_for_mol
     from .pka_predictor import _ensure_cairosvg_importable
+    from ..tool_progress import report_tool_progress
 
     _ensure_cairosvg_importable()
+
+    def _report_pkasolver(done: int, *, force: bool = False) -> None:
+        report_tool_progress(
+            message=progress_message,
+            done=done,
+            total=n_unique,
+            progress_state=progress_state,
+            force_signal=force,
+        )
+
+    _report_pkasolver(0, force=True)
 
     if use_mp:
         tasks = [(k, rep[k].ToBinary()) for k in order]
@@ -139,6 +154,7 @@ def build_microstates_cache_by_key(
                     try:
                         key, states = f.result()
                         cache[key] = states
+                        _report_pkasolver(len(cache))
                     except BrokenExecutor:
                         pool_failed = True
                         logger.warning(
@@ -162,6 +178,8 @@ def build_microstates_cache_by_key(
                 if should_terminate_process_pool(cancel_event):
                     break
                 cache[key] = microstates_for_mol(rep[key])
+                _report_pkasolver(len(cache))
+        _report_pkasolver(len(cache), force=True)
         logger.debug(
             "pkasolver cache: %s unique structure(s), process pool=%s",
             len(order),
@@ -170,10 +188,12 @@ def build_microstates_cache_by_key(
         return cache
 
     cache = {}
-    for key in order:
+    for i, key in enumerate(order, start=1):
         if should_terminate_process_pool(cancel_event):
             break
         cache[key] = microstates_for_mol(rep[key])
+        _report_pkasolver(i)
+    _report_pkasolver(len(cache), force=True)
     logger.debug("pkasolver cache: %s unique structure(s), sequential", len(order))
     return cache
 
@@ -183,11 +203,17 @@ def build_microstates_cache_for_rows(
     *,
     workers_cfg: int | None = None,
     cancel_event: threading.Event | None = None,
+    progress_state=None,
+    progress_message: str = "pkasolver microstates…",
 ) -> dict[int, list | None]:
     """Map each row index to pkasolver microstates (deduplicated by structure)."""
     mols = [mol for _idx, mol in rows if mol is not None]
     by_key = build_microstates_cache_by_key(
-        mols, workers_cfg=workers_cfg, cancel_event=cancel_event
+        mols,
+        workers_cfg=workers_cfg,
+        cancel_event=cancel_event,
+        progress_state=progress_state,
+        progress_message=progress_message,
     )
     out: dict[int, list | None] = {}
     for idx, mol in rows:

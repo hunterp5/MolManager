@@ -337,6 +337,7 @@ class ClusterWorker(QRunnable):
         column_name: str,
         signals,
         cancel_event: threading.Event | None = None,
+        progress_state=None,
     ):
         super().__init__()
         self.rows = rows
@@ -346,6 +347,7 @@ class ClusterWorker(QRunnable):
         self.column_name = column_name
         self.signals = signals
         self.cancel_event = cancel_event
+        self.progress_state = progress_state
 
     def run(self) -> None:
         sk_methods = frozenset({"kmeans", "agglomerative", "dbscan"})
@@ -360,20 +362,27 @@ class ClusterWorker(QRunnable):
                 )
                 return
 
+        from ..tool_progress import report_tool_progress
+
         cancel_ev = self.cancel_event
         oids: list[int] = []
         fps: list = []
         tot = max(len(self.rows), 1)
         cancelled = False
+        throttle = [0, 0.0]
 
         for i, (oid, mol) in enumerate(self.rows, start=1):
             if cancel_ev is not None and cancel_ev.is_set():
                 cancelled = True
                 break
-            try:
-                self.signals.tool_progress.emit("Clustering…", i, tot)
-            except Exception:
-                pass
+            report_tool_progress(
+                message="Clustering",
+                done=i,
+                total=tot,
+                progress_state=self.progress_state,
+                signals=self.signals,
+                throttle=throttle,
+            )
             try:
                 fp = fingerprint_bitvect_for_ui_choice(mol, self.fp_choice)
             except Exception:
@@ -427,10 +436,14 @@ class ClusterWorker(QRunnable):
             return str(int(lab))
 
         res = [(oid, {self.column_name: _label_txt(int(lab))}) for oid, lab in zip(oids, labels)]
-        try:
-            self.signals.tool_progress.emit("Clustering…", tot, tot)
-        except Exception:
-            pass
+        report_tool_progress(
+            message="Clustering",
+            done=tot,
+            total=tot,
+            progress_state=self.progress_state,
+            signals=self.signals,
+            force_signal=True,
+        )
         emit_partial_results_if_cancelled(self.signals, "Cluster", len(res), tot, cancelled)
         self.signals.calculated.emit(res, [self.column_name])
         if cancelled:
@@ -450,6 +463,7 @@ class ClusterExploreWorker(QRunnable):
         include: dict[str, bool],
         signals,
         cancel_event: threading.Event | None = None,
+        progress_state=None,
     ):
         super().__init__()
         self.rows = rows
@@ -458,21 +472,29 @@ class ClusterExploreWorker(QRunnable):
         self.include = dict(include)
         self.signals = signals
         self.cancel_event = cancel_event
+        self.progress_state = progress_state
 
     def run(self) -> None:
+        from ..tool_progress import report_tool_progress
+
         cancel_ev = self.cancel_event
         oids: list[int] = []
         fps: list = []
         tot = max(len(self.rows), 1)
+        fp_throttle = [0, 0.0]
 
         for i, (oid, mol) in enumerate(self.rows, start=1):
             if cancel_ev is not None and cancel_ev.is_set():
                 self.signals.cluster_failed.emit("Cancelled.")
                 return
-            try:
-                self.signals.tool_progress.emit("Exploring clusters…", i, tot)
-            except Exception:
-                pass
+            report_tool_progress(
+                message="Exploring clusters",
+                done=i,
+                total=tot,
+                progress_state=self.progress_state,
+                signals=self.signals,
+                throttle=fp_throttle,
+            )
             try:
                 fp = fingerprint_bitvect_for_ui_choice(mol, self.fp_choice)
             except Exception:
@@ -510,12 +532,17 @@ class ClusterExploreWorker(QRunnable):
         n_trials = max(len(trials), 1)
         results: list[dict] = []
 
+        trial_throttle = [0, 0.0]
         for ti, (method, params) in enumerate(trials):
             if cancel_ev is not None and cancel_ev.is_set():
-                try:
-                    self.signals.tool_progress.emit("Exploring clusters…", min(ti, n_trials), n_trials)
-                except Exception:
-                    pass
+                report_tool_progress(
+                    message="Exploring clusters",
+                    done=min(ti, n_trials),
+                    total=n_trials,
+                    progress_state=self.progress_state,
+                    signals=self.signals,
+                    force_signal=True,
+                )
                 self.signals.cluster_explore_finished.emit(results)
                 try:
                     self.signals.partial_results.emit("Cluster explore", len(results), n_trials)
@@ -523,10 +550,14 @@ class ClusterExploreWorker(QRunnable):
                     pass
                 self.signals.cluster_failed.emit("Cancelled.")
                 return
-            try:
-                self.signals.tool_progress.emit("Exploring clusters…", ti + 1, n_trials)
-            except Exception:
-                pass
+            report_tool_progress(
+                message="Exploring clusters",
+                done=ti + 1,
+                total=n_trials,
+                progress_state=self.progress_state,
+                signals=self.signals,
+                throttle=trial_throttle,
+            )
             try:
                 labels = _run_clustering(method, params, X=X, fps=fps, cancel_event=cancel_ev)
             except Exception as e:
@@ -569,8 +600,12 @@ class ClusterExploreWorker(QRunnable):
                 }
             )
 
-        try:
-            self.signals.tool_progress.emit("Exploring clusters…", n_trials, n_trials)
-        except Exception:
-            pass
+        report_tool_progress(
+            message="Exploring clusters",
+            done=n_trials,
+            total=n_trials,
+            progress_state=self.progress_state,
+            signals=self.signals,
+            force_signal=True,
+        )
         self.signals.cluster_explore_finished.emit(results)

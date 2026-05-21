@@ -22,6 +22,7 @@ class FragmentRecompositionWorker(QRunnable):
         tool_title: str,
         signals: WorkerSignals,
         cancel_event: threading.Event | None = None,
+        progress_state=None,
     ):
         super().__init__()
         self.fragment_smiles = list(fragment_smiles)
@@ -31,16 +32,23 @@ class FragmentRecompositionWorker(QRunnable):
         self.tool_title = tool_title
         self.signals = signals
         self.cancel_event = cancel_event
+        self.progress_state = progress_state
 
     def run(self) -> None:
         ev = self.cancel_event
         if ev is not None and ev.is_set():
             return
-        label = f"{self.tool_title}…"
-        try:
-            self.signals.tool_progress.emit(label, 0, 1)
-        except Exception:
-            pass
+        from ..tool_progress import report_tool_progress
+
+        label = self.tool_title
+        report_tool_progress(
+            message=label,
+            done=0,
+            total=1,
+            progress_state=self.progress_state,
+            signals=self.signals,
+            force_signal=True,
+        )
         if ev is not None and ev.is_set():
             return
         try:
@@ -59,10 +67,14 @@ class FragmentRecompositionWorker(QRunnable):
             except Exception:
                 pass
             return
-        try:
-            self.signals.tool_progress.emit(label, 1, 1)
-        except Exception:
-            pass
+        report_tool_progress(
+            message=label,
+            done=1,
+            total=1,
+            progress_state=self.progress_state,
+            signals=self.signals,
+            force_signal=True,
+        )
         try:
             self.signals.fragment_recomp_finished.emit(products, self.tool_title)
         except Exception:

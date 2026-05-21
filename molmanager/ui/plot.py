@@ -630,6 +630,16 @@ class PlotWidget(QWidget):
           Plotly.relayout(gd, {{selections: []}});
         }} catch (_clrSel) {{}}
       }}
+      function scheduleClearSelectionShapes() {{
+        setTimeout(clearSelectionShapes, 0);
+        try {{
+          requestAnimationFrame(function() {{
+            requestAnimationFrame(clearSelectionShapes);
+          }});
+        }} catch (_raf) {{
+          setTimeout(clearSelectionShapes, 16);
+        }}
+      }}
       window.molmanagerSetSelection = function(indicesJson) {{
         try {{
           var idxs = JSON.parse(indicesJson || "[]");
@@ -717,7 +727,7 @@ class PlotWidget(QWidget):
                     if (Number.isFinite(pn)) idxs.push(pn);
                   }}
                 }}
-                setTimeout(clearSelectionShapes, 0);
+                scheduleClearSelectionShapes();
                 if (!idxs.length || !bridge || !bridge.pointsSelected) return;
                 lastNonemptyPlotSelection = Date.now();
                 bridge.pointsSelected(JSON.stringify(idxs));
@@ -725,7 +735,7 @@ class PlotWidget(QWidget):
             }});
             gd.on('plotly_deselect', function() {{
               try {{
-                setTimeout(clearSelectionShapes, 0);
+                scheduleClearSelectionShapes();
                 if (suppressPlotDeselect) return;
                 if (Date.now() - lastNonemptyPlotSelection < 450) return;
                 if (bridge && bridge.pointsSelected) bridge.pointsSelected("[]");

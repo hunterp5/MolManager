@@ -60,11 +60,9 @@ def test_format_permeability_row_subset_columns():
     assert "Caco-2 ER" not in row
 
 
-@pytest.mark.skipif(
-    permeability_stack_import_error() is not None or not permeability_model_available(),
-    reason="Chemprop stack or GNN-MTL model.pt not installed",
-)
 def test_predict_permeability_batch_smiles_linear():
+    if permeability_stack_import_error() is not None or not permeability_model_available():
+        pytest.skip("Chemprop stack or GNN-MTL model.pt not installed")
     out = predict_permeability_batch(["CCO", "c1ccccc1O", "not_a_molecule"])
     assert len(out) == 3
     assert out[0] is not None
