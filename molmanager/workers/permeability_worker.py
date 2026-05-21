@@ -1,0 +1,140 @@
+"""Background GNN-MTL permeability / efflux prediction (Chemprop)."""
+
+from __future__ import annotations
+
+import logging
+import threading
+import time
+
+from PyQt5 import sip
+from PyQt5.QtCore import QObject, QRunnable, pyqtSignal
+from rdkit import Chem
+
+from ..permeability_prediction import (
+    format_permeability_row,
+    permeability_model_available,
+    permeability_stack_import_error,
+    predict_permeability_batch,
+)
+from ..utils import mol_to_canonical_smiles
+
+logger = logging.getLogger(__name__)
+
+
+def _safe_emit(obj, emitter_name: str, *args) -> None:
+    if obj is None:
+        return
+    try:
+        if sip.isdeleted(obj):
+            return
+    except Exception:
+        return
+    try:
+        getattr(obj, emitter_name).emit(*args)
+    except RuntimeError:
+        pass
+
+
+class PermeabilityPredictorSignals(QObject):
+    """Emits from :class:`PermeabilityPredictorWorker` (owned on the GUI thread)."""
+
+    finished = pyqtSignal(list)  # list[tuple[int, dict[str, str]]]
+    failed = pyqtSignal(str)
+
+
+class PermeabilityPredictorWorker(QRunnable):
+    """Predict GNN-MTL endpoints per table row; writes via ``finished`` on the GUI thread."""
+
+    def __init__(
+        self,
+        rows: list[tuple[int, Chem.Mol | None]],
+        worker_signals,
+        permeability_signals: PermeabilityPredictorSignals,
+        cancel_event: threading.Event | None = None,
+        *,
+        output_columns: tuple[str, ...],
+        batch_size: int = 64,
+    ):
+        super().__init__()
+        self.rows = rows
+        self.worker_signals = worker_signals
+        self.permeability_signals = permeability_signals
+        self.cancel_event = cancel_event
+        self.output_columns = output_columns
+        self.batch_size = batch_size
+
+    def run(self) -> None:
+        err = permeability_stack_import_error()
+        if err:
+            _safe_emit(self.permeability_signals, "failed", err)
+            return
+        if not permeability_model_available():
+            _safe_emit(
+                self.permeability_signals,
+                "failed",
+                "GNN-MTL model file (model.pt) is missing.\n"
+                "Run: python scripts/bootstrap_gnn_mtl_model.py\n"
+                "See molmanager/resources/models/gnn_mtl/README.md",
+            )
+            return
+
+        cancel_ev = self.cancel_event
+        tot = max(len(self.rows), 1)
+        done = 0
+        prog_last = 0.0
+
+        def _emit_progress(force: bool = False) -> None:
+            nonlocal prog_last
+            now = time.monotonic()
+            if force or done >= tot or (now - prog_last) >= 0.12:
+                prog_last = now
+                try:
+                    self.worker_signals.tool_progress.emit(
+                        "Permeability prediction…", min(done, tot), tot
+                    )
+                except Exception:
+                    pass
+
+        _emit_progress(force=True)
+
+        oids: list[int] = []
+        smiles: list[str] = []
+        for oid, mol in self.rows:
+            if cancel_ev is not None and cancel_ev.is_set():
+                _safe_emit(self.permeability_signals, "failed", "Cancelled.")
+                return
+            done += 1
+            _emit_progress()
+            if mol is None:
+                continue
+            try:
+                smi = mol_to_canonical_smiles(mol)
+            except Exception:
+                smi = ""
+            if not smi:
+                continue
+            oids.append(int(oid))
+            smiles.append(smi)
+
+        if not smiles:
+            _safe_emit(self.permeability_signals, "finished", [])
+            return
+
+        try:
+            preds = predict_permeability_batch(smiles, batch_size=self.batch_size)
+        except Exception as e:
+            logger.exception("Permeability prediction failed")
+            _safe_emit(self.permeability_signals, "failed", f"Prediction failed: {e}")
+            return
+
+        if cancel_ev is not None and cancel_ev.is_set():
+            _safe_emit(self.permeability_signals, "failed", "Cancelled.")
+            return
+
+        results: list[tuple[int, dict[str, str]]] = []
+        for oid, pred in zip(oids, preds):
+            row = format_permeability_row(pred, self.output_columns)
+            results.append((oid, row))
+
+        _emit_progress(force=True)
+        _safe_emit(self.permeability_signals, "finished", results)

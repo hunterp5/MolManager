@@ -24,6 +24,14 @@ if (Test-Path "requirements-boltz.txt") {
     }
 }
 
+if (Test-Path "requirements-permeability.txt") {
+    $perm = Read-Host "Install permeability predictor (Chemprop / GNN-MTL)? [y/N]"
+    if ($perm -match '^[yY]') {
+        python scripts/bootstrap_gnn_mtl_model.py
+        python -m pip install -r requirements-permeability.txt
+    }
+}
+
 $binDir = Join-Path $Root "molmanager\resources\bin\win"
 Write-Host ""
 Write-Host "Optional executables (copy into):"

@@ -21,6 +21,14 @@ if [[ -f requirements-boltz.txt ]]; then
   fi
 fi
 
+if [[ -f requirements-permeability.txt ]]; then
+  read -r -p "Install permeability predictor (Chemprop / GNN-MTL)? [y/N] " perm
+  if [[ "$perm" =~ ^[yY] ]]; then
+    python scripts/bootstrap_gnn_mtl_model.py
+    python -m pip install -r requirements-permeability.txt
+  fi
+fi
+
 PLAT=linux
 [[ "$(uname -s)" == "Darwin" ]] && PLAT=mac
 BINDIR="$ROOT/molmanager/resources/bin/$PLAT"

@@ -31,6 +31,11 @@ pka = [
     "svgutils",
 ]
 boltz = ["boltz>=2.0.0"]
+permeability = [
+    "chemprop>=2.1.0,<2.3",
+    "lightning>=2.0,<3",
+    "torch>=2.0",
+]
 dev = ["pytest>=7.4,<9"]
 
 [project.scripts]
@@ -44,5 +49,7 @@ include = ["molmanager*"]
 molmanager = [
     "ui/static/*",
     "resources/README.md",
+    "resources/models/**/README.md",
+    "resources/models/**/.gitkeep",
     "resources/bin/**/.gitkeep",
 ]

@@ -42,6 +42,7 @@ from .load_render import (
     WashWorker,
 )
 from .pka_predictor import PKaPredictorSignals, PKaPredictorWorker
+from .permeability_worker import PermeabilityPredictorSignals, PermeabilityPredictorWorker
 from .protomer_generator import ProtomerGeneratorSignals, ProtomerGeneratorWorker
 from .fragment_decomposition import FragmentDecompositionWorker
 from .fragment_recomposition import FragmentRecompositionWorker
@@ -67,6 +68,8 @@ __all__ = [
     "SIMILARITY_FP_TYPE_LABELS",
     "PKaPredictorSignals",
     "PKaPredictorWorker",
+    "PermeabilityPredictorSignals",
+    "PermeabilityPredictorWorker",
     "ProtomerGeneratorSignals",
     "ProtomerGeneratorWorker",
     "Render2DBatchHeldJob",

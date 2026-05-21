@@ -12,7 +12,7 @@ pip install -r requirements.txt
 pip install -r requirements-all.txt
 ```
 
-Or editable install: `pip install -e ".[dev]"` (see `pyproject.toml` for extras `pka`, `boltz`).
+Or editable install: `pip install -e ".[dev]"` (see `pyproject.toml` for extras `pka`, `boltz`, `permeability`).
 
 **Optional CLI tools** (AutoDock Vina, Boltz predict binary): not stored in git. Copy into
 `molmanager/resources/bin/win/` (`vina.exe`, `boltz.exe`) or run
@@ -31,7 +31,7 @@ pip install -r requirements.txt
 # pip install -r requirements-all.txt
 ```
 
-Or editable install: `pip install -e ".[dev]"` (see `pyproject.toml` for extras `pka`, `boltz`).
+Or editable install: `pip install -e ".[dev]"` (see `pyproject.toml` for extras `pka`, `boltz`, `permeability`).
 
 **Optional CLI tools:** copy macOS binaries into `molmanager/resources/bin/mac/` (`vina`, `boltz`) or run
 `scripts/bootstrap_optional_tools.sh` for guided setup. Boltz is often available on `PATH` after

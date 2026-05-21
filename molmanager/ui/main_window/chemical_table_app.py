@@ -648,6 +648,11 @@ class ChemicalTableApp(
                 "Estimate ionization / pKa-related properties when the predictor is available.",
             ),
             (
+                "Predict Permeability…",
+                self.open_permeability_predictor,
+                "Predict Caco-2 and MDCK permeability / efflux endpoints (optional Chemprop install).",
+            ),
+            (
                 "Generate Protomers…",
                 self.open_protomer_generator,
                 "Enumerate protomers or tautomers from structures and add results to the table.",

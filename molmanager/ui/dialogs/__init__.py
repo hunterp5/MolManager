@@ -19,6 +19,7 @@ from .mol_tools import (
     GenerateSingleConformationDialog,
     SuperposeConformersDialog,
 )
+from .permeability import PermeabilityPredictorDialog
 from .pka import PKaPredictorDialog
 from .properties import PropertyDialog
 from .protomer import ProtomerGeneratorDialog
@@ -38,6 +39,7 @@ __all__ = [
     "FPSimilarityDialog",
     "GenerateConformationsDialog",
     "GenerateSingleConformationDialog",
+    "PermeabilityPredictorDialog",
     "PKaPredictorDialog",
     "PlotDialog",
     "PropertyDialog",

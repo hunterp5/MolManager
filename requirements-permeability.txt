@@ -1,0 +1,11 @@
+# Optional stack for Tools → Predict Permeability (GNN-MTL / Chemprop).
+#
+# Windows: if torch fails to load (WinError 1114), install CPU PyTorch first, same as
+# requirements-pka.txt, then:
+#   pip install -r requirements-permeability.txt
+#
+# Model weights (not in git): python scripts/bootstrap_gnn_mtl_model.py
+
+chemprop>=2.1.0,<2.3
+lightning>=2.0,<3
+torch>=2.0

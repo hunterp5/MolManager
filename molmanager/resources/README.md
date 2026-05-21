@@ -22,3 +22,12 @@ Override the search directory with environment variable `MOLMANAGER_BUNDLE_DIR`.
 | **Boltz** | MIT; large (PyTorch + models) | `pip install boltz` then copy `boltz` from your env’s `Scripts`/`bin`, or rely on PATH |
 
 Python dependencies (RDKit, PyQt5, optional pkasolver/torch) are installed via `pip install -r requirements-all.txt` or `pip install -e ".[all]"` — see root **README** and **docs/PACKAGING.md**.
+
+## GNN-MTL permeability model (optional, not in git)
+
+`molmanager/resources/models/gnn_mtl/model.pt` — see `models/gnn_mtl/README.md`. Download:
+
+```bash
+python scripts/bootstrap_gnn_mtl_model.py
+pip install -r requirements-permeability.txt
+```

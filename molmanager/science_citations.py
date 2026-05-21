@@ -73,6 +73,13 @@ GOLDEN_TRIANGLE = (
     "MolManager draws LogP −2 to 5 and MW 200–450 Da with apex near (1.5, 450)."
 )
 
+GNN_MTL_PERMEABILITY = (
+    "GNN-MTL permeability / efflux (Chemprop multitask MPNN): Ohlsson, P. I.; et al. Prediction of "
+    "Permeability and Efflux Using Multitask Learning. ACS Omega 2025. "
+    "https://doi.org/10.1021/acsomega.5c04861 — model artifact "
+    "https://doi.org/10.5281/zenodo.16948542 (Chemprop v2.1.0, graph-only GNN-MTL)."
+)
+
 
 def descriptor_dialog_footer_html() -> str:
     """Rich text for Calculate Descriptors dialog (links open in the system browser)."""
@@ -105,6 +112,17 @@ def pka_dialog_footer_html() -> str:
         '<a href="https://doi.org/10.3389/fchem.2022.866585">Mayr et al., Front. Chem. 2022</a> '
         '(<a href="https://github.com/mayrf/pkasolver">pkasolver</a>); ionization states via '
         '<a href="https://doi.org/10.1186/s13321-019-0336-9">Dimorphite-DL</a> (Ropp et al., 2019).</small>'
+    )
+
+
+def permeability_dialog_footer_html() -> str:
+    """Rich text for the permeability predictor dialog."""
+    return (
+        "<small><b>Method</b>: GNN-MTL multitask MPNN (Chemprop) — "
+        '<a href="https://doi.org/10.1021/acsomega.5c04861">Ohlsson et al., ACS Omega 2025</a>; '
+        'weights <a href="https://doi.org/10.5281/zenodo.16948542">Zenodo 10.5281/zenodo.16948542</a>. '
+        "<b>Outputs</b>: linear Caco-2 ER and intrinsic Papp (Papp in ×10⁻⁶ cm/s); MDCK-MDR1 and NIH MDCK "
+        "<b>efflux ratios</b> (not passive MDCK Papp). Assay conditions match AstraZeneca training data.</small>"
     )
 
 
