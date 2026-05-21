@@ -69,6 +69,18 @@ def default_external_executable(tool: str) -> str:
     return tool
 
 
+def models_dir() -> Path:
+    return resources_dir() / "models"
+
+
+def gnn_mtl_model_path() -> Path:
+    """GNN-MTL Chemprop checkpoint (``model.pt``) from Zenodo 10.5281/zenodo.16948542."""
+    override = (os.environ.get("MOLMANAGER_GNN_MTL_MODEL") or "").strip()
+    if override:
+        return Path(override)
+    return models_dir() / "gnn_mtl" / "model.pt"
+
+
 def static_asset_path(name: str) -> Path:
     """Path to a file under ``molmanager/ui/static`` (e.g. ``3Dmol-min.js``)."""
     return _PACKAGE_ROOT / "ui" / "static" / name

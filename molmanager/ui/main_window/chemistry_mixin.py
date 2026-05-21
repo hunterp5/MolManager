@@ -2499,6 +2499,48 @@ class ChemistryMixin:
         dlg.raise_()
         dlg.activateWindow()
 
+    def _ensure_permeability_predictor_signals(self):
+        sig = getattr(self, "_permeability_predictor_signals", None)
+        if sig is not None:
+            return sig
+        from ...workers import PermeabilityPredictorSignals
+
+        sig = PermeabilityPredictorSignals(self)
+        sig.finished.connect(self._on_permeability_prediction_finished)
+        sig.failed.connect(self._on_permeability_prediction_failed)
+        self._permeability_predictor_signals = sig
+        return sig
+
+    def _on_permeability_prediction_finished(self, results: list) -> None:
+        if not results:
+            self._finish_tool_progress("Predict Permeability")
+            self.status_label.setText("Ready.")
+            return
+        calc_h = list(results[0][1].keys())
+        res = [(oid, row_d) for oid, row_d in results]
+        self.on_calc_finished(res, calc_h)
+
+    def _on_permeability_prediction_failed(self, msg: str) -> None:
+        self._clear_tool_progress()
+        QMessageBox.warning(self, "Predict Permeability", msg or "Prediction failed.")
+
+    def open_permeability_predictor(self) -> None:
+        if not self.headers:
+            QMessageBox.information(
+                self,
+                "Predict Permeability",
+                "Open a file or start a session first.",
+            )
+            return
+        from ..dialogs import PermeabilityPredictorDialog
+
+        dlg = PermeabilityPredictorDialog(self)
+        self._prepare_tool_dialog(dlg)
+        dlg.setAttribute(Qt.WA_DeleteOnClose, True)
+        dlg.show()
+        dlg.raise_()
+        dlg.activateWindow()
+
     def open_protomer_generator(self) -> None:
         if not self.headers:
             QMessageBox.information(
