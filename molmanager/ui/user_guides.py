@@ -111,6 +111,10 @@ columns), <b>BRICS</b> / <b>RECAP Decomposition</b> (fragment SMILES columns wit
 <p><b>Fingerprint Similarity</b> — pick a fingerprint type (several Morgan sizes, RDK path, MACCS, atom pair,
 or topological torsion), a query from a table row or SMILES, and compare against the table (optionally
 restricted to selected rows). Results are listed with <b>highest Tanimoto first</b>; added scores use the column <b>Tanimoto Similarity</b>. Add hits back to the main table from the results list.</p>
+<p><b>QSAR</b> — quantitative structure–activity modeling: pick an activity column (Y), any mix of numeric descriptor
+columns and/or 2D fingerprints (X), and a scikit-learn model (ridge, random forest, gradient boosting, logistic/SVM for
+classification). Train on labeled rows with hold-out and cross-validation metrics, then add predictions for in-scope
+rows as a new column.</p>
 """,
     "tools_ion": """
 <h2>Tools — pKa and protomers</h2>

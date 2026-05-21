@@ -26,6 +26,7 @@ class FragmentDecompositionWorker(QRunnable):
         tool_title: str,
         signals: WorkerSignals,
         cancel_event: threading.Event | None = None,
+        progress_state=None,
     ):
         super().__init__()
         self.data = data
@@ -34,20 +35,29 @@ class FragmentDecompositionWorker(QRunnable):
         self.tool_title = tool_title
         self.signals = signals
         self.cancel_event = cancel_event
+        self.progress_state = progress_state
 
     def run(self) -> None:
         ev = self.cancel_event
         if ev is not None and ev.is_set():
             return
 
+        from ..tool_progress import report_tool_progress
+
         oids: list[int] = []
         per_row: list[list[str]] = []
         tot = max(len(self.data), 1)
-        label = f"{self.tool_title}…"
-        try:
-            self.signals.tool_progress.emit(label, 0, tot)
-        except Exception:
-            pass
+        label = self.tool_title
+        throttle = [0, 0.0]
+        report_tool_progress(
+            message=label,
+            done=0,
+            total=tot,
+            progress_state=self.progress_state,
+            signals=self.signals,
+            throttle=throttle,
+            force_signal=True,
+        )
 
         for done, (oid, mol) in enumerate(self.data, start=1):
             if ev is not None and ev.is_set():
@@ -64,10 +74,14 @@ class FragmentDecompositionWorker(QRunnable):
                 except Exception:
                     pass
                 return
-            try:
-                self.signals.tool_progress.emit(label, done, tot)
-            except Exception:
-                pass
+            report_tool_progress(
+                message=label,
+                done=done,
+                total=tot,
+                progress_state=self.progress_state,
+                signals=self.signals,
+                throttle=throttle,
+            )
 
         table_rows, headers = assemble_fragment_table_rows(oids, per_row, self.column_prefix)
         if not headers:
@@ -80,10 +94,14 @@ class FragmentDecompositionWorker(QRunnable):
                 pass
             return
 
-        try:
-            self.signals.tool_progress.emit(label, tot, tot)
-        except Exception:
-            pass
+        report_tool_progress(
+            message=label,
+            done=tot,
+            total=tot,
+            progress_state=self.progress_state,
+            signals=self.signals,
+            force_signal=True,
+        )
         try:
             self.signals.fragment_decomp_finished.emit(table_rows, headers, self.tool_title)
         except Exception:

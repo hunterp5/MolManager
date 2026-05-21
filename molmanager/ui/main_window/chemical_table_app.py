@@ -47,6 +47,7 @@ from ..user_guides import open_user_guide_dialog
 from .cluster_mixin import ClusterMixin
 from .dimension_reduction_mixin import DimensionReductionMixin
 from .medchem_space_mixin import MedChemSpaceMixin
+from .qsar_mixin import QsarMixin
 from .session_mixin import SessionMixin
 from .table_ui_mixin import TableUIMixin
 from .ingest_export_mixin import IngestExportMixin
@@ -85,6 +86,7 @@ class ChemicalTableApp(
     ClusterMixin,
     DimensionReductionMixin,
     MedChemSpaceMixin,
+    QsarMixin,
     GuiSettingsMixin,
 ):
     """Main PyQt window: compound table, structure column, tools, and RDKit-backed chemistry.
@@ -169,7 +171,7 @@ class ChemicalTableApp(
         self._pending_batches = []  # list of (mols_list, is_last)
         self._processing_batches = False
         self._last_batch_received = False
-        self._plot_dialog = None
+        self._plot_dialogs: list = []
         self._docked_plot_widget = None
         self._selected_oids_override: frozenset[int] | None = None
         self._in_programmatic_table_selection = False
@@ -240,6 +242,7 @@ class ChemicalTableApp(
     def _begin_tool_progress(self, message: str, total: int) -> None:
         """Start polled status updates for a long-running queued tool."""
         total_i = max(1, int(total))
+        self._tool_progress_active_label = str(message or "")
         self._tool_progress_state.begin(message, total_i)
         self._on_tool_progress(message, 0, total_i)
         if not self._tool_progress_poll_timer.isActive():
@@ -256,9 +259,11 @@ class ChemicalTableApp(
         """Show 100% once, then stop polling."""
         msg, _done, total, active = self._tool_progress_state.snapshot()
         if active:
-            final_msg = message or msg or ""
+            stored = getattr(self, "_tool_progress_active_label", "") or ""
+            final_msg = message or msg or stored
             self._on_tool_progress(final_msg, total, total)
         self._tool_progress_state.end()
+        self._tool_progress_active_label = ""
         self._tool_progress_poll_timer.stop()
 
     def render2d_batch_active(self) -> bool:
@@ -653,6 +658,11 @@ class ChemicalTableApp(
                 "Predict Caco-2 and MDCK permeability / efflux endpoints (optional Chemprop install).",
             ),
             (
+                "QSAR…",
+                self.open_qsar_dialog,
+                "Train regression or classification models on activity vs descriptors or fingerprints.",
+            ),
+            (
                 "Generate Protomers…",
                 self.open_protomer_generator,
                 "Enumerate protomers or tautomers from structures and add results to the table.",
@@ -879,9 +889,15 @@ class ChemicalTableApp(
 
         pq = getattr(self, "process_queue", None)
 
+        for dlg in list(getattr(self, "_plot_dialogs", [])):
+            try:
+                dlg.close()
+            except RuntimeError:
+                pass
+        self._plot_dialogs = []
+
         for attr in (
             "_processes_dialog",
-            "_plot_dialog",
             "_selection_browser_dialog",
             "_sketcher_dialog",
             "_calculator_dialog",
@@ -939,6 +955,8 @@ class ChemicalTableApp(
         self._clear_tool_progress()
 
     def _on_tool_progress(self, message: str, done: int, total: int) -> None:
+        if total >= 0 and message:
+            self._tool_progress_state.update(message, done, total)
         if total < 0:
             if message:
                 self.status_label.setText(message)
@@ -961,8 +979,9 @@ class ChemicalTableApp(
         return note
 
     def _clear_tool_progress(self) -> None:
-        # Text-only progress; nothing to clear besides the caller's status text.
-        return
+        self._tool_progress_state.end()
+        if self._tool_progress_poll_timer.isActive():
+            self._tool_progress_poll_timer.stop()
 
     def _on_table_double_clicked(self, index) -> None:
         if index.isValid():

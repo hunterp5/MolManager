@@ -54,6 +54,7 @@ class PermeabilityPredictorWorker(QRunnable):
         *,
         output_columns: tuple[str, ...],
         batch_size: int = 64,
+        progress_state=None,
     ):
         super().__init__()
         self.rows = rows
@@ -62,6 +63,7 @@ class PermeabilityPredictorWorker(QRunnable):
         self.cancel_event = cancel_event
         self.output_columns = output_columns
         self.batch_size = batch_size
+        self.progress_state = progress_state
 
     def run(self) -> None:
         err = permeability_stack_import_error()
@@ -83,17 +85,24 @@ class PermeabilityPredictorWorker(QRunnable):
         done = 0
         prog_last = 0.0
 
+        from ..tool_progress import report_tool_progress
+
+        throttle = [0, 0.0]
+
         def _emit_progress(force: bool = False) -> None:
             nonlocal prog_last
             now = time.monotonic()
             if force or done >= tot or (now - prog_last) >= 0.12:
                 prog_last = now
-                try:
-                    self.worker_signals.tool_progress.emit(
-                        "Permeability prediction…", min(done, tot), tot
-                    )
-                except Exception:
-                    pass
+                report_tool_progress(
+                    message="Predict Permeability",
+                    done=min(done, tot),
+                    total=tot,
+                    progress_state=self.progress_state,
+                    signals=self.worker_signals,
+                    throttle=throttle,
+                    force_signal=force,
+                )
 
         _emit_progress(force=True)
 

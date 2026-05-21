@@ -297,6 +297,7 @@ class PKaPredictorWorker(QRunnable):
         *,
         most_basic_only: bool = False,
         most_acidic_only: bool = False,
+        progress_state=None,
     ):
         super().__init__()
         self.rows = rows
@@ -305,6 +306,7 @@ class PKaPredictorWorker(QRunnable):
         self.cancel_event = cancel_event
         self.most_basic_only = most_basic_only
         self.most_acidic_only = most_acidic_only
+        self.progress_state = progress_state
 
     def run(self) -> None:
         global _query_model_singleton
@@ -347,15 +349,24 @@ class PKaPredictorWorker(QRunnable):
             cancelled = False
             prog_last = 0.0
 
+            from ..tool_progress import report_tool_progress
+
+            throttle = [0, 0.0]
+
             def _emit(done: int, *, force: bool = False) -> None:
                 nonlocal prog_last
                 now = time.monotonic()
                 if force or done >= tot or (now - prog_last) >= 0.12:
                     prog_last = now
-                    try:
-                        self.worker_signals.tool_progress.emit("pKa prediction…", min(done, tot), tot)
-                    except Exception:
-                        pass
+                    report_tool_progress(
+                        message="pKa prediction",
+                        done=min(done, tot),
+                        total=tot,
+                        progress_state=self.progress_state,
+                        signals=self.worker_signals,
+                        throttle=throttle,
+                        force_signal=force,
+                    )
 
             _emit(done_cum, force=True)
 

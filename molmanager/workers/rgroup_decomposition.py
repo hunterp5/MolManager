@@ -85,6 +85,7 @@ class RGroupDecompositionWorker(QRunnable):
         matching: str,
         signals: WorkerSignals,
         cancel_event: threading.Event | None = None,
+        progress_state=None,
     ):
         super().__init__()
         self.data = data
@@ -95,6 +96,7 @@ class RGroupDecompositionWorker(QRunnable):
         self.matching = (matching or "greedy").strip().lower()
         self.signals = signals
         self.cancel_event = cancel_event
+        self.progress_state = progress_state
 
     def run(self) -> None:
         ev = self.cancel_event
@@ -110,13 +112,19 @@ class RGroupDecompositionWorker(QRunnable):
                 pass
             return
 
+        from ..tool_progress import report_tool_progress
+
         oids = [int(o) for o, _ in self.data]
         mols = [m for _, m in self.data]
         tot = max(len(mols), 1)
-        try:
-            self.signals.tool_progress.emit("Core-based decomposition…", 0, tot)
-        except Exception:
-            pass
+        report_tool_progress(
+            message="Core-based decomposition",
+            done=0,
+            total=tot,
+            progress_state=self.progress_state,
+            signals=self.signals,
+            force_signal=True,
+        )
 
         p = rdRGroupDecomposition.RGroupDecompositionParameters()
         p.onlyMatchAtRGroups = self.only_match_at_r_groups
@@ -160,10 +168,14 @@ class RGroupDecompositionWorker(QRunnable):
         col_keys = _collect_rg_columns(rows)
         table_rows = _assemble_table_rows(oids, rows, unmatched, col_keys, self.col_prefix)
         headers = [f"{self.col_prefix}_{k}" for k in col_keys]
-        try:
-            self.signals.tool_progress.emit("R-Group decomposition…", tot, tot)
-        except Exception:
-            pass
+        report_tool_progress(
+            message="Core-based decomposition",
+            done=tot,
+            total=tot,
+            progress_state=self.progress_state,
+            signals=self.signals,
+            force_signal=True,
+        )
         try:
             self.signals.rgroup_decomp_finished.emit(table_rows, headers)
         except Exception:

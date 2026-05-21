@@ -84,17 +84,14 @@ class DimensionReductionPanel(QWidget):
         left_ly = QVBoxLayout(left)
         left_ly.setContentsMargins(0, 0, 0, 0)
 
-        src_grp = QGroupBox("Feature source")
+        src_grp = QGroupBox("Features")
         src_ly = QVBoxLayout(src_grp)
-        self.feature_source_combo = QComboBox()
-        self.feature_source_combo.addItems(
-            [
-                "Molecular fingerprint (from structure)",
-                "Numeric table columns",
-            ]
+        self.include_fp_cb = QCheckBox("Include 2D fingerprints (from structure)")
+        self.include_fp_cb.setToolTip(
+            "Concatenate a full fingerprint bit vector with any selected numeric columns."
         )
-        self.feature_source_combo.currentIndexChanged.connect(self._on_feature_source_changed)
-        src_ly.addWidget(self.feature_source_combo)
+        self.include_fp_cb.stateChanged.connect(self._on_fp_toggled)
+        src_ly.addWidget(self.include_fp_cb)
         fp_row = QHBoxLayout()
         fp_row.addWidget(QLabel("Fingerprint:"))
         self.fp_combo = QComboBox()
@@ -199,7 +196,7 @@ class DimensionReductionPanel(QWidget):
 
         self._refresh_structure_sources()
         self._reload_columns()
-        self._on_feature_source_changed(self.feature_source_combo.currentIndex())
+        self._on_fp_toggled()
 
     def create_floating_dialog(self, parent_app: ChemicalTableApp) -> QDialog:
         """Re-open this panel in a floating window after undocking from the main table."""
@@ -215,19 +212,15 @@ class DimensionReductionPanel(QWidget):
     def _method_params(self) -> dict:
         raise NotImplementedError
 
-    def _on_feature_source_changed(self, _index: int) -> None:
-        use_fp = self.feature_source_combo.currentIndex() == 0
+    def _on_fp_toggled(self, *_args) -> None:
+        use_fp = self.include_fp_cb.isChecked()
         self.fp_combo.setEnabled(use_fp)
         self.struct_src_combo.setEnabled(use_fp)
         self.fp_hint.setVisible(use_fp)
-        self.column_list.setEnabled(not use_fp)
-        for btn in (getattr(self, "_btn_col_all", None), getattr(self, "_btn_col_none", None)):
-            if btn is not None:
-                btn.setEnabled(not use_fp)
-        if use_fp:
-            self.standardize_cb.setChecked(False)
+        if use_fp and not self._selected_feature_columns():
             self.standardize_cb.setToolTip(
-                "Scaling is usually not applied to binary fingerprints (Tanimoto geometry)."
+                "When combined with fingerprints, only numeric columns are scaled; "
+                "fingerprint bits are left unchanged."
             )
         else:
             self.standardize_cb.setToolTip("")
@@ -298,7 +291,8 @@ class DimensionReductionPanel(QWidget):
     def _on_run(self) -> None:
         if self._job_running or self.parent_app is None:
             return
-        use_fp = self.feature_source_combo.currentIndex() == 0
+        use_fp = self.include_fp_cb.isChecked()
+        features = self._selected_feature_columns()
         only_sel = selection_scope_checked(self)
         if only_sel and not self.parent_app._selected_oids_set():
             QMessageBox.warning(
@@ -312,59 +306,51 @@ class DimensionReductionPanel(QWidget):
         except Exception as exc:
             QMessageBox.warning(self, self._window_title, str(exc))
             return
-        if df.empty and not use_fp:
+        if df.empty:
             QMessageBox.information(self, self._window_title, "No rows in the current scope.")
+            return
+        if not features and not use_fp:
+            QMessageBox.warning(
+                self,
+                self._window_title,
+                "Select at least one numeric column and/or enable 2D fingerprints.",
+            )
+            return
+        if features and len(features) == 1 and is_fingerprint_bitcount_column(features[0]) and not use_fp:
+            QMessageBox.warning(
+                self,
+                self._window_title,
+                f"The column “{features[0]}” stores only the number of on-bits, not the full "
+                "fingerprint vector.\n\n"
+                "Enable “Include 2D fingerprints” or select multiple numeric descriptor columns.",
+            )
             return
         color_col = self.color_combo.currentText()
         if color_col == "(none)":
             color_col = None
+        mol_rows = None
         if use_fp:
             src = self.struct_src_combo.currentText()
             mol_rows = self._collect_table_mols(src, only_sel)
-            if len(mol_rows) < 2:
+            if len(mol_rows) < 2 and not features:
                 QMessageBox.information(
                     self,
                     self._window_title,
-                    "Need at least two rows with valid structures in this scope.",
+                    "Need at least two rows with valid structures when using fingerprints alone.",
                 )
                 return
-            params = {
-                "method": self._method,
-                "feature_source": "fingerprint",
-                "mol_rows": mol_rows,
-                "fingerprint": self.fp_combo.currentText(),
-                "dataframe": df,
-                "standardize": self.standardize_cb.isChecked(),
-                "color_column": color_col,
-                **self._method_params(),
-            }
-        else:
-            features = self._selected_feature_columns()
-            if not features:
-                QMessageBox.warning(
-                    self, self._window_title, "Select at least one numeric feature column."
-                )
-                return
-            if len(features) == 1 and is_fingerprint_bitcount_column(features[0]):
-                QMessageBox.warning(
-                    self,
-                    self._window_title,
-                    f"The column “{features[0]}” stores only the number of on-bits, not the full "
-                    "fingerprint vector.\n\n"
-                    "Switch Feature source to “Molecular fingerprint (from structure)” "
-                    "or select multiple numeric descriptor columns.",
-                )
-                return
-            params = {
-                "method": self._method,
-                "feature_source": "columns",
-                "dataframe": df,
-                "oids": oids,
-                "feature_columns": features,
-                "standardize": self.standardize_cb.isChecked(),
-                "color_column": color_col,
-                **self._method_params(),
-            }
+        params = {
+            "method": self._method,
+            "dataframe": df,
+            "oids": oids,
+            "feature_columns": features,
+            "use_fingerprints": use_fp,
+            "mol_rows": mol_rows,
+            "fingerprint": self.fp_combo.currentText() if use_fp else "",
+            "standardize": self.standardize_cb.isChecked(),
+            "color_column": color_col,
+            **self._method_params(),
+        }
         self._job_running = True
         self.run_btn.setEnabled(False)
         self.summary_text.setPlainText("Computing…")

@@ -122,19 +122,67 @@ def permeability_model_available() -> bool:
     return p.is_file() and p.stat().st_size > 0
 
 
+_WINDOWS_TORCH_DLL_HELP = (
+    "PyTorch could not load its native libraries (Windows DLL error).\n\n"
+    "Install the official CPU build, then Chemprop:\n"
+    "  pip uninstall torch torchvision torchaudio -y\n"
+    "  pip install torch==2.5.1 torchvision==0.20.1 "
+    "--index-url https://download.pytorch.org/whl/cpu\n"
+    "  pip install -r requirements-permeability.txt\n\n"
+    "See requirements-permeability.txt (same issue as requirements-pka.txt)."
+)
+
+
 def permeability_stack_import_error() -> str | None:
     """Return an error message when Chemprop / PyTorch cannot be imported."""
     try:
+        # Import torch first; on Windows, loading only from a QThread can fail (WinError 1114).
+        import torch  # noqa: F401
+
         import chemprop  # noqa: F401
         import lightning  # noqa: F401
-        import torch  # noqa: F401
     except ImportError as e:
         return (
             "Chemprop is not installed. Install the optional stack, e.g.\n"
             "  pip install -r requirements-permeability.txt\n"
             f"Details: {e}"
         )
+    except OSError as e:
+        winerr = getattr(e, "winerror", None)
+        msg = str(e).lower()
+        if winerr == 1114 or "c10.dll" in msg or "dll" in msg:
+            return _WINDOWS_TORCH_DLL_HELP + f"\n\nDetails: {e}"
+        return f"PyTorch failed to load native libraries:\n{e}"
+    except Exception as e:
+        msg = str(e).lower()
+        if "_array_api" in msg or "numpy" in msg:
+            return (
+                "Chemprop/RDKit need NumPy 1.x (NumPy 2 breaks RDKit in this stack).\n\n"
+                "  pip install \"numpy>=1.24,<2\"\n"
+                "  pip install -r requirements-permeability.txt\n\n"
+                f"Details: {e}"
+            )
+        if "torchvision" in msg or "torch" in msg:
+            return (
+                "Chemprop could not load PyTorch / Lightning (version mismatch is common).\n\n"
+                "Reinstall matched CPU wheels, then Chemprop:\n"
+                "  pip uninstall torch torchvision torchaudio -y\n"
+                "  pip install torch==2.5.1 torchvision==0.20.1 "
+                "--index-url https://download.pytorch.org/whl/cpu\n"
+                "  pip install -r requirements-permeability.txt\n\n"
+                f"Details: {e}"
+            )
+        return f"Chemprop stack failed to initialize:\n{e}"
     return None
+
+
+def ensure_permeability_stack_ready() -> str | None:
+    """
+    Verify Chemprop/PyTorch on the **calling thread** (use the GUI thread before enqueueing workers).
+
+    Returns an error message, or ``None`` when the stack is importable.
+    """
+    return permeability_stack_import_error()
 
 
 def _load_gnn_mtl_model():

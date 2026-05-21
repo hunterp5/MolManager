@@ -145,6 +145,22 @@ class PlotlyInteractiveView(QWidget):
       }} catch (_e) {{}}
       var suppressPlotDeselect = false;
       var lastNonemptyPlotSelection = 0;
+      function clearSelectionShapes() {{
+        try {{
+          if (!gd || !gd.layout) return;
+          Plotly.relayout(gd, {{selections: []}});
+        }} catch (_clrSel) {{}}
+      }}
+      function scheduleClearSelectionShapes() {{
+        setTimeout(clearSelectionShapes, 0);
+        try {{
+          requestAnimationFrame(function() {{
+            requestAnimationFrame(clearSelectionShapes);
+          }});
+        }} catch (_raf) {{
+          setTimeout(clearSelectionShapes, 16);
+        }}
+      }}
       window.molmanagerSetSelection = function(indicesJson) {{
         try {{
           var idxs = JSON.parse(indicesJson || "[]");
@@ -187,9 +203,7 @@ class PlotlyInteractiveView(QWidget):
               clearPatch["unselected.marker.opacity"].push(0.85);
             }}
             Plotly.restyle(gd, clearPatch, selTraces);
-            try {{
-              Plotly.relayout(gd, {{selections: []}});
-            }} catch (_relayout) {{}}
+            clearSelectionShapes();
             return;
           }}
           var selPatch = {{selectedpoints: [], "unselected.marker.opacity": []}};
@@ -198,6 +212,7 @@ class PlotlyInteractiveView(QWidget):
             selPatch["unselected.marker.opacity"].push(0.35);
           }}
           Plotly.restyle(gd, selPatch, selTraces);
+          clearSelectionShapes();
         }} catch (_selVis) {{}}
       }};
       window.molmanagerApply = function(payloadJson) {{
@@ -235,6 +250,7 @@ class PlotlyInteractiveView(QWidget):
             }});
             gd.on('plotly_selected', function(ev) {{
               try {{
+                scheduleClearSelectionShapes();
                 if (!bridge || !bridge.pointsSelected) return;
                 var idxs = [];
                 if (ev && ev.points && ev.points.length) {{
@@ -252,6 +268,7 @@ class PlotlyInteractiveView(QWidget):
             }});
             gd.on('plotly_deselect', function() {{
               try {{
+                scheduleClearSelectionShapes();
                 if (suppressPlotDeselect) return;
                 if (Date.now() - lastNonemptyPlotSelection < 450) return;
                 if (bridge && bridge.pointsSelected) bridge.pointsSelected("[]");

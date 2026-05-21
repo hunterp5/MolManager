@@ -150,6 +150,7 @@ class ProtomerGeneratorWorker(QRunnable):
         worker_signals,
         protomer_signals: ProtomerGeneratorSignals,
         cancel_event: threading.Event | None = None,
+        progress_state=None,
     ):
         super().__init__()
         self.rows = rows
@@ -157,6 +158,7 @@ class ProtomerGeneratorWorker(QRunnable):
         self.worker_signals = worker_signals
         self.protomer_signals = protomer_signals
         self.cancel_event = cancel_event
+        self.progress_state = progress_state
 
     def run(self) -> None:
         from . import pka_predictor as pka_mod
@@ -197,15 +199,24 @@ class ProtomerGeneratorWorker(QRunnable):
             prog_last = 0.0
             cancelled = False
 
+            from ..tool_progress import report_tool_progress
+
+            throttle = [0, 0.0]
+
             def _emit(done: int, *, force: bool = False) -> None:
                 nonlocal prog_last
                 now = time.monotonic()
                 if force or done >= tot or (now - prog_last) >= 0.12:
                     prog_last = now
-                    try:
-                        self.worker_signals.tool_progress.emit("Generate protomers…", min(done, tot), tot)
-                    except Exception:
-                        pass
+                    report_tool_progress(
+                        message="Generate protomers",
+                        done=min(done, tot),
+                        total=tot,
+                        progress_state=self.progress_state,
+                        signals=self.worker_signals,
+                        throttle=throttle,
+                        force_signal=force,
+                    )
 
             _emit(0, force=True)
 

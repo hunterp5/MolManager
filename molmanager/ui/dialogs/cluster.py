@@ -364,12 +364,13 @@ class ClusterDialog(QDialog):
         rows = list(rows_m)
 
         self.run_btn.setEnabled(False)
-        self.parent_app.status_label.setText("Clusteringâ€¦")
+        ps = self.parent_app._tool_progress_state
+        self.parent_app._begin_tool_progress("Clustering", len(rows))
         self._disconnect_pq_thread_finished()
         self._active_cluster_job_id = self.parent_app.process_queue.enqueue(
             f"Cluster ({len(rows)} rows, {method})",
-            lambda ev, r=rows, fc=fp_choice, m=method, p=dict(params), c=col_name, ws=self.parent_app.signals: ClusterWorker(
-                r, fc, m, p, c, ws, cancel_event=ev
+            lambda ev, r=rows, fc=fp_choice, m=method, p=dict(params), c=col_name, ws=self.parent_app.signals, prog=ps: ClusterWorker(
+                r, fc, m, p, c, ws, cancel_event=ev, progress_state=prog
             ),
         )
         self.parent_app.process_queue.thread_finished.connect(self._on_pq_thread_finished)
@@ -431,13 +432,14 @@ class ClusterDialog(QDialog):
             self.explore_table.setRowCount(0)
             self.explore_table.setVisible(True)
             self.run_btn.setEnabled(False)
-            self.parent_app.status_label.setText("Exploring cluster settingsâ€¦")
+            ps = self.parent_app._tool_progress_state
+            self.parent_app._begin_tool_progress("Exploring clusters", len(rows))
             self._disconnect_pq_thread_finished()
             max_runs = int(self.explore_max_runs.value())
             self._active_cluster_job_id = self.parent_app.process_queue.enqueue(
-                f"Cluster explore ({len(rows)} rows, â‰¤{max_runs} trials)",
-                lambda ev, r=rows, fc=fp_choice, mr=max_runs, inc=include, ws=self.parent_app.signals: ClusterExploreWorker(
-                    r, fc, mr, inc, ws, cancel_event=ev
+                f"Cluster explore ({len(rows)} rows, ≤{max_runs} trials)",
+                lambda ev, r=rows, fc=fp_choice, mr=max_runs, inc=include, ws=self.parent_app.signals, prog=ps: ClusterExploreWorker(
+                    r, fc, mr, inc, ws, cancel_event=ev, progress_state=prog
                 ),
             )
             self.parent_app.process_queue.thread_finished.connect(self._on_pq_thread_finished)
@@ -478,12 +480,13 @@ class ClusterDialog(QDialog):
         col_name = self._unique_cluster_column()
 
         self.run_btn.setEnabled(False)
-        self.parent_app.status_label.setText("Clusteringâ€¦")
+        ps = self.parent_app._tool_progress_state
+        self.parent_app._begin_tool_progress("Clustering", len(rows))
         self._disconnect_pq_thread_finished()
         self._active_cluster_job_id = self.parent_app.process_queue.enqueue(
             f"Cluster ({len(rows)} rows, {method})",
-            lambda ev, r=rows, fc=fp_choice, m=method, p=params, c=col_name, ws=self.parent_app.signals: ClusterWorker(
-                r, fc, m, p, c, ws, cancel_event=ev
+            lambda ev, r=rows, fc=fp_choice, m=method, p=params, c=col_name, ws=self.parent_app.signals, prog=ps: ClusterWorker(
+                r, fc, m, p, c, ws, cancel_event=ev, progress_state=prog
             ),
         )
         self.parent_app.process_queue.thread_finished.connect(self._on_pq_thread_finished)

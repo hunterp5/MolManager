@@ -41,7 +41,7 @@ class ClusterMixin:
         self._cluster_dialog = None
 
     def on_cluster_failed(self, message: str) -> None:
-        self._clear_tool_progress()
+        self._finish_tool_progress("Clustering")
         if message == "Cancelled.":
             self.status_label.setText(self._consume_partial_results_notice() or "Cancelled.")
         else:
@@ -56,7 +56,7 @@ class ClusterMixin:
             QMessageBox.warning(self, "Cluster", message or "Clustering failed.")
 
     def on_cluster_explore_finished(self, results: list) -> None:
-        self._clear_tool_progress()
+        self._finish_tool_progress("Exploring clusters")
         self.status_label.setText("Ready.")
         dlg = getattr(self, "_cluster_dialog", None)
         if dlg is not None:

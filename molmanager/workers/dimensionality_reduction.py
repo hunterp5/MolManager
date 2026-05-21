@@ -10,13 +10,12 @@ from PyQt5.QtCore import QObject, QRunnable, pyqtSignal
 
 from ..dimensionality_reduction import (
     DimensionReductionResult,
-    build_fingerprint_matrix,
     build_reduction_result,
-    prepare_numeric_matrix,
     run_pca,
     run_tsne,
     run_umap,
 )
+from ..feature_matrix import build_combined_feature_matrix, standardize_feature_matrix
 
 
 class DimensionReductionSignals(QObject):
@@ -42,24 +41,29 @@ def _compute(params: dict) -> DimensionReductionResult:
     method = str(params.get("method") or "").lower()
     standardize = bool(params.get("standardize", True))
     color_column = params.get("color_column") or None
-    feature_source = str(params.get("feature_source") or "columns")
+    df: pd.DataFrame = params["dataframe"]
+    oids: list[int] = list(params["oids"])
+    feature_columns = list(params.get("feature_columns") or [])
+    fp_choice = str(params.get("fingerprint") or "").strip() or None
+    mol_rows = list(params.get("mol_rows") or []) if params.get("use_fingerprints") else None
 
-    if feature_source == "fingerprint":
-        mol_rows = list(params.get("mol_rows") or [])
-        fp_choice = str(params.get("fingerprint") or "")
-        df: pd.DataFrame = params["dataframe"]
-        X, oids_sub = build_fingerprint_matrix(mol_rows, fp_choice)
-        df_sub = _dataframe_for_oids(df, oids_sub)
-        fp_note = f"Fingerprint: {fp_choice}\nBits per compound: {X.shape[1]}\n\n"
-    else:
-        df = params["dataframe"]
-        feature_columns: list[str] = list(params["feature_columns"])
-        oids: list[int] = list(params["oids"])
-        X, _index, positions = prepare_numeric_matrix(df, feature_columns)
-        pos_list = [int(p) for p in positions]
-        df_sub = df.iloc[pos_list].reset_index(drop=True)
-        oids_sub = [int(oids[p]) for p in pos_list]
-        fp_note = ""
+    built = build_combined_feature_matrix(
+        df=df,
+        oids=oids,
+        feature_columns=feature_columns or None,
+        mol_rows=mol_rows,
+        fp_choice=fp_choice,
+        min_rows=2,
+    )
+    X, _ = standardize_feature_matrix(
+        built.X,
+        built.n_numeric_features,
+        enabled=standardize,
+        fit=True,
+    )
+    oids_sub = built.oids
+    df_sub = df.iloc[built.df_positions].reset_index(drop=True)
+    fp_note = built.summary + "\n\n"
 
     if method == "pca":
         n_components = int(params.get("n_components", 2))

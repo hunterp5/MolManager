@@ -61,21 +61,25 @@ logger = logging.getLogger(__name__)
 
 
 def _emit_tool_progress_throttled(
-    signals: WorkerSignals, message: str, done: int, tot: int, state: list
+    signals: WorkerSignals,
+    message: str,
+    done: int,
+    tot: int,
+    state: list,
+    *,
+    progress_state=None,
 ) -> None:
-    """Limit ``tool_progress`` emissions so the UI thread is not flooded after large jobs."""
-    d = min(max(int(done), 0), int(tot))
-    tot = max(int(tot), 1)
-    now = time.monotonic()
-    last_d, last_t = int(state[0]), float(state[1])
-    step = max(1, tot // 20)
-    if d == 0 or d >= tot or d - last_d >= step or (now - last_t) >= 0.25:
-        state[0] = d
-        state[1] = now
-        try:
-            signals.tool_progress.emit(message, d, tot)
-        except Exception:
-            pass
+    """Limit ``tool_progress`` emissions; always refresh ``ToolProgressState`` when provided."""
+    from ..tool_progress import report_tool_progress
+
+    report_tool_progress(
+        message=message,
+        done=done,
+        total=tot,
+        progress_state=progress_state,
+        signals=signals,
+        throttle=state,
+    )
 
 
 def _descriptor_int_fns_include_pharm2d(int_fns) -> bool:
@@ -450,12 +454,14 @@ class ConformerGenerationWorker(QRunnable):
         params: ConformerGenParams,
         signals: WorkerSignals,
         cancel_event: threading.Event | None = None,
+        progress_state=None,
     ):
         super().__init__()
         self.data = data
         self.params = params
         self.signals = signals
         self.cancel_event = cancel_event
+        self.progress_state = progress_state
 
     def run(self):
         nrows = len(self.data)
@@ -475,7 +481,14 @@ class ConformerGenerationWorker(QRunnable):
         prog_state = [0, 0.0]
         try:
             if use_parallel:
-                _emit_tool_progress_throttled(self.signals, "Generate conformations…", 0, tot, prog_state)
+                _emit_tool_progress_throttled(
+                    self.signals,
+                    "Generate conformations…",
+                    0,
+                    tot,
+                    prog_state,
+                    progress_state=self.progress_state,
+                )
                 ex = ThreadPoolExecutor(max_workers=max_workers)
                 shutdown_cancel = False
                 try:
@@ -506,7 +519,12 @@ class ConformerGenerationWorker(QRunnable):
                             except Exception:
                                 logger.exception("Conformer row task failed")
                             _emit_tool_progress_throttled(
-                                self.signals, "Generate conformations…", done_count, tot, prog_state
+                                self.signals,
+                                "Generate conformations…",
+                                done_count,
+                                tot,
+                                prog_state,
+                                progress_state=self.progress_state,
                             )
                 finally:
                     try:
@@ -514,7 +532,12 @@ class ConformerGenerationWorker(QRunnable):
                     except TypeError:
                         ex.shutdown(wait=not shutdown_cancel)
                 _emit_tool_progress_throttled(
-                    self.signals, "Generate conformations…", min(done_count, tot), tot, prog_state
+                    self.signals,
+                    "Generate conformations…",
+                    min(done_count, tot),
+                    tot,
+                    prog_state,
+                    progress_state=self.progress_state,
                 )
             else:
                 for done, t in enumerate(tasks, start=1):
@@ -523,7 +546,14 @@ class ConformerGenerationWorker(QRunnable):
                         break
                     results.append(_conformer_row_task((*t, cancel_ev)))
                     done_count = done
-                    _emit_tool_progress_throttled(self.signals, "Generate conformations…", done, tot, prog_state)
+                    _emit_tool_progress_throttled(
+                        self.signals,
+                        "Generate conformations…",
+                        done,
+                        tot,
+                        prog_state,
+                        progress_state=self.progress_state,
+                    )
         finally:
             emit_partial_results_if_cancelled(
                 self.signals, "Generate conformations", done_count, tot, cancelled
@@ -699,12 +729,14 @@ class SuperposeConformersWorker(QRunnable):
         params: SuperposeParams,
         signals: WorkerSignals,
         cancel_event: threading.Event | None = None,
+        progress_state=None,
     ):
         super().__init__()
         self.data = data
         self.params = params
         self.signals = signals
         self.cancel_event = cancel_event
+        self.progress_state = progress_state
 
     def run(self):
         nrows = len(self.data)
@@ -723,7 +755,14 @@ class SuperposeConformersWorker(QRunnable):
         prog_state = [0, 0.0]
         try:
             if use_parallel:
-                _emit_tool_progress_throttled(self.signals, "Superpose conformers…", 0, tot, prog_state)
+                _emit_tool_progress_throttled(
+                    self.signals,
+                    "Superpose conformers…",
+                    0,
+                    tot,
+                    prog_state,
+                    progress_state=self.progress_state,
+                )
                 ex = ThreadPoolExecutor(max_workers=max_workers)
                 shutdown_cancel = False
                 try:
@@ -754,7 +793,12 @@ class SuperposeConformersWorker(QRunnable):
                             except Exception:
                                 logger.exception("Superpose row task failed")
                             _emit_tool_progress_throttled(
-                                self.signals, "Superpose conformers…", done_count, tot, prog_state
+                                self.signals,
+                                "Superpose conformers…",
+                                done_count,
+                                tot,
+                                prog_state,
+                                progress_state=self.progress_state,
                             )
                 finally:
                     try:
@@ -762,7 +806,12 @@ class SuperposeConformersWorker(QRunnable):
                     except TypeError:
                         ex.shutdown(wait=not shutdown_cancel)
                 _emit_tool_progress_throttled(
-                    self.signals, "Superpose conformers…", min(done_count, tot), tot, prog_state
+                    self.signals,
+                    "Superpose conformers…",
+                    min(done_count, tot),
+                    tot,
+                    prog_state,
+                    progress_state=self.progress_state,
                 )
             else:
                 for done, t in enumerate(tasks, start=1):
@@ -771,7 +820,14 @@ class SuperposeConformersWorker(QRunnable):
                         break
                     results.append(_superpose_row_task((*t, cancel_ev)))
                     done_count = done
-                    _emit_tool_progress_throttled(self.signals, "Superpose conformers…", done, tot, prog_state)
+                    _emit_tool_progress_throttled(
+                        self.signals,
+                        "Superpose conformers…",
+                        done,
+                        tot,
+                        prog_state,
+                        progress_state=self.progress_state,
+                    )
         finally:
             emit_partial_results_if_cancelled(
                 self.signals, "Superpose conformers", done_count, tot, cancelled
@@ -814,15 +870,19 @@ class CalcWorker(QRunnable):
 
         def _emit_prep_progress(done_count: int, *, force: bool = False) -> None:
             nonlocal prep_last_emit
+            from ..tool_progress import report_tool_progress
+
             now = time.monotonic()
             if force or done_count >= nrows or (now - prep_last_emit) >= 0.2:
                 prep_last_emit = now
-                if self.progress_state is not None:
-                    self.progress_state.update("Preparing descriptors…", done_count, tot)
-                try:
-                    self.signals.tool_progress.emit("Preparing descriptors…", done_count, tot)
-                except Exception:
-                    pass
+                report_tool_progress(
+                    message="Preparing descriptors…",
+                    done=done_count,
+                    total=tot,
+                    progress_state=self.progress_state,
+                    signals=self.signals,
+                    force_signal=force,
+                )
 
         for idx, (i, item) in enumerate(self.data):
             if self.is_smiles:
@@ -844,18 +904,23 @@ class CalcWorker(QRunnable):
         pka_by_idx: dict[int, list | None] = {}
         pka_cache_used = False
         if int_fns_need_pkasolver(self.int_fns) and nrows > 0:
-            try:
-                self.signals.tool_progress.emit("pkasolver microstates…", 0, tot)
-            except Exception:
-                pass
             pka_by_idx = build_microstates_cache_for_rows(
-                prepared, cancel_event=self.cancel_event
+                prepared,
+                cancel_event=self.cancel_event,
+                progress_state=self.progress_state,
+                progress_message="pkasolver microstates…",
             )
             pka_cache_used = True
-            try:
-                self.signals.tool_progress.emit("Calculate descriptors", 0, tot)
-            except Exception:
-                pass
+            from ..tool_progress import report_tool_progress
+
+            report_tool_progress(
+                message="Calculate descriptors",
+                done=0,
+                total=tot,
+                progress_state=self.progress_state,
+                signals=self.signals,
+                force_signal=True,
+            )
         # ThreadPoolExecutor row tasks so RDKit never runs on the Qt GUI thread and small jobs
         # still use a worker thread instead of the process-queue thread doing every row inline.
         heavy_pharm2d = _descriptor_int_fns_include_pharm2d(self.int_fns)
@@ -868,23 +933,28 @@ class CalcWorker(QRunnable):
         def _emit_progress(done_count: int, *, force: bool = False) -> None:
             """Update shared progress state every row; throttle cross-thread signal emissions."""
             nonlocal prog_last_emit, prog_last_done
-            if self.progress_state is not None:
-                self.progress_state.update("Calculate descriptors", done_count, tot)
+            from ..tool_progress import report_tool_progress
+
             now = time.monotonic()
             step = max(1, tot // 40)
-            if (
+            throttle_signal = (
                 force
                 or done_count >= tot
                 or done_count <= 1
                 or (done_count - prog_last_done) >= step
                 or (now - prog_last_emit) >= 0.15
-            ):
+            )
+            if throttle_signal:
                 prog_last_emit = now
                 prog_last_done = done_count
-                try:
-                    self.signals.tool_progress.emit("Calculate descriptors", done_count, tot)
-                except Exception:
-                    pass
+            report_tool_progress(
+                message="Calculate descriptors",
+                done=done_count,
+                total=tot,
+                progress_state=self.progress_state,
+                signals=self.signals if throttle_signal else None,
+                force_signal=force,
+            )
 
         # Gobbi Pharm2D often holds the GIL — in-process threads starve the PyQt GUI. Run rows in
         # child processes so the main process can run the event loop while workers compute.

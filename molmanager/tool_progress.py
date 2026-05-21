@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import threading
+import time
+from typing import Any
 
 
 class ToolProgressState:
@@ -40,3 +42,44 @@ class ToolProgressState:
     def snapshot(self) -> tuple[str, int, int, bool]:
         with self._lock:
             return (self._message, self._done, self._total, self._active)
+
+
+def report_tool_progress(
+    *,
+    message: str,
+    done: int,
+    total: int,
+    progress_state: ToolProgressState | None = None,
+    signals: Any = None,
+    throttle: list | None = None,
+    force_signal: bool = False,
+) -> None:
+    """
+    Update polled status (``ToolProgressState``) and optionally emit ``tool_progress``.
+
+    Workers should call this (or pass ``progress_state`` into helpers that do) so the
+    bottom-left status bar stays current even when the GIL blocks Qt signal delivery.
+    """
+    tot = max(1, int(total))
+    d = min(max(int(done), 0), tot)
+    msg = str(message or "")
+    if progress_state is not None:
+        progress_state.update(msg, d, tot)
+    if signals is None:
+        return
+    emit = force_signal
+    if not emit and throttle is not None:
+        now = time.monotonic()
+        last_d, last_t = int(throttle[0]), float(throttle[1])
+        step = max(1, tot // 20)
+        if d == 0 or d >= tot or d - last_d >= step or (now - last_t) >= 0.25:
+            throttle[0] = d
+            throttle[1] = now
+            emit = True
+    elif not emit:
+        emit = True
+    if emit:
+        try:
+            signals.tool_progress.emit(msg, d, tot)
+        except Exception:
+            pass

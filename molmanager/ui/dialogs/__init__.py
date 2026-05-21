@@ -23,6 +23,7 @@ from .permeability import PermeabilityPredictorDialog
 from .pka import PKaPredictorDialog
 from .properties import PropertyDialog
 from .protomer import ProtomerGeneratorDialog
+from .qsar import QSARDialog
 from .render_2d import Render2DStructureDialog
 from .scope import selection_scope_checked
 
@@ -44,6 +45,7 @@ __all__ = [
     "PlotDialog",
     "PropertyDialog",
     "ProtomerGeneratorDialog",
+    "QSARDialog",
     "Render2DStructureDialog",
     "SketchWidget",
     "SketcherDialog",
