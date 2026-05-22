@@ -20,7 +20,8 @@ def test_theme_save_and_load(tmp_path, monkeypatch):
 
 def test_filter_card_stylesheet_uses_palette_roles():
     qss = filter_card_stylesheet()
-    assert "palette(alternatebase)" in qss.lower()
+    assert "palette(base)" in qss.lower()
+    assert "QFrame#FilterCard" in qss
     assert "QPushButton#fcToggle" in qss
     assert "QPushButton#fcToggle[fcActive=\"true\"]" in qss
     # Same rules for both themes — colors come from the application palette.

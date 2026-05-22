@@ -28,11 +28,12 @@ def test_pubchem_similarity_results_sort_key():
 
 
 def test_similarity_fp_type_labels_include_variants():
-    from molmanager.workers.fingerprint_similarity import SIMILARITY_FP_TYPE_LABELS
+    from molmanager.rdkit_fingerprints import SIMILARITY_FP_TYPE_LABELS
 
     joined = "\n".join(SIMILARITY_FP_TYPE_LABELS)
     assert "Atom pair" in joined and "Topological" in joined
     assert "Morgan (r=3" in joined
+    assert "FCFP" in joined and "Pattern fingerprint" in joined
 
 
 def test_fingerprint_bitvect_atom_pair_and_morgan_nbits():

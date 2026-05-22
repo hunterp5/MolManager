@@ -15,7 +15,7 @@ _SETTINGS_KEY_THEME = "gui/theme"
 
 _CURRENT_THEME = THEME_LIGHT
 
-_FC_CTRL_H = 22
+_FC_CTRL_H = 20
 
 
 def current_theme_name() -> str:
@@ -55,28 +55,31 @@ def filter_panel_stylesheet() -> str:
 
 def filter_card_stylesheet(theme: str | None = None) -> str:
     """
-    Stylesheet for filter panel cards (``QFrame#FilterCard``).
-
-    Uses ``palette(...)`` roles so light mode matches Fusion defaults and dark mode
-    mirrors the same structure via :func:`_dark_palette` (not separate hex rules).
-    The *theme* argument is accepted for API compatibility but ignored.
+    Compact filter cards — palette-driven to match Fusion light/dark app chrome.
     """
     del theme
     h = _FC_CTRL_H
     return f"""
     QFrame#FilterCard {{
-        background-color: palette(alternatebase);
+        background-color: palette(base);
         border: 1px solid palette(mid);
-        border-radius: 4px;
+        border-radius: 6px;
     }}
-    QFrame#FilterCard QLabel,
-    QFrame#FilterCard QLabel#fcSectionTitle {{
+    QFrame#FilterCard QLabel {{
         font-size: 11px;
         color: palette(windowtext);
         background: transparent;
     }}
+    QFrame#FilterCard QLabel#fcMiniLabel {{
+        font-size: 10px;
+        color: palette(mid);
+        min-width: 26px;
+        max-width: 26px;
+    }}
     QFrame#FilterCard QLabel#fcSectionTitle {{
+        font-size: 11px;
         font-weight: 600;
+        color: palette(windowtext);
     }}
     QFrame#FilterCard QComboBox,
     QFrame#FilterCard QLineEdit {{
@@ -84,17 +87,22 @@ def filter_card_stylesheet(theme: str | None = None) -> str:
         max-height: {h}px;
         font-size: 11px;
         border: 1px solid palette(mid);
-        border-radius: 3px;
-        padding: 1px 6px;
+        border-radius: 4px;
+        padding: 0px 6px;
         background-color: palette(base);
         color: palette(text);
         selection-background-color: palette(highlight);
         selection-color: palette(highlightedtext);
     }}
+    QFrame#FilterCard QComboBox:focus,
+    QFrame#FilterCard QLineEdit:focus {{
+        border-color: palette(highlight);
+    }}
     QFrame#FilterCard QComboBox::drop-down {{
         subcontrol-origin: padding;
         subcontrol-position: top right;
-        width: 18px;
+        width: 16px;
+        border: none;
         border-left: 1px solid palette(mid);
     }}
     QFrame#FilterCard QComboBox QAbstractItemView {{
@@ -105,65 +113,51 @@ def filter_card_stylesheet(theme: str | None = None) -> str:
         selection-color: palette(highlightedtext);
     }}
     QFrame#FilterCard QPushButton#fcToggle {{
-        padding: 2px 8px;
-        font-size: 11px;
+        padding: 0px 7px;
+        font-size: 10px;
         min-height: {h}px;
         max-height: {h}px;
+        min-width: 44px;
         border: 1px solid palette(mid);
-        border-radius: 3px;
+        border-radius: 4px;
         background-color: palette(button);
         color: palette(buttontext);
     }}
     QFrame#FilterCard QPushButton#fcToggle:hover {{
         background-color: palette(light);
-        border-color: palette(dark);
     }}
     QFrame#FilterCard QPushButton#fcToggle[fcActive="true"] {{
-        border: 1px solid palette(highlight);
+        border-color: palette(highlight);
         background-color: palette(highlight);
         color: palette(highlightedtext);
         font-weight: 600;
     }}
-    QFrame#FilterCard QPushButton#fcRefresh {{
-        padding: 2px 8px;
-        font-size: 11px;
-        min-height: {h}px;
-        max-height: {h}px;
-        border: 1px solid palette(mid);
-        border-radius: 3px;
-        background-color: palette(button);
-        color: palette(buttontext);
-    }}
-    QFrame#FilterCard QPushButton#fcRefresh:hover {{
-        background-color: palette(light);
-        border-color: palette(dark);
-    }}
     QFrame#FilterCard QPushButton#fcRemove {{
-        min-width: 22px;
-        max-width: 22px;
-        min-height: 22px;
-        max-height: 22px;
-        color: palette(link);
-        background-color: palette(base);
-        border: 1px solid palette(mid);
-        border-radius: 3px;
-        font-size: 14px;
+        min-width: 18px;
+        max-width: 18px;
+        min-height: 18px;
+        max-height: 18px;
+        color: palette(mid);
+        background-color: transparent;
+        border: none;
+        border-radius: 4px;
+        font-size: 15px;
         font-weight: bold;
         padding: 0px;
     }}
     QFrame#FilterCard QPushButton#fcRemove:hover {{
+        color: palette(link);
         background-color: palette(alternatebase);
-        border-color: palette(dark);
     }}
     QFrame#FilterCard QSlider::groove:horizontal {{
-        height: 4px;
+        height: 3px;
         background: palette(mid);
         border-radius: 2px;
     }}
     QFrame#FilterCard QSlider::handle:horizontal {{
-        width: 11px;
-        height: 11px;
-        margin: -5px 0;
+        width: 10px;
+        height: 10px;
+        margin: -4px 0;
         background: palette(highlight);
         border: 1px solid palette(dark);
         border-radius: 5px;
@@ -172,15 +166,16 @@ def filter_card_stylesheet(theme: str | None = None) -> str:
         background: palette(light);
     }}
     QFrame#FilterCard QListWidget {{
-        font-size: 11px;
+        font-size: 10px;
         border: 1px solid palette(mid);
-        border-radius: 3px;
+        border-radius: 4px;
         background-color: palette(base);
         color: palette(text);
         outline: 0;
     }}
     QFrame#FilterCard QListWidget::item {{
-        padding: 2px 4px;
+        padding: 1px 4px;
+        min-height: 14px;
     }}
     QFrame#FilterCard QListWidget::item:hover {{
         background-color: palette(alternatebase);

@@ -4,145 +4,191 @@ from __future__ import annotations
 
 import logging
 import os
-import re
+import pickle
 import threading
-from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
+import time
+from concurrent.futures import FIRST_COMPLETED, ProcessPoolExecutor, ThreadPoolExecutor, wait
+from typing import TYPE_CHECKING
 
 from PyQt5.QtCore import QRunnable
 from rdkit import Chem
 from rdkit import DataStructs
-from rdkit.Chem import AllChem, rdMolDescriptors, rdmolops
 
+from ..rdkit_fingerprints import (
+    fingerprint_bitvect_for_ui_choice,
+    fingerprint_is_gil_heavy,
+)
+from ..tool_progress import ToolProgressState, report_tool_progress
 from ..utils import mol_to_canonical_smiles
+from .process_pool_utils import (
+    register_process_pool,
+    should_terminate_process_pool,
+    shutdown_process_pool_executor,
+)
 from .signals import FPSimilaritySignals
+
+if TYPE_CHECKING:
+    pass
 
 logger = logging.getLogger(__name__)
 
-# Labels for Tools → Fingerprint Similarity and Tools → Cluster (same strings → same fingerprints).
-SIMILARITY_FP_TYPE_LABELS: list[str] = [
-    "Morgan (r=2, n=1024)",
-    "Morgan (r=3, n=1024)",
-    "Morgan (r=2, n=2048)",
-    "RDK (2048)",
-    "MACCS (166)",
-    "Atom pair (hashed, 2048 bits)",
-    "Topological torsion (hashed, 2048 bits)",
-]
+SIMILARITY_METRIC_LABELS: list[str] = ["Tanimoto", "Dice", "Cosine"]
+
+_PROGRESS_LABEL = "Fingerprint similarity"
 
 
-def _rdk_fingerprint_bitvect(mol: Chem.Mol, max_path: int = 5, fp_size: int = 2048):
-    """RDKit topological path fingerprint (ExplicitBitVect), compatible across RDKit versions."""
-    getter = getattr(AllChem, "GetRDKFingerprint", None)
-    if getter is not None:
-        return getter(mol, maxPath=max_path, fpSize=fp_size)
-    return rdmolops.RDKFingerprint(mol, minPath=1, maxPath=max_path, fpSize=fp_size)
+def pairwise_fingerprint_similarity(qfp, fp, metric: str) -> float:
+    """Pairwise similarity for bit-vector fingerprints (RDKit DataStructs)."""
+    if metric == "Dice":
+        return float(DataStructs.DiceSimilarity(qfp, fp))
+    if metric == "Cosine":
+        return float(DataStructs.CosineSimilarity(qfp, fp))
+    return float(DataStructs.TanimotoSimilarity(qfp, fp))
 
 
-def _morgan_radius_and_nbits(fp_choice: str) -> tuple[int, int]:
-    """Parse ``r=`` / ``n=`` from UI labels; defaults match the original Morgan (r=2, n=1024)."""
-    r = 2
-    n = 1024
-    m_r = re.search(r"r\s*=\s*(\d+)", fp_choice, re.I)
-    m_n = re.search(r"n\s*=\s*(\d+)", fp_choice, re.I)
-    if m_r:
-        r = int(m_r.group(1))
-    if m_n:
-        n = int(m_n.group(1))
-    return r, n
-
-
-def _rdk_nbits_from_label(fp_choice: str) -> int:
-    m = re.search(r"\((\d+)\)", fp_choice)
-    if m:
-        return max(64, min(8192, int(m.group(1))))
-    return 2048
-
-
-def _hashed_nbits_from_label(fp_choice: str, default: int = 2048) -> int:
-    m = re.search(r"(\d+)\s*bits?", fp_choice, re.I)
-    if m:
-        return max(64, min(8192, int(m.group(1))))
-    return default
-
-
-def fingerprint_bitvect_for_ui_choice(mol: Chem.Mol, fp_choice: str):
-    """Bit vector for fingerprint labels used in Fingerprint Similarity and Cluster dialogs."""
+def _fp_similarity_one(
+    oid: int,
+    mol: Chem.Mol,
+    qfp,
+    fp_choice: str,
+    metric: str,
+) -> tuple[int, float, str] | None:
     try:
-        if fp_choice.startswith("Morgan"):
-            radius, n_bits = _morgan_radius_and_nbits(fp_choice)
-            return AllChem.GetMorganFingerprintAsBitVect(mol, radius, nBits=n_bits)
-        if fp_choice.startswith("RDK"):
-            n = _rdk_nbits_from_label(fp_choice)
-            return _rdk_fingerprint_bitvect(mol, max_path=5, fp_size=n)
-        if fp_choice.startswith("MACCS"):
-            return rdMolDescriptors.GetMACCSKeysFingerprint(mol)
-        if fp_choice.startswith("Atom pair"):
-            n_bits = _hashed_nbits_from_label(fp_choice, 2048)
-            return AllChem.GetHashedAtomPairFingerprintAsBitVect(mol, nBits=n_bits)
-        if fp_choice.startswith("Topological"):
-            n_bits = _hashed_nbits_from_label(fp_choice, 2048)
-            return AllChem.GetHashedTopologicalTorsionFingerprintAsBitVect(mol, nBits=n_bits)
+        fp = fingerprint_bitvect_for_ui_choice(mol, fp_choice)
+        if fp is None:
+            return None
+        sim = pairwise_fingerprint_similarity(qfp, fp, metric)
+        return (oid, sim, mol_to_canonical_smiles(mol))
     except Exception:
         return None
-    return None
 
 
-def _rdk_fp_onbits(mol: Chem.Mol, nbits: int) -> int:
-    fp = _rdk_fingerprint_bitvect(mol, max_path=5, fp_size=nbits)
-    if hasattr(fp, "GetNumOnBits"):
-        return fp.GetNumOnBits()
-    return int(sum(fp))
+def _mp_fp_similarity_row(args: tuple) -> tuple[int, float, str] | None:
+    """One row in a child process (Gobbi Pharm2D releases GIL only across processes)."""
+    oid, mol_bytes, fp_choice, metric, qfp_bytes = args
+    if not mol_bytes:
+        return None
+    try:
+        mol = Chem.Mol(mol_bytes)
+        qfp = pickle.loads(qfp_bytes)
+    except Exception:
+        return None
+    return _fp_similarity_one(int(oid), mol, qfp, str(fp_choice), str(metric))
 
 
 class FPSimilarityWorker(QRunnable):
-    """Compute Tanimoto vs a fixed query fingerprint off the UI thread."""
+    """Compute fingerprint similarity vs a query structure off the UI thread."""
 
     def __init__(
         self,
-        qfp,
+        qmol: Chem.Mol,
         targets: list[tuple[int, Chem.Mol]],
         fp_choice: str,
         signals: FPSimilaritySignals,
+        *,
+        metric: str = "Tanimoto",
         cancel_event: threading.Event | None = None,
+        progress_state: ToolProgressState | None = None,
     ):
         super().__init__()
-        self.qfp = qfp
+        self.qmol = qmol
         self.targets = targets
         self.fp_choice = fp_choice
+        self.metric = metric if metric in SIMILARITY_METRIC_LABELS else "Tanimoto"
         self.signals = signals
         self.cancel_event = cancel_event
+        self.progress_state = progress_state
+
+    def _report(self, done: int, total: int, *, force: bool = False) -> None:
+        report_tool_progress(
+            message=_PROGRESS_LABEL,
+            done=done,
+            total=total,
+            progress_state=self.progress_state,
+            force_signal=force,
+        )
 
     def run(self):
         try:
             cancel_ev = self.cancel_event
-
-            def _one(args):
-                oid, mol, qfp, fp_choice = args
-                try:
-                    fp = fingerprint_bitvect_for_ui_choice(mol, fp_choice)
-                    if fp is None:
-                        return None
-                    sim = DataStructs.TanimotoSimilarity(qfp, fp)
-                    return (oid, sim, mol_to_canonical_smiles(mol))
-                except Exception:
-                    return None
-
             n = len(self.targets)
+            total_steps = max(1, n + 1)
+            self._report(0, total_steps, force=True)
+
+            qfp = fingerprint_bitvect_for_ui_choice(self.qmol, self.fp_choice)
+            if qfp is None:
+                self.signals.failed.emit("Could not compute query fingerprint.")
+                return
+            self._report(1, total_steps, force=True)
+
             if n <= 0:
                 self.signals.finished.emit([])
                 return
-            max_workers = min(8, max(1, (os.cpu_count() or 4)))
-            tasks = [(oid, mol, self.qfp, self.fp_choice) for oid, mol in self.targets]
-            if n < 64:
-                raw = []
-                for t in tasks:
+
+            metric = self.metric
+            use_mp = fingerprint_is_gil_heavy(self.fp_choice) and n >= 2
+            raw: list[tuple[int, float, str] | None] = []
+
+            if use_mp:
+                qfp_bytes = pickle.dumps(qfp)
+                mp_tasks = [
+                    (oid, mol.ToBinary(), self.fp_choice, metric, qfp_bytes)
+                    for oid, mol in self.targets
+                ]
+                proc_workers = min(max(2, (os.cpu_count() or 4) - 1), 8)
+                done_count = 1
+                last_pulse = 0.0
+                ex = register_process_pool(ProcessPoolExecutor(max_workers=proc_workers))
+                try:
+                    pending = {ex.submit(_mp_fp_similarity_row, t) for t in mp_tasks}
+                    while pending:
+                        if should_terminate_process_pool(cancel_ev):
+                            for f in list(pending):
+                                if f.done() and not f.cancelled():
+                                    try:
+                                        raw.append(f.result())
+                                    except Exception:
+                                        pass
+                                else:
+                                    f.cancel()
+                            break
+                        completed, pending = wait(
+                            pending, timeout=0.25, return_when=FIRST_COMPLETED
+                        )
+                        if not completed and pending:
+                            now = time.monotonic()
+                            if now - last_pulse >= 0.55:
+                                last_pulse = now
+                                self._report(done_count, total_steps, force=True)
+                        for f in completed:
+                            if f.cancelled():
+                                continue
+                            try:
+                                raw.append(f.result())
+                            except Exception:
+                                pass
+                            done_count += 1
+                            self._report(min(done_count, total_steps), total_steps)
+                finally:
+                    shutdown_process_pool_executor(
+                        ex, kill_workers=should_terminate_process_pool(cancel_ev)
+                    )
+            elif n < 64:
+                done_count = 1
+                for oid, mol in self.targets:
                     if cancel_ev is not None and cancel_ev.is_set():
                         break
-                    raw.append(_one(t))
+                    raw.append(_fp_similarity_one(oid, mol, qfp, self.fp_choice, metric))
+                    done_count += 1
+                    self._report(min(done_count, total_steps), total_steps)
             else:
-                raw = []
+                max_workers = min(8, max(1, (os.cpu_count() or 4)))
+                tasks = [
+                    (oid, mol, qfp, self.fp_choice, metric) for oid, mol in self.targets
+                ]
+                done_count = 1
                 with ThreadPoolExecutor(max_workers=max_workers) as ex:
-                    pending = {ex.submit(_one, t) for t in tasks}
+                    pending = {ex.submit(_fp_similarity_one, *t) for t in tasks}
                     while pending:
                         if cancel_ev is not None and cancel_ev.is_set():
                             for f in pending:
@@ -155,7 +201,9 @@ class FPSimilarityWorker(QRunnable):
                                         pass
                                     pending.discard(f)
                             break
-                        completed, pending = wait(pending, timeout=0.08, return_when=FIRST_COMPLETED)
+                        completed, pending = wait(
+                            pending, timeout=0.08, return_when=FIRST_COMPLETED
+                        )
                         for f in completed:
                             if f.cancelled():
                                 continue
@@ -163,8 +211,12 @@ class FPSimilarityWorker(QRunnable):
                                 raw.append(f.result())
                             except Exception:
                                 pass
+                            done_count += 1
+                            self._report(min(done_count, total_steps), total_steps)
+
             rows = [x for x in raw if x is not None]
             rows.sort(key=lambda x: x[1], reverse=True)
+            self._report(total_steps, total_steps, force=True)
             self.signals.finished.emit(rows)
         except Exception as e:
             logger.exception("FPSimilarityWorker failed")

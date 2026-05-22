@@ -49,6 +49,30 @@ def resolve_plot_colorscale(name: str | None) -> str:
     return DEFAULT_PLOT_COLORSCALE
 
 
+def parse_color_range_bounds(
+    min_text: str,
+    max_text: str,
+) -> tuple[float | None, float | None]:
+    """Parse optional min/max edits; empty text means auto (data-driven) bounds."""
+    from .utils import safe_float
+
+    lo = safe_float(min_text.strip()) if min_text.strip() else None
+    hi = safe_float(max_text.strip()) if max_text.strip() else None
+    return lo, hi
+
+
+def color_values_are_numeric(raw_values: list[Any] | None) -> bool:
+    """True when every non-missing value parses as a number (continuous color column)."""
+    if not raw_values or not column_values_have_color_data(raw_values):
+        return False
+    for value in raw_values:
+        if _is_missing(value):
+            continue
+        if _try_float(value) is None:
+            return False
+    return True
+
+
 def _is_missing(value: Any) -> bool:
     if value is None:
         return True
@@ -109,6 +133,8 @@ def scatter_marker_from_column_values(
     *,
     color_label: str | None = None,
     colorscale: str | None = None,
+    color_min: float | None = None,
+    color_max: float | None = None,
     default_color: str = "#2a74d6",
     point_size: float = 6,
     opacity: float = 0.85,
@@ -136,6 +162,12 @@ def scatter_marker_from_column_values(
         if not finite:
             return {"size": point_size, "opacity": opacity, "color": default_color}
         lo, hi = min(finite), max(finite)
+        if color_min is not None:
+            lo = float(color_min)
+        if color_max is not None:
+            hi = float(color_max)
+        if lo > hi:
+            lo, hi = hi, lo
         if abs(hi - lo) < 1e-12:
             lo -= 0.5
             hi += 0.5

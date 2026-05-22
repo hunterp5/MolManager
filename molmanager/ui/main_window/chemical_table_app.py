@@ -55,6 +55,17 @@ from .chemistry_mixin import ChemistryMixin
 from ..gui_settings_mixin import GuiSettingsMixin
 
 
+_FILTER_PANEL_BTN_H = 28
+_FILTER_PANEL_BTN_SPACING = 6
+
+
+def _configure_filter_panel_button(btn: QPushButton) -> None:
+    """Uniform size and stretch for all filter-panel action buttons."""
+    btn.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+    btn.setFixedHeight(_FILTER_PANEL_BTN_H)
+    btn.setMinimumWidth(0)
+
+
 class _FilterCardsScrollArea(QScrollArea):
     """Keeps filter cards within the scroll viewport width (no horizontal spill past the panel)."""
 
@@ -441,7 +452,7 @@ class ChemicalTableApp(
         btn_close_plot = QPushButton("Close Plot")
         btn_close_plot.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         btn_close_plot.setToolTip(
-            "Hide the plot panel. Reopen it from Tools → Plotter while the plot remains docked."
+            "Hide the plot panel. Reopen it from Data → Plotter while the plot remains docked."
         )
         btn_close_plot.clicked.connect(self.close_plot_panel_keep_plot)
         plot_bottom.addWidget(btn_close_plot)
@@ -454,23 +465,24 @@ class ChemicalTableApp(
         self.f_panel.setFixedWidth(_filter_panel_w)
         self.f_panel.setVisible(False)
         sb_lyt = QVBoxLayout(self.f_panel)
-        sb_lyt.setContentsMargins(6, 6, 6, 6)
-        sb_lyt.setSpacing(6)
+        sb_lyt.setContentsMargins(5, 5, 5, 5)
+        sb_lyt.setSpacing(5)
 
         self._filter_cards_host = QWidget()
         # Ignored horizontal policy: scroll viewport sets width (prevents cards wider than panel).
         self._filter_cards_host.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Minimum)
         self.f_container = QVBoxLayout(self._filter_cards_host)
         self.f_container.setContentsMargins(0, 0, 0, 0)
-        self.f_container.setSpacing(10)
+        self.f_container.setSpacing(6)
         self.f_container.setAlignment(Qt.AlignTop)
         self._filter_scroll = _FilterCardsScrollArea(self._filter_cards_host)
         self._filter_scroll.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Expanding)
         sb_lyt.addWidget(self._filter_scroll, 1)
         QTimer.singleShot(0, self._sync_filter_panel_scroll_content)
 
-        add_grid = QGridLayout()
-        add_grid.setSpacing(2)
+        panel_btns = QGridLayout()
+        panel_btns.setSpacing(_FILTER_PANEL_BTN_SPACING)
+        panel_btns.setContentsMargins(0, 0, 0, 0)
         btn_slider = QPushButton("Add Slider")
         btn_slider.setToolTip("Add a numeric range (slider) filter for the current table.")
         btn_slider.clicked.connect(lambda: self.add_filter_card())
@@ -483,41 +495,32 @@ class ChemicalTableApp(
         btn_ss = QPushButton("Add Substructure")
         btn_ss.setToolTip("Add a SMARTS substructure filter card.")
         btn_ss.clicked.connect(lambda: self.add_substructure_filter_card())
-        add_grid.addWidget(btn_slider, 0, 0)
-        add_grid.addWidget(btn_text, 0, 1)
-        add_grid.addWidget(btn_cat, 1, 0)
-        add_grid.addWidget(btn_ss, 1, 1)
-        sb_lyt.addLayout(add_grid)
-
-        bottom = QGridLayout()
-        bottom.setSpacing(6)
         btn_close_panel = QPushButton("Close Filters")
-        btn_close_panel.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         btn_close_panel.setToolTip(
-            "Close the filter panel and turn off every filter. Filter cards stay; use On to enable again."
+            "Hide the filter panel. Active filters keep affecting the table."
         )
-        btn_close_panel.clicked.connect(self.close_filter_panel_and_disable_filters)
-        btn_close_keep = QPushButton("Close and Keep")
-        btn_close_keep.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
-        btn_close_keep.setToolTip(
-            "Close the filter panel only. Filters stay on and keep affecting the table."
-        )
-        btn_close_keep.clicked.connect(self.close_filter_panel_keep_filters)
+        btn_close_panel.clicked.connect(self.close_filter_panel_keep_filters)
         btn_disable_all = QPushButton("Disable Filters")
-        btn_disable_all.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         btn_disable_all.setToolTip(
             "Turn off every filter while keeping this panel open. Use On on each card to enable again."
         )
         btn_disable_all.clicked.connect(self.disable_all_filters_keep_panel)
-        btn_delete_filters = QPushButton("Delete Filters")
-        btn_delete_filters.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
-        btn_delete_filters.setToolTip("Remove every filter card from this panel.")
-        btn_delete_filters.clicked.connect(lambda: self.delete_all_filters_from_panel())
-        bottom.addWidget(btn_close_panel, 0, 0)
-        bottom.addWidget(btn_close_keep, 0, 1)
-        bottom.addWidget(btn_disable_all, 1, 0)
-        bottom.addWidget(btn_delete_filters, 1, 1)
-        sb_lyt.addLayout(bottom)
+        for btn in (
+            btn_slider,
+            btn_text,
+            btn_cat,
+            btn_ss,
+            btn_close_panel,
+            btn_disable_all,
+        ):
+            _configure_filter_panel_button(btn)
+        panel_btns.addWidget(btn_slider, 0, 0)
+        panel_btns.addWidget(btn_text, 0, 1)
+        panel_btns.addWidget(btn_cat, 1, 0)
+        panel_btns.addWidget(btn_ss, 1, 1)
+        panel_btns.addWidget(btn_close_panel, 2, 0)
+        panel_btns.addWidget(btn_disable_all, 2, 1)
+        sb_lyt.addLayout(panel_btns)
         content_h.addWidget(self._plot_panel)
         content_h.addWidget(self.f_panel)
         main_v.addLayout(content_h)
@@ -716,20 +719,6 @@ class ChemicalTableApp(
             decomp_menu.addAction(act)
 
         tools.addSeparator()
-        plot_menu = tools.addMenu("&Plotter")
-        plot_menu.setToolTipsVisible(True)
-        act_plot = QAction("&Plotter…", self, triggered=self.open_plot)
-        act_plot.setToolTip("Open the plotter or show the docked plot panel.")
-        plot_menu.addAction(act_plot)
-        self._act_toggle_plot_panel = QAction("Toggle Panel", self)
-        self._act_toggle_plot_panel.setToolTip(
-            "Show or hide the plot panel docked beside the table (Ctrl+Shift+P)."
-        )
-        self._act_toggle_plot_panel.setShortcut(QKeySequence("Ctrl+Shift+P"))
-        self._act_toggle_plot_panel.setShortcutContext(Qt.ApplicationShortcut)
-        self._act_toggle_plot_panel.triggered.connect(self.toggle_plot_panel)
-        self.addAction(self._act_toggle_plot_panel)
-        plot_menu.addAction(self._act_toggle_plot_panel)
         tools.addAction(self._act_custom_calc)
         act_sketch = QAction("&Sketcher…", self, triggered=self.open_sketcher)
         act_sketch.setToolTip("Open the structure sketcher to draw or edit molecules.")
@@ -746,7 +735,7 @@ class ChemicalTableApp(
         self.addAction(self._act_toggle_filter_panel)
         filter_menu.addAction(self._act_toggle_filter_panel)
         filter_menu.addSeparator()
-        act_sub = QAction("Substructure Filter", self, triggered=lambda: self.add_substructure_filter_card())
+        act_sub = QAction("Add Substructure", self, triggered=lambda: self.add_substructure_filter_card())
         act_sub.setToolTip("Add a filter card that matches a SMARTS substructure in the Structure column.")
         filter_menu.addAction(act_sub)
         act_slider = QAction("Add Slider", self, triggered=lambda: self.add_filter_card())
@@ -758,6 +747,15 @@ class ChemicalTableApp(
         act_cat = QAction("Add Category", self, triggered=lambda: self.add_category_filter_card())
         act_cat.setToolTip("Add a categorical multi-select filter for a column.")
         filter_menu.addAction(act_cat)
+        filter_menu.addSeparator()
+        act_disable_all_filters = QAction("Disable All Filters", self, triggered=self.disable_all_filters_keep_panel)
+        act_disable_all_filters.setToolTip(
+            "Turn off every filter card. Cards stay in the panel; use On on each card to enable again."
+        )
+        filter_menu.addAction(act_disable_all_filters)
+        act_delete_all_filters = QAction("Delete All Filters", self, triggered=self.delete_all_filters_from_panel)
+        act_delete_all_filters.setToolTip("Remove every filter card from the panel.")
+        filter_menu.addAction(act_delete_all_filters)
         act_search = QAction(
             "&Search…", self, shortcut=QKeySequence("Ctrl+F"), triggered=self.toggle_table_search_panel
         )
@@ -786,6 +784,27 @@ class ChemicalTableApp(
         data_menu.addAction(
             QAction("Golden triangle plot…", self, triggered=self.open_golden_triangle_plot)
         )
+        act_radar = QAction("Radar Plot…", self, triggered=self.open_radar_plot)
+        act_radar.setToolTip(
+            "Compare compounds on up to six numeric properties (spider/radar chart)."
+        )
+        data_menu.addAction(act_radar)
+
+        data_menu.addSeparator()
+        plot_menu = data_menu.addMenu("&Plotter")
+        plot_menu.setToolTipsVisible(True)
+        act_plot = QAction("&Plotter…", self, triggered=self.open_plot)
+        act_plot.setToolTip("Open the plotter or show the docked plot panel.")
+        plot_menu.addAction(act_plot)
+        self._act_toggle_plot_panel = QAction("Toggle Panel", self)
+        self._act_toggle_plot_panel.setToolTip(
+            "Show or hide the plot panel docked beside the table (Ctrl+Shift+P)."
+        )
+        self._act_toggle_plot_panel.setShortcut(QKeySequence("Ctrl+Shift+P"))
+        self._act_toggle_plot_panel.setShortcutContext(Qt.ApplicationShortcut)
+        self._act_toggle_plot_panel.triggered.connect(self.toggle_plot_panel)
+        self.addAction(self._act_toggle_plot_panel)
+        plot_menu.addAction(self._act_toggle_plot_panel)
 
         ext_menu = mb.addMenu("E&xternal")
         ext_menu.addAction(QAction("Connect to SQL database…", self, triggered=self.open_external_db))

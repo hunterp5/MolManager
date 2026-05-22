@@ -32,6 +32,12 @@ class _PlotBridge(QObject):
     def pointsSelected(self, points_json: str) -> None:  # noqa: N802
         self._view._on_plot_points_selected(points_json)
 
+    @pyqtSlot(int)
+    def radarTraceClicked(self, trace_index: int) -> None:  # noqa: N802
+        handler = getattr(self._view, "_on_radar_trace_clicked", None)
+        if callable(handler):
+            handler(int(trace_index))
+
 
 class PlotlyInteractiveView(QWidget):
     """Plotly scatter with lasso/click selection synced to the compound table."""
@@ -241,8 +247,17 @@ class PlotlyInteractiveView(QWidget):
             }}
             gd.on('plotly_click', function(ev) {{
               try {{
-                if (!ev || !ev.points || !ev.points.length || !bridge || !bridge.pointClicked) return;
+                if (!ev || !ev.points || !ev.points.length || !gd.data || !gd.data.length) return;
                 var pt = ev.points[0];
+                var trace = gd.data[pt.curveNumber];
+                if (trace && trace.type === "scatterpolar") {{
+                  if (bridge && bridge.radarTraceClicked) {{
+                    var cn = Number(pt.curveNumber);
+                    if (Number.isFinite(cn)) bridge.radarTraceClicked(cn);
+                  }}
+                  return;
+                }}
+                if (!bridge || !bridge.pointClicked) return;
                 if (!traceSelectable(pt.curveNumber)) return;
                 var pn = Number(pt.pointNumber);
                 if (Number.isFinite(pn)) bridge.pointClicked(pn);

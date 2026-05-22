@@ -36,6 +36,8 @@ def build_dimension_reduction_figure(
     result: DimensionReductionResult,
     *,
     colorscale: str = DEFAULT_PLOT_COLORSCALE,
+    color_min: float | None = None,
+    color_max: float | None = None,
 ) -> go.Figure:
     if result.method == "pca":
         x_label, y_label = "PC1", "PC2"
@@ -47,6 +49,8 @@ def build_dimension_reduction_figure(
         result.color_values,
         color_label=result.color_label,
         colorscale=colorscale,
+        color_min=color_min,
+        color_max=color_max,
     )
     fig = go.Figure(
         data=[

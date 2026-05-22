@@ -7,11 +7,25 @@ import numpy as np
 FIT_NONE = "none"
 FIT_LINEAR = "linear"
 FIT_QUADRATIC = "quadratic"
+FIT_GAUSSIAN = "gaussian"
+FIT_TRUNCATED_GAUSSIAN = "truncated_gaussian"
+FIT_LOGNORMAL = "lognormal"
+
+HISTOGRAM_ONLY_FITS = frozenset(
+    {FIT_GAUSSIAN, FIT_TRUNCATED_GAUSSIAN, FIT_LOGNORMAL}
+)
 
 PLOT_FIT_CHOICES: tuple[tuple[str, str], ...] = (
     ("None", FIT_NONE),
-    ("Linear fit", FIT_LINEAR),
-    ("Quadratic fit", FIT_QUADRATIC),
+    ("Linear", FIT_LINEAR),
+    ("Quadratic", FIT_QUADRATIC),
+    ("Normal", FIT_GAUSSIAN),
+    ("Truncated Normal", FIT_TRUNCATED_GAUSSIAN),
+    ("Log-Normal", FIT_LOGNORMAL),
+)
+
+PLOT_FIT_CHOICES_XY: tuple[tuple[str, str], ...] = tuple(
+    choice for choice in PLOT_FIT_CHOICES if choice[1] not in HISTOGRAM_ONLY_FITS
 )
 
 
@@ -110,6 +124,180 @@ def fit_xy_curve(
     else:
         name = f"Fit: y = {coeffs[0]:.4g}x² + {coeffs[1]:.4g}x + {coeffs[2]:.4g}"
     return xs.tolist(), ys.tolist(), name
+
+
+def _truncation_interval(
+    arr: np.ndarray,
+    *,
+    lower: float | None,
+    upper: float | None,
+) -> tuple[float, float]:
+    """Finite truncation interval for scipy truncnorm (open-ended sides use wide tails)."""
+    sigma = float(arr.std(ddof=1)) if arr.size > 1 else 1.0
+    span = max(sigma * 8.0, (float(arr.max()) - float(arr.min())) * 0.5, 1.0)
+    lo = float(lower) if lower is not None else float(arr.min()) - span
+    hi = float(upper) if upper is not None else float(arr.max()) + span
+    if hi <= lo:
+        hi = lo + max(span, 1e-6)
+    return lo, hi
+
+
+def _fit_truncated_gaussian_overlay(
+    arr: np.ndarray,
+    edge_arr: np.ndarray,
+    width: float,
+    *,
+    lower: float | None,
+    upper: float | None,
+    n_points: int,
+) -> tuple[list[float], list[float], str] | None:
+    from scipy import stats
+    from scipy.optimize import minimize
+
+    work = arr
+    if lower is not None:
+        work = work[work >= lower]
+    if upper is not None:
+        work = work[work <= upper]
+    if work.size < 2:
+        return None
+
+    lo, hi = _truncation_interval(work, lower=lower, upper=upper)
+    mu0 = float(work.mean())
+    sigma0 = max(float(work.std(ddof=1)), 1e-6)
+
+    def neg_log_likelihood(params: np.ndarray) -> float:
+        mu = float(params[0])
+        sigma = float(np.exp(params[1]))
+        a = (lo - mu) / sigma
+        b = (hi - mu) / sigma
+        if b <= a + 1e-8:
+            return 1e30
+        return -float(np.sum(stats.truncnorm.logpdf(work, a, b, loc=mu, scale=sigma)))
+
+    result = minimize(
+        neg_log_likelihood,
+        np.array([mu0, np.log(sigma0)], dtype=float),
+        method="L-BFGS-B",
+    )
+    if not result.success:
+        return None
+    mu = float(result.x[0])
+    sigma = float(np.exp(result.x[1]))
+    if sigma < 1e-12:
+        return None
+
+    a = (lo - mu) / sigma
+    b = (hi - mu) / sigma
+    x0, x1 = float(edge_arr[0]), float(edge_arr[-1])
+    if abs(x1 - x0) < 1e-12:
+        return None
+    xs = np.linspace(x0, x1, max(2, int(n_points)))
+    pdf = stats.truncnorm.pdf(xs, a, b, loc=mu, scale=sigma)
+    ys = arr.size * width * pdf
+
+    bound_parts: list[str] = []
+    if lower is not None:
+        bound_parts.append(f"lower ≥ {_fmt(lower)}")
+    if upper is not None:
+        bound_parts.append(f"upper ≤ {_fmt(upper)}")
+    bounds_note = f", {', '.join(bound_parts)}" if bound_parts else ""
+    name = f"Fit: Truncated Normal(μ={mu:.4g}, σ={sigma:.4g}{bounds_note})"
+    return xs.tolist(), ys.tolist(), name
+
+
+def _fit_lognormal_overlay(
+    arr: np.ndarray,
+    edge_arr: np.ndarray,
+    width: float,
+    *,
+    n_points: int,
+) -> tuple[list[float], list[float], str] | None:
+    """MLE log-normal overlay (positive samples only; loc fixed at 0)."""
+    from scipy import stats
+
+    positive = arr[arr > 0]
+    if positive.size < 2:
+        return None
+    try:
+        shape, loc, scale = stats.lognorm.fit(positive, floc=0)
+    except Exception:
+        return None
+    shape = float(shape)
+    scale = float(scale)
+    if shape < 1e-12 or scale <= 0:
+        return None
+
+    x0, x1 = float(edge_arr[0]), float(edge_arr[-1])
+    x_start = max(x0, np.finfo(float).tiny)
+    if x_start >= x1:
+        return None
+    xs = np.linspace(x_start, x1, max(2, int(n_points)))
+    pdf = stats.lognorm.pdf(xs, shape, loc=loc, scale=scale)
+    ys = arr.size * width * pdf
+    mu_log = float(np.log(scale))
+    name = f"Fit: LogNormal(μ_log={_fmt(mu_log)}, σ_log={_fmt(shape)})"
+    return xs.tolist(), ys.tolist(), name
+
+
+def fit_histogram_curve(
+    values: list[float],
+    edges: list[float],
+    fit_kind: str,
+    *,
+    bin_width: float | None = None,
+    trunc_lower: float | None = None,
+    trunc_upper: float | None = None,
+    n_points: int = 100,
+) -> tuple[list[float], list[float], str] | None:
+    """
+    Return a curve overlay for a histogram (counts on y).
+
+    Gaussian fit scales a normal PDF to match bar counts; linear/quadratic fits
+    bin centers versus counts.
+    """
+    if fit_kind == FIT_NONE:
+        return None
+    arr = _finite_array(values)
+    if arr.size < 2:
+        return None
+    edge_arr = np.asarray(edges, dtype=float)
+    if edge_arr.size < 2:
+        return None
+    width = float(bin_width) if bin_width is not None and bin_width > 0 else float(edge_arr[1] - edge_arr[0])
+    if width <= 0:
+        return None
+
+    if fit_kind == FIT_GAUSSIAN:
+        mu = float(arr.mean())
+        sigma = float(arr.std(ddof=1))
+        if sigma < 1e-12:
+            return None
+        x0, x1 = float(edge_arr[0]), float(edge_arr[-1])
+        if abs(x1 - x0) < 1e-12:
+            return None
+        xs = np.linspace(x0, x1, max(2, int(n_points)))
+        pdf = (1.0 / (sigma * np.sqrt(2.0 * np.pi))) * np.exp(-0.5 * ((xs - mu) / sigma) ** 2)
+        ys = arr.size * width * pdf
+        name = f"Fit: Normal(μ={mu:.4g}, σ={sigma:.4g})"
+        return xs.tolist(), ys.tolist(), name
+
+    if fit_kind == FIT_TRUNCATED_GAUSSIAN:
+        return _fit_truncated_gaussian_overlay(
+            arr,
+            edge_arr,
+            width,
+            lower=trunc_lower,
+            upper=trunc_upper,
+            n_points=n_points,
+        )
+
+    if fit_kind == FIT_LOGNORMAL:
+        return _fit_lognormal_overlay(arr, edge_arr, width, n_points=n_points)
+
+    counts, _ = np.histogram(arr, bins=edge_arr)
+    centers = ((edge_arr[:-1] + edge_arr[1:]) / 2.0).tolist()
+    return fit_xy_curve(centers, counts.tolist(), fit_kind, n_points=n_points)
 
 
 def _fmt(value: float) -> str:
