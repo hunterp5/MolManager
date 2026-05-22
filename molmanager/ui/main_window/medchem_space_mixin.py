@@ -23,6 +23,38 @@ class MedChemSpaceMixin:
             destroyed=self._on_golden_triangle_dialog_destroyed,
         )
 
+    def open_radar_plot(self) -> None:
+        if not self.headers or self._table_model.rowCount() == 0:
+            QMessageBox.information(
+                self,
+                "Data",
+                "Open a file or add rows with numeric columns to build a radar plot.",
+            )
+            return
+        from ..dialogs.radar_plot import RadarPlotDialog
+
+        dlg = getattr(self, "_radar_plot_dialog", None)
+        if dlg is not None:
+            try:
+                self._sync_dialog_only_selected_scope(dlg)
+                dlg.show()
+                dlg.raise_()
+                dlg.activateWindow()
+                return
+            except RuntimeError:
+                self._radar_plot_dialog = None
+        d = RadarPlotDialog(self)
+        self._radar_plot_dialog = d
+        self._prepare_tool_dialog(d)
+        d.setAttribute(Qt.WA_DeleteOnClose, True)
+        d.destroyed.connect(self._on_radar_plot_dialog_destroyed)
+        d.show()
+        d.raise_()
+        d.activateWindow()
+
+    def _on_radar_plot_dialog_destroyed(self) -> None:
+        self._radar_plot_dialog = None
+
     def _open_medchem_space_dialog(
         self,
         *,

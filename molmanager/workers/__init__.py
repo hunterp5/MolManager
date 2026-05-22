@@ -33,7 +33,12 @@ def __getattr__(name: str) -> Any:
 
 from .cluster_worker import ClusterExploreWorker, ClusterWorker
 from .export_worker import ExportWorker
-from .fingerprint_similarity import FPSimilarityWorker, SIMILARITY_FP_TYPE_LABELS, fingerprint_bitvect_for_ui_choice
+from ..rdkit_fingerprints import SIMILARITY_FP_TYPE_LABELS, fingerprint_bitvect_for_ui_choice
+from .fingerprint_similarity import (
+    FPSimilarityWorker,
+    SIMILARITY_METRIC_LABELS,
+    pairwise_fingerprint_similarity,
+)
 from .load_render import (
     Render2DBatchHeldJob,
     Render2DBatchProcessWorker,
@@ -66,6 +71,7 @@ __all__ = [
     "FPSimilaritySignals",
     "FPSimilarityWorker",
     "SIMILARITY_FP_TYPE_LABELS",
+    "SIMILARITY_METRIC_LABELS",
     "PKaPredictorSignals",
     "PKaPredictorWorker",
     "PermeabilityPredictorSignals",

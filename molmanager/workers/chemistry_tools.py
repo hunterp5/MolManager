@@ -54,7 +54,7 @@ from ..pkasolver_descriptor_support import int_fns_need_pkasolver, microstates_f
 from .pkasolver_parallel import build_microstates_cache_for_rows
 from ..safe_calc import eval_custom_calc_expression
 from ..utils import mol_to_canonical_smiles, parse_molecule_from_cell_text
-from .fingerprint_similarity import _rdk_fp_onbits
+from ..rdkit_fingerprints import spec_for_internal_key, fingerprint_onbits_for_internal_key
 from .signals import WorkerSignals, emit_partial_results_if_cancelled
 
 logger = logging.getLogger(__name__)
@@ -125,32 +125,8 @@ def descriptor_callable_for_int_fn(i_f, smarts_cache, row_ctx=None):
     if func:
         return lambda m, f=func: f(m)
     if isinstance(i_f, str) and i_f.startswith("FP_"):
-        parts = i_f.split("_")
-        if parts[1].lower().startswith("morgan") or parts[1] == "Morgan" or (len(parts) >= 3 and parts[1].isdigit()):
-            try:
-                if parts[1] == "Morgan" and len(parts) >= 4:
-                    r = int(parts[2])
-                    nbits = int(parts[3])
-                elif len(parts) >= 3:
-                    r = int(parts[1])
-                    nbits = int(parts[2])
-                else:
-                    r, nbits = 2, 1024
-            except Exception:
-                r, nbits = 2, 1024
-            return lambda m, r=r, nbits=nbits: AllChem.GetMorganFingerprintAsBitVect(m, r, nBits=nbits).GetNumOnBits()
-        if parts[1] in ["RDK", "rdk", "Rdk"]:
-            try:
-                nbits = int(parts[2]) if len(parts) >= 3 else 2048
-            except Exception:
-                nbits = 2048
-            return lambda m, nbits=nbits: _rdk_fp_onbits(m, nbits)
-        if len(parts) >= 3 and parts[1] == "Pharm2D" and parts[2].lower() == "gobbi":
-            if Pharm2DGenerate is None:
-                return lambda m: "N/A"
-            return lambda m: _pharm2d_gobbi_onbits(m)
-        if parts[1] in ["MACCS", "maccs"]:
-            return lambda m: rdMolDescriptors.GetMACCSKeysFingerprint(m).GetNumOnBits()
+        if spec_for_internal_key(i_f) is not None:
+            return fingerprint_onbits_for_internal_key(i_f)
     return lambda m: "N/A"
 
 

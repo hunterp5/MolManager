@@ -118,13 +118,9 @@ class PropertyDialog(QDialog):
             },
         }
 
-        categories["Fingerprints"] = {
-            "2D pharmacophore (Gobbi) on-bits": "FP_Pharm2D_Gobbi",
-            "MACCS (166) bits": "FP_MACCS_166",
-            "Morgan (r=2,1024) bits": "FP_Morgan_2_1024",
-            "RDKit path FP (2048 bits)": "FP_RDK_2048",
-            "RDKit path FP (4096 bits)": "FP_RDK_4096",
-        }
+        from ...rdkit_fingerprints import descriptor_fingerprint_categories
+
+        categories["Fingerprints"] = descriptor_fingerprint_categories()
 
         self.cbs = {}
         for cat_name in sorted(categories, key=str.casefold):

@@ -119,6 +119,7 @@ class ChemistryMixin:
             "_umap_dialog",
             "_boiled_egg_dialog",
             "_golden_triangle_dialog",
+            "_radar_plot_dialog",
         ):
             dlg = getattr(self, attr, None)
             if dlg is None:
@@ -126,6 +127,8 @@ class ChemistryMixin:
             panel = getattr(dlg, "_panel", None)
             if panel is not None:
                 views.extend(iter_plot_selection_views(panel))
+                if callable(getattr(panel, "refresh_spoke_columns", None)):
+                    views.append(panel)
                 continue
             views.extend(iter_plot_selection_views(dlg))
         return views
@@ -133,7 +136,9 @@ class ChemistryMixin:
     def _refresh_active_plot_axis_columns(self) -> None:
         """Update plotter axis dropdowns when table columns or numeric bounds change."""
         for view in self._iter_active_plot_selection_views():
-            refresh = getattr(view, "refresh_axis_columns", None)
+            refresh = getattr(view, "refresh_axis_columns", None) or getattr(
+                view, "refresh_spoke_columns", None
+            )
             if callable(refresh):
                 try:
                     refresh()

@@ -2,6 +2,7 @@
 
 from molmanager.ui.plot import (
     AXIS_NONE,
+    PLOT_TYPE_HEATMAP,
     PLOT_TYPE_LINE_2D,
     PLOT_TYPE_SCATTER,
     infer_plot_mode,

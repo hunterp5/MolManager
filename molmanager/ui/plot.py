@@ -21,10 +21,12 @@ PLOT_TYPE_SCATTER = "scatter"
 PLOT_TYPE_LINE_2D = "line_2d"
 PLOT_TYPE_BOX = "box"
 PLOT_TYPE_VIOLIN = "violin"
+PLOT_TYPE_HEATMAP = "heatmap"
 
 PLOT_TYPE_CHOICES: tuple[tuple[str, str], ...] = (
     ("Scatter/Histogram", PLOT_TYPE_SCATTER),
     ("2D Line", PLOT_TYPE_LINE_2D),
+    ("Heatmap", PLOT_TYPE_HEATMAP),
     ("Box plot", PLOT_TYPE_BOX),
     ("Violin", PLOT_TYPE_VIOLIN),
 )
@@ -54,6 +56,7 @@ from PyQt5.QtWidgets import (
     QPushButton,
     QSizePolicy,
     QShortcut,
+    QSplitter,
     QTextEdit,
     QVBoxLayout,
     QWidget,
@@ -63,17 +66,25 @@ from plotly.offline import get_plotlyjs
 
 from ..plot_analysis import (
     FIT_NONE,
+    FIT_TRUNCATED_GAUSSIAN,
+    HISTOGRAM_ONLY_FITS,
     PLOT_FIT_CHOICES,
+    PLOT_FIT_CHOICES_XY,
+    fit_histogram_curve,
     fit_xy_curve,
     summarize_univariate,
     summarize_xy,
 )
 from ..plot_color import (
     PLOT_COLORSCALE_CHOICES,
+    color_values_are_numeric,
     normalize_color_column,
     resolve_plot_colorscale,
     scatter_marker_from_column_values,
 )
+from ..medchem_space import snapshot_scope_row_indices
+from ..plot_heatmap import build_heatmap_figure, oids_in_heatmap_cell, summarize_heatmap
+from .plot_color_range_controls import PlotColorRangeControls
 from ..utils import safe_float
 from .qt_widget_utils import apply_monospace_to_text_edit, make_window_minimizable
 
@@ -118,6 +129,8 @@ def resolve_plot_mode(
         return infer_plot_mode(x, y, z)
     if plot_type == PLOT_TYPE_LINE_2D:
         return "2D" if xn and yn else None
+    if plot_type == PLOT_TYPE_HEATMAP:
+        return "Heatmap" if xn and yn else None
     return None
 
 
@@ -224,30 +237,28 @@ class _PlotBridge(QObject):
     def histogramBinClicked(self, bin_index: int) -> None:  # noqa: N802
         self._plot_widget._on_histogram_bin_clicked(int(bin_index))
 
+    @pyqtSlot(float, float)
+    def heatmapCellClicked(self, x_value: float, y_value: float) -> None:  # noqa: N802
+        self._plot_widget._on_heatmap_cell_clicked(float(x_value), float(y_value))
 
-class PlotStatisticsDialog(QDialog):
-    """Modeless window for plot statistics and curve-fit summaries."""
+class PlotStatisticsPanel(QWidget):
+    """Embedded statistics and curve-fit summary beside the plot options."""
 
-    def __init__(self, parent: QWidget | None = None):
+    def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
-        self.setWindowTitle("Plot statistics")
-        self.setModal(False)
-        self.setWindowModality(Qt.NonModal)
-        self.resize(380, 320)
-
+        self.setMinimumWidth(200)
         root = QVBoxLayout(self)
+        root.setContentsMargins(4, 0, 0, 0)
+        root.setSpacing(4)
+        title = QLabel("Statistics")
+        title.setStyleSheet("font-weight: bold;")
+        root.addWidget(title)
         self.summary_text = QTextEdit()
         self.summary_text.setReadOnly(True)
+        self.summary_text.setMinimumHeight(120)
         apply_monospace_to_text_edit(self.summary_text)
         root.addWidget(self.summary_text, 1)
-
-        close_btn = QPushButton("Close")
-        close_btn.clicked.connect(self.hide)
-        row = QHBoxLayout()
-        row.addStretch()
-        row.addWidget(close_btn)
-        root.addLayout(row)
-        make_window_minimizable(self)
+        self.set_lines(["Plot data to see summary statistics."])
 
     def set_lines(self, lines: list[str]) -> None:
         self.summary_text.setPlainText("\n".join(lines) if lines else "")
@@ -259,7 +270,6 @@ class PlotWidget(QWidget):
     def __init__(self, parent_app=None):
         super().__init__(None)
         self.parent_app = parent_app
-        self._stats_dialog: PlotStatisticsDialog | None = None
 
         self._plot_shell_path = Path(tempfile.gettempdir()) / f"MOLMANAGER_plot_shell_{id(self)}.html"
         self._last_browser_opened_path: str | None = None
@@ -272,6 +282,11 @@ class PlotWidget(QWidget):
         self._hist_edges: list[float] = []
         self._hist_vals: list[float] = []
         self._hist_oids: list[int] = []
+        self._heat_x: list[float] = []
+        self._heat_y: list[float] = []
+        self._heat_oids: list[int] = []
+        self._heat_x_edges: list[float] = []
+        self._heat_y_edges: list[float] = []
 
         root = QVBoxLayout(self)
         root.setContentsMargins(4, 4, 4, 4)
@@ -318,8 +333,13 @@ class PlotWidget(QWidget):
         self.zmax.setFixedWidth(range_edit_w)
         self.hist_bin_width = QLineEdit()
         self.hist_bin_width.setFixedWidth(range_edit_w)
-        self.hist_bin_width.setToolTip("Histogram bar width in X axis units (empty = automatic).")
+        self.hist_bin_width.setToolTip("X-axis bin width for histogram or heatmap (empty = automatic).")
         self.hist_bin_width.editingFinished.connect(self._schedule_plot)
+        self.heatmap_y_bin_width_label = QLabel("Y bin width:")
+        self.heatmap_y_bin_width = QLineEdit()
+        self.heatmap_y_bin_width.setFixedWidth(range_edit_w)
+        self.heatmap_y_bin_width.setToolTip("Y-axis bin width for heatmap (empty = automatic).")
+        self.heatmap_y_bin_width.editingFinished.connect(self._schedule_plot)
 
         gb_axes = QGroupBox("Axes")
         axes_l = QVBoxLayout(gb_axes)
@@ -333,7 +353,13 @@ class PlotWidget(QWidget):
             self.xmax,
             extra_after_range=(self.hist_bin_width_label, self.hist_bin_width),
         )
-        self._y_axis_row = self._build_axis_row("Y", self.y_combo, self.ymin, self.ymax)
+        self._y_axis_row = self._build_axis_row(
+            "Y",
+            self.y_combo,
+            self.ymin,
+            self.ymax,
+            extra_after_range=(self.heatmap_y_bin_width_label, self.heatmap_y_bin_width),
+        )
         self._z_axis_row = self._build_axis_row("Z", self.z_combo, self.zmin, self.zmax)
         axes_l.addWidget(self._x_axis_row)
         axes_l.addWidget(self._y_axis_row)
@@ -365,46 +391,71 @@ class PlotWidget(QWidget):
         self._color_by_label = QLabel("Color by:")
         color_row.addWidget(self._color_by_label)
         self.color_combo = QComboBox()
-        self.color_combo.setMinimumWidth(160)
+        self.color_combo.setMinimumWidth(120)
         self.color_combo.setToolTip(
             "Color scatter and line points by a table column (numeric or categorical)."
         )
         self.color_combo.currentIndexChanged.connect(self._on_color_column_changed)
-        color_row.addWidget(self.color_combo, 1)
-        axes_l.addLayout(color_row)
-
-        spectrum_row = QHBoxLayout()
-        spectrum_row.setSpacing(6)
+        color_row.addWidget(self.color_combo)
         self._spectrum_label = QLabel("Spectrum:")
-        spectrum_row.addWidget(self._spectrum_label)
+        color_row.addWidget(self._spectrum_label)
         self.colorscale_combo = QComboBox()
+        self.colorscale_combo.setMinimumWidth(100)
         self.colorscale_combo.addItems(PLOT_COLORSCALE_CHOICES)
         self.colorscale_combo.setToolTip("Continuous colorscale for numeric Color by columns.")
         self.colorscale_combo.currentIndexChanged.connect(self._schedule_plot)
-        spectrum_row.addWidget(self.colorscale_combo, 1)
-        axes_l.addLayout(spectrum_row)
+        color_row.addWidget(self.colorscale_combo)
+        self.color_range = PlotColorRangeControls()
+        self.color_range.connect_changed(self._schedule_plot)
+        color_row.addWidget(self.color_range)
+        color_row.addStretch()
+        axes_l.addLayout(color_row)
 
         analysis_row = QHBoxLayout()
         analysis_row.setSpacing(6)
-        self.show_stats_cb = QCheckBox("Show statistics")
-        self.show_stats_cb.setToolTip("Open a window with summary statistics for the current plot.")
-        self.show_stats_cb.stateChanged.connect(self._on_analysis_option_changed)
-        analysis_row.addWidget(self.show_stats_cb)
         self._fit_label = QLabel("Fit:")
         analysis_row.addWidget(self._fit_label)
         self.fit_combo = QComboBox()
         self.fit_combo.setMinimumWidth(120)
         self.fit_combo.setToolTip(
-            "Add a linear or quadratic least-squares fit line (2D plots) and show the equation in the statistics window."
+            "Overlay a fit on 2D/line plots, or on histograms (Gaussian, log-normal, truncated Gaussian, or bin trends)."
         )
-        for label, key in PLOT_FIT_CHOICES:
-            self.fit_combo.addItem(label, key)
-        self.fit_combo.currentIndexChanged.connect(self._on_analysis_option_changed)
-        analysis_row.addWidget(self.fit_combo, 1)
+        self._refresh_fit_combo_items()
+        self.fit_combo.currentIndexChanged.connect(self._on_fit_option_changed)
+        analysis_row.addWidget(self.fit_combo)
+        trunc_bound_w = 64
+        self._trunc_lower_label = QLabel("Trunc lower:")
+        self._trunc_lower_label.setToolTip("Lower truncation bound (empty = no lower bound).")
+        analysis_row.addWidget(self._trunc_lower_label)
+        self.fit_trunc_lower = QLineEdit()
+        self.fit_trunc_lower.setFixedWidth(trunc_bound_w)
+        self.fit_trunc_lower.setPlaceholderText("—")
+        self.fit_trunc_lower.setToolTip(self._trunc_lower_label.toolTip())
+        self.fit_trunc_lower.editingFinished.connect(self._schedule_plot)
+        analysis_row.addWidget(self.fit_trunc_lower)
+        self._trunc_upper_label = QLabel("Trunc upper:")
+        self._trunc_upper_label.setToolTip("Upper truncation bound (empty = no upper bound).")
+        analysis_row.addWidget(self._trunc_upper_label)
+        self.fit_trunc_upper = QLineEdit()
+        self.fit_trunc_upper.setFixedWidth(trunc_bound_w)
+        self.fit_trunc_upper.setPlaceholderText("—")
+        self.fit_trunc_upper.setToolTip(self._trunc_upper_label.toolTip())
+        self.fit_trunc_upper.editingFinished.connect(self._schedule_plot)
+        analysis_row.addWidget(self.fit_trunc_upper)
+        analysis_row.addStretch()
         axes_l.addLayout(analysis_row)
 
         ctrl_root.addWidget(gb_axes)
-        root.addWidget(ctrl_wrap)
+
+        bottom_splitter = QSplitter(Qt.Horizontal)
+        bottom_splitter.setChildrenCollapsible(False)
+        bottom_splitter.addWidget(ctrl_wrap)
+        self._stats_panel = PlotStatisticsPanel(self)
+        bottom_splitter.addWidget(self._stats_panel)
+        bottom_splitter.setStretchFactor(0, 1)
+        bottom_splitter.setStretchFactor(1, 1)
+        bottom_splitter.setSizes([400, 280])
+        root.addWidget(bottom_splitter)
 
         self._bridge = _PlotBridge(self)
         self._web_channel = QWebChannel(self.web.page())
@@ -510,10 +561,13 @@ class PlotWidget(QWidget):
     def _scatter_marker_for_oids(self, oids: list[int], *, point_size: float = 6) -> dict:
         color_vals, color_label = self._color_values_for_oids(oids)
         color_vals, color_label = normalize_color_column(color_vals, color_label)
+        color_min, color_max = self.color_range.parse_bounds()
         return scatter_marker_from_column_values(
             color_vals,
             color_label=color_label,
             colorscale=resolve_plot_colorscale(self.colorscale_combo.currentText()),
+            color_min=color_min,
+            color_max=color_max,
             point_size=point_size,
         )
 
@@ -525,30 +579,57 @@ class PlotWidget(QWidget):
         key = self.fit_combo.currentData()
         return str(key) if key else FIT_NONE
 
+    def _is_histogram_plot(self) -> bool:
+        return (
+            self._current_plot_type() == PLOT_TYPE_SCATTER
+            and self._effective_plot_mode() == "Histogram"
+        )
+
     def _analysis_supports_fit(self) -> bool:
         ptype = self._current_plot_type()
+        if ptype in (PLOT_TYPE_HEATMAP, PLOT_TYPE_BOX, PLOT_TYPE_VIOLIN):
+            return False
         if ptype == PLOT_TYPE_LINE_2D:
             return True
         if ptype != PLOT_TYPE_SCATTER:
             return False
-        return self._effective_plot_mode() == "2D"
+        return self._effective_plot_mode() in ("2D", "Histogram")
 
-    def _on_analysis_option_changed(self, *_args) -> None:
-        if not self.show_stats_cb.isChecked() and self._current_fit_kind() == FIT_NONE:
-            self._hide_stats_dialog()
+    def _refresh_fit_combo_items(self) -> None:
+        prev = self._current_fit_kind()
+        choices = PLOT_FIT_CHOICES if self._is_histogram_plot() else PLOT_FIT_CHOICES_XY
+        self.fit_combo.blockSignals(True)
+        try:
+            self.fit_combo.clear()
+            for label, key in choices:
+                self.fit_combo.addItem(label, key)
+            idx = self.fit_combo.findData(prev)
+            if idx < 0:
+                idx = 0
+            self.fit_combo.setCurrentIndex(idx)
+        finally:
+            self.fit_combo.blockSignals(False)
+
+    def _on_fit_option_changed(self, *_args) -> None:
+        self._update_analysis_controls()
         self._schedule_plot()
 
-    def _hide_stats_dialog(self) -> None:
-        if self._stats_dialog is not None:
-            self._stats_dialog.hide()
+    def _truncation_bounds(self) -> tuple[float | None, float | None]:
+        return (
+            self._parse_edit_float(self.fit_trunc_lower),
+            self._parse_edit_float(self.fit_trunc_upper),
+        )
 
-    def _present_analysis_dialog(
+    def _uses_truncated_gaussian_fit(self) -> bool:
+        return self._is_histogram_plot() and self._current_fit_kind() == FIT_TRUNCATED_GAUSSIAN
+
+    def _present_analysis_panel(
         self,
         stats_lines: list[str] | None,
         fit_summary: str | None,
     ) -> None:
         parts: list[str] = []
-        if self.show_stats_cb.isChecked() and stats_lines:
+        if stats_lines:
             parts.extend(stats_lines)
         if fit_summary:
             if parts:
@@ -557,31 +638,22 @@ class PlotWidget(QWidget):
             parts.append(f"  {fit_summary}")
             parts.append("  (orange line on plot)")
         if not parts:
-            self._hide_stats_dialog()
+            self._stats_panel.set_lines(["No statistics for the current plot."])
             return
-        parent = self.parent_app if self.parent_app is not None else self
-        if self._stats_dialog is None:
-            self._stats_dialog = PlotStatisticsDialog(parent)
-            self._stats_dialog.finished.connect(self._on_stats_dialog_closed)
-        self._stats_dialog.set_lines(parts)
-        self._stats_dialog.show()
-        self._stats_dialog.raise_()
-        self._stats_dialog.activateWindow()
+        self._stats_panel.set_lines(parts)
 
-    def _on_stats_dialog_closed(self, _result: int = 0) -> None:
-        self.show_stats_cb.blockSignals(True)
-        try:
-            self.show_stats_cb.setChecked(False)
-        finally:
-            self.show_stats_cb.blockSignals(False)
+    def _present_analysis_dialog(
+        self,
+        stats_lines: list[str] | None,
+        fit_summary: str | None,
+    ) -> None:
+        """Backward-compatible alias for :meth:`_present_analysis_panel`."""
+        self._present_analysis_panel(stats_lines, fit_summary)
 
-    def _add_xy_fit_trace(self, fig: go.Figure, x: list[float], y: list[float]) -> str | None:
-        if not self._analysis_supports_fit() or self._current_fit_kind() == FIT_NONE:
-            return None
-        fit = fit_xy_curve(x, y, self._current_fit_kind())
-        if not fit:
-            return None
-        xs, ys, name = fit
+    def _fit_summary_from_name(self, name: str) -> str:
+        return name.removeprefix("Fit: ").strip() if name.startswith("Fit:") else name
+
+    def _add_fit_line_trace(self, fig: go.Figure, xs: list[float], ys: list[float]) -> None:
         fig.add_trace(
             go.Scatter(
                 x=xs,
@@ -591,28 +663,98 @@ class PlotWidget(QWidget):
                 line={"color": "#e76f51", "width": 2.5, "dash": "solid"},
             )
         )
-        return name.removeprefix("Fit: ").strip() if name.startswith("Fit:") else name
+
+    def _add_xy_fit_trace(self, fig: go.Figure, x: list[float], y: list[float]) -> str | None:
+        if self._is_histogram_plot() or self._current_fit_kind() in HISTOGRAM_ONLY_FITS:
+            return None
+        if not self._analysis_supports_fit() or self._current_fit_kind() == FIT_NONE:
+            return None
+        fit = fit_xy_curve(x, y, self._current_fit_kind())
+        if not fit:
+            return None
+        xs, ys, name = fit
+        self._add_fit_line_trace(fig, xs, ys)
+        return self._fit_summary_from_name(name)
+
+    def _add_histogram_fit_trace(
+        self,
+        fig: go.Figure,
+        vals: list[float],
+        edges: list[float],
+        *,
+        bin_width: float,
+    ) -> str | None:
+        if not self._is_histogram_plot() or self._current_fit_kind() == FIT_NONE:
+            return None
+        trunc_lo, trunc_hi = self._truncation_bounds()
+        fit = fit_histogram_curve(
+            vals,
+            edges,
+            self._current_fit_kind(),
+            bin_width=bin_width,
+            trunc_lower=trunc_lo,
+            trunc_upper=trunc_hi,
+        )
+        if not fit:
+            return None
+        xs, ys, name = fit
+        self._add_fit_line_trace(fig, xs, ys)
+        return self._fit_summary_from_name(name)
 
     def _update_analysis_controls(self) -> None:
+        self._refresh_fit_combo_items()
         fit_ok = self._analysis_supports_fit()
         self._fit_label.setEnabled(fit_ok)
         self.fit_combo.setEnabled(fit_ok)
+        trunc_on = fit_ok and self._uses_truncated_gaussian_fit()
+        for widget in (
+            self._trunc_lower_label,
+            self.fit_trunc_lower,
+            self._trunc_upper_label,
+            self.fit_trunc_upper,
+        ):
+            widget.setEnabled(trunc_on)
+            widget.setVisible(self._is_histogram_plot())
 
     def _color_by_supported(self) -> bool:
         ptype = self._current_plot_type()
+        if ptype in (PLOT_TYPE_HEATMAP, PLOT_TYPE_BOX, PLOT_TYPE_VIOLIN):
+            return False
         if ptype == PLOT_TYPE_LINE_2D:
             return True
         if ptype != PLOT_TYPE_SCATTER:
             return False
         return self._effective_plot_mode() in ("2D", "3D")
 
+    def _probe_color_values(self) -> list | None:
+        """Sample color-column values for numeric vs categorical detection."""
+        color_col = self._current_color_column()
+        if not color_col or self.parent_app is None:
+            return None
+        if self._plotted_oids:
+            vals, _ = self._color_values_for_oids(self._plotted_oids)
+            return vals
+        model = self.parent_app._table_model
+        out: list = []
+        for r in range(min(model.rowCount(), 2000)):
+            raw = model.value_for_header(r, color_col)
+            out.append(raw if (raw or "").strip() else None)
+        return out
+
     def _update_color_controls(self) -> None:
+        heatmap = self._is_heatmap_plot()
         supported = self._color_by_supported()
         self.color_combo.setEnabled(supported)
         self._color_by_label.setEnabled(supported)
-        spectrum_on = supported and self._current_color_column() is not None
+        spectrum_on = heatmap or (supported and self._current_color_column() is not None)
         self._spectrum_label.setEnabled(spectrum_on)
         self.colorscale_combo.setEnabled(spectrum_on)
+        numeric = (
+            not heatmap
+            and spectrum_on
+            and color_values_are_numeric(self._probe_color_values())
+        )
+        self.color_range.set_enabled(numeric)
         self._update_analysis_controls()
 
     def _schedule_plot(self) -> None:
@@ -737,16 +879,37 @@ class PlotWidget(QWidget):
             return True
         return ptype == PLOT_TYPE_SCATTER and self._infer_plot_mode() == "Histogram"
 
-    def _shows_bin_width(self) -> bool:
-        return self._current_plot_type() == PLOT_TYPE_SCATTER
+    def _is_heatmap_plot(self) -> bool:
+        return self._current_plot_type() == PLOT_TYPE_HEATMAP
+
+    def _shows_x_bin_width(self) -> bool:
+        ptype = self._current_plot_type()
+        return ptype in (PLOT_TYPE_SCATTER, PLOT_TYPE_HEATMAP)
+
+    def _shows_y_bin_width(self) -> bool:
+        return self._is_heatmap_plot()
 
     def _supports_scatter_selection(self) -> bool:
         mode = self._effective_plot_mode()
         return mode in ("2D", "3D")
 
+    def _plot_source_row_indices(self) -> list[int]:
+        """Source-model rows for plotting (visible/filtered rows; optional selection-only)."""
+        model = self.parent_app._table_model
+        only_sel = None
+        n_sel_now = len(self.parent_app._selected_logical_rows())
+        if n_sel_now > 0 and self.only_selected_cb.isChecked():
+            only_sel = list(self.parent_app._selected_logical_rows())
+        visible = self.parent_app._visible_source_row_indices()
+        return snapshot_scope_row_indices(
+            model.rowCount(),
+            only_selected_rows=only_sel,
+            visible_row_indices=visible,
+        )
+
     def _collect_points(self) -> tuple[list[float], list[float], list[float], list[int], str, str, str | None]:
         mode = self._effective_plot_mode()
-        if mode not in ("2D", "3D"):
+        if mode not in ("2D", "3D", "Heatmap"):
             return [], [], [], [], "", "", None
 
         xname = self._combo_axis_name(self.x_combo) or ""
@@ -785,7 +948,7 @@ class PlotWidget(QWidget):
         fz: list[float] = []
         foids: list[int] = []
         m = self.parent_app._table_model
-        for r in range(m.rowCount()):
+        for r in self._plot_source_row_indices():
             oid = int(m.row_oid(r))
             if allowed is not None and oid not in allowed:
                 continue
@@ -840,7 +1003,7 @@ class PlotWidget(QWidget):
         vals: list[float] = []
         oids: list[int] = []
         m = self.parent_app._table_model
-        for r in range(m.rowCount()):
+        for r in self._plot_source_row_indices():
             oid = int(m.row_oid(r))
             if allowed is not None and oid not in allowed:
                 continue
@@ -958,6 +1121,16 @@ class PlotWidget(QWidget):
                 if (!ev || !ev.points || !ev.points.length || !gd.data || !gd.data.length) return;
                 var pt = ev.points[0];
                 var trace = gd.data[pt.curveNumber];
+                if (trace && trace.type === "heatmap") {{
+                  if (bridge && bridge.heatmapCellClicked) {{
+                    var xv = Number(pt.x);
+                    var yv = Number(pt.y);
+                    if (Number.isFinite(xv) && Number.isFinite(yv)) {{
+                      bridge.heatmapCellClicked(xv, yv);
+                    }}
+                  }}
+                  return;
+                }}
                 if (trace && trace.type === "histogram") {{
                   if (bridge && bridge.histogramPointsSelected) {{
                     var nums = pt.pointNumbers;
@@ -1072,7 +1245,7 @@ class PlotWidget(QWidget):
         self._ignore_plot_clear_until = time.monotonic() + (ms / 1000.0)
 
     def _render_empty_plot(self, title: str) -> None:
-        self._hide_stats_dialog()
+        self._stats_panel.set_lines(["No statistics for the current plot."])
         fig = go.Figure()
         fig.update_layout(
             title=title,
@@ -1120,29 +1293,33 @@ class PlotWidget(QWidget):
             return "Choose a numeric column for the X axis."
         if ptype == PLOT_TYPE_LINE_2D:
             return "Choose X and Y columns for the line chart."
+        if ptype == PLOT_TYPE_HEATMAP:
+            return "Choose X and Y columns for the heatmap."
         return "Choose axes for the current plot type."
 
     def plot(self):
         ptype = self._current_plot_type()
         if ptype in (PLOT_TYPE_BOX, PLOT_TYPE_VIOLIN):
             self._plot_distribution(ptype)
-            return
-        if ptype == PLOT_TYPE_LINE_2D:
+        elif ptype == PLOT_TYPE_LINE_2D:
             self._plot_line_2d()
-            return
-        mode = self._effective_plot_mode()
-        if mode is None:
-            self._render_empty_plot(self._empty_plot_hint())
-            return
-        if mode == "Histogram":
-            self._plot_histogram()
-            return
-        self._plot_scatter(mode)
+        elif ptype == PLOT_TYPE_HEATMAP:
+            self._plot_heatmap()
+        else:
+            mode = self._effective_plot_mode()
+            if mode is None:
+                self._render_empty_plot(self._empty_plot_hint())
+            elif mode == "Histogram":
+                self._plot_histogram()
+            else:
+                self._plot_scatter(mode)
+        self._update_color_controls()
 
     def _plot_scatter(self, mode: str) -> None:
         self._hist_edges = []
         self._hist_vals = []
         self._hist_oids = []
+        self._clear_heatmap_state()
         fx, fy, fz, foids, xname, yname, zname = self._collect_points()
         if not xname or not yname:
             self._render_empty_plot(self._empty_plot_hint())
@@ -1174,7 +1351,7 @@ class PlotWidget(QWidget):
                     yaxis={"title": yname, **self._plotly_axis_range(ymin, ymax, [])},
                     margin={"l": 50, "r": 20, "t": 20, "b": 45},
                 )
-            self._hide_stats_dialog()
+            self._stats_panel.set_lines(["No statistics for the current plot."])
             self._push_plotly_figure(fig)
             self.parent_app.status_label.setText("Plot: no points for current axis/range/scope.")
             return
@@ -1252,6 +1429,7 @@ class PlotWidget(QWidget):
         self.parent_app.status_label.setText(f"Plot: rendered {len(fx):,} point(s).")
 
     def _plot_line_2d(self) -> None:
+        self._clear_heatmap_state()
         fx, fy, _fz, foids, xname, yname, _zname = self._collect_points()
         if not xname or not yname:
             self._render_empty_plot(self._empty_plot_hint())
@@ -1269,7 +1447,7 @@ class PlotWidget(QWidget):
                 yaxis={"title": yname, **self._plotly_axis_range(ymin, ymax, [])},
                 margin={"l": 50, "r": 20, "t": 20, "b": 45},
             )
-            self._hide_stats_dialog()
+            self._stats_panel.set_lines(["No statistics for the current plot."])
             self._push_plotly_figure(fig)
             self.parent_app.status_label.setText("Line plot: no points for current axis/range/scope.")
             return
@@ -1307,6 +1485,7 @@ class PlotWidget(QWidget):
         self.parent_app.status_label.setText(f"Line plot: {len(fx):,} point(s).")
 
     def _plot_distribution(self, kind: str) -> None:
+        self._clear_heatmap_state()
         vals, oids, xname = self._collect_histogram()
         if not xname:
             self._render_empty_plot(self._empty_plot_hint())
@@ -1322,7 +1501,7 @@ class PlotWidget(QWidget):
                 yaxis={"title": xname, **self._plotly_axis_range(xmin, xmax, [])},
                 margin={"l": 50, "r": 20, "t": 20, "b": 45},
             )
-            self._hide_stats_dialog()
+            self._stats_panel.set_lines(["No statistics for the current plot."])
             self._push_plotly_figure(fig)
             self.parent_app.status_label.setText(f"{label}: no values for current column/range/scope.")
             return
@@ -1349,6 +1528,7 @@ class PlotWidget(QWidget):
         self.parent_app.status_label.setText(f"{label}: {len(vals):,} value(s) in {xname!r}.")
 
     def _plot_histogram(self) -> None:
+        self._clear_heatmap_state()
         vals, oids, xname = self._collect_histogram()
         if not xname:
             self._render_empty_plot("Choose a column for the histogram.")
@@ -1368,7 +1548,7 @@ class PlotWidget(QWidget):
                 yaxis={"title": "Count"},
                 margin={"l": 50, "r": 20, "t": 20, "b": 45},
             )
-            self._hide_stats_dialog()
+            self._stats_panel.set_lines(["No statistics for the current plot."])
             self._push_plotly_figure(fig)
             self.parent_app.status_label.setText("Histogram: no values for current column/range/scope.")
             return
@@ -1398,9 +1578,103 @@ class PlotWidget(QWidget):
             bargap=0.02,
             margin={"l": 50, "r": 20, "t": 20, "b": 45},
         )
-        self._present_analysis_dialog(summarize_univariate(vals, label=xname), None)
+        fit_summary = self._add_histogram_fit_trace(fig, vals, edges, bin_width=width)
+        self._present_analysis_dialog(summarize_univariate(vals, label=xname), fit_summary)
         self._push_plotly_figure(fig)
         self.parent_app.status_label.setText(f"Histogram: {len(vals):,} value(s) in {xname!r}.")
+
+    def _clear_heatmap_state(self) -> None:
+        self._heat_x = []
+        self._heat_y = []
+        self._heat_oids = []
+        self._heat_x_edges = []
+        self._heat_y_edges = []
+
+    def _plot_heatmap(self) -> None:
+        self._hist_edges = []
+        self._hist_vals = []
+        self._hist_oids = []
+        self._clear_heatmap_state()
+        fx, fy, _fz, foids, xname, yname, _zname = self._collect_points()
+        if not xname or not yname:
+            self._render_empty_plot(self._empty_plot_hint())
+            return
+        xmin = self._parse_edit_float(self.xmin)
+        xmax = self._parse_edit_float(self.xmax)
+        ymin = self._parse_edit_float(self.ymin)
+        ymax = self._parse_edit_float(self.ymax)
+        x_bin_width = self._parse_edit_float(self.hist_bin_width)
+        y_bin_width = self._parse_edit_float(self.heatmap_y_bin_width)
+
+        if not fx:
+            self._plotted_oids = []
+            self._selected_point_indices = set()
+            fig = go.Figure()
+            fig.update_layout(
+                xaxis={"title": xname, **self._plotly_axis_range(xmin, xmax, [])},
+                yaxis={"title": yname, **self._plotly_axis_range(ymin, ymax, [])},
+                margin={"l": 50, "r": 20, "t": 20, "b": 45},
+            )
+            self._stats_panel.set_lines(["No statistics for the current plot."])
+            self._push_plotly_figure(fig)
+            self.parent_app.status_label.setText("Heatmap: no points for current axis/range/scope.")
+            return
+
+        x_edges, x_width = compute_histogram_bin_edges(
+            fx, bin_width=x_bin_width, xmin=xmin, xmax=xmax
+        )
+        y_edges, y_width = compute_histogram_bin_edges(
+            fy, bin_width=y_bin_width, xmin=ymin, xmax=ymax
+        )
+        colorscale = resolve_plot_colorscale(self.colorscale_combo.currentText())
+        fig, counts = build_heatmap_figure(
+            fx,
+            fy,
+            x_label=xname,
+            y_label=yname,
+            x_edges=x_edges,
+            y_edges=y_edges,
+            colorscale=colorscale,
+        )
+        self._heat_x = list(fx)
+        self._heat_y = list(fy)
+        self._heat_oids = list(foids)
+        self._heat_x_edges = list(x_edges)
+        self._heat_y_edges = list(y_edges)
+        self._plotted_oids = list(foids)
+        self._selected_point_indices = set()
+        stats = summarize_heatmap(
+            fx,
+            fy,
+            x_label=xname,
+            y_label=yname,
+            x_edges=x_edges,
+            y_edges=y_edges,
+            counts=counts,
+        )
+        self._present_analysis_dialog(stats, None)
+        self._push_plotly_figure(fig)
+        self.parent_app.status_label.setText(
+            f"Heatmap: {len(fx):,} point(s), {len(x_edges) - 1}×{len(y_edges) - 1} bins."
+        )
+
+    def _on_heatmap_cell_clicked(self, x_value: float, y_value: float) -> None:
+        oids = oids_in_heatmap_cell(
+            self._heat_x,
+            self._heat_y,
+            self._heat_oids,
+            self._heat_x_edges,
+            self._heat_y_edges,
+            x_value,
+            y_value,
+        )
+        if not oids:
+            return
+        self._arm_ignore_plot_clear()
+        self._select_rows_for_oids(oids)
+        self.parent_app.status_label.setText(
+            f"Heatmap: selected {len(oids):,} row(s) in the clicked cell."
+        )
 
     def _on_histogram_points_selected(self, indices_json: str) -> None:
         try:
@@ -1545,8 +1819,20 @@ class PlotWidget(QWidget):
             self._x_axis_row.setVisible(True)
             self._y_axis_row.setVisible(True)
             self._z_axis_row.setVisible(True)
+            self.hist_bin_width_label.setText("Bin width:")
             self.hist_bin_width_label.setVisible(True)
             self.hist_bin_width.setVisible(True)
+            self.heatmap_y_bin_width_label.setVisible(False)
+            self.heatmap_y_bin_width.setVisible(False)
+        elif ptype == PLOT_TYPE_HEATMAP:
+            self._x_axis_row.setVisible(True)
+            self._y_axis_row.setVisible(True)
+            self._z_axis_row.setVisible(False)
+            self.hist_bin_width_label.setText("X bin width:")
+            self.hist_bin_width_label.setVisible(True)
+            self.hist_bin_width.setVisible(True)
+            self.heatmap_y_bin_width_label.setVisible(True)
+            self.heatmap_y_bin_width.setVisible(True)
         else:
             if ptype == PLOT_TYPE_LINE_2D:
                 mode = "2D"
@@ -1558,9 +1844,12 @@ class PlotWidget(QWidget):
             single_col = self._is_single_column_plot()
             self._y_axis_row.setVisible(not single_col)
             self._z_axis_row.setVisible(is3d)
-            show_bw = self._shows_bin_width()
-            self.hist_bin_width_label.setVisible(show_bw)
-            self.hist_bin_width.setVisible(show_bw)
+            show_x_bw = self._shows_x_bin_width()
+            self.hist_bin_width_label.setText("Bin width:")
+            self.hist_bin_width_label.setVisible(show_x_bw)
+            self.hist_bin_width.setVisible(show_x_bw)
+            self.heatmap_y_bin_width_label.setVisible(False)
+            self.heatmap_y_bin_width.setVisible(False)
 
         xname = self.x_combo.currentText()
         self._maybe_default_axis_range_edits("x", xname, self.xmin, self.xmax)

@@ -33,9 +33,11 @@ from ...workers.dimensionality_reduction import DimensionReductionSignals, Dimen
 from ..data_analysis import numeric_subset, table_to_dataframe
 from ...plot_color import (
     PLOT_COLORSCALE_CHOICES,
+    color_values_are_numeric,
     normalize_color_column,
     resolve_plot_colorscale,
 )
+from ..plot_color_range_controls import PlotColorRangeControls
 from ..dimred_plot import build_dimension_reduction_figure, dimension_reduction_result_with_color
 from ..plotly_interactive_view import PlotlyInteractiveView
 from ..qt_widget_utils import apply_monospace_to_text_edit, make_window_minimizable
@@ -99,12 +101,6 @@ class DimensionReductionPanel(QWidget):
         src_ly.addLayout(struct_row)
 
         scope_row = QHBoxLayout()
-        self.chk_visible = QCheckBox("Visible Only")
-        self.chk_visible.setToolTip("Visible rows only (respect filters)")
-        self.chk_visible.setChecked(True)
-        self.chk_visible.stateChanged.connect(self._reload_columns)
-        scope_row.addWidget(self.chk_visible)
-
         self.only_selected_cb = QCheckBox("Only Selected Rows")
         self._only_selected_scope_prefix = "Only Selected Rows"
         if self._have_selection:
@@ -127,22 +123,26 @@ class DimensionReductionPanel(QWidget):
         self._opts_form.addRow(self.standardize_cb)
 
         color_row = QHBoxLayout()
-        color_row.addWidget(QLabel("Color by:"))
+        color_row.setSpacing(6)
+        self._color_by_label = QLabel("Color by:")
+        color_row.addWidget(self._color_by_label)
         self.color_combo = QComboBox()
-        self.color_combo.setMinimumWidth(160)
+        self.color_combo.setMinimumWidth(120)
         self.color_combo.currentIndexChanged.connect(self._on_color_column_changed)
-        color_row.addWidget(self.color_combo, 1)
-        left_ly.addLayout(color_row)
-
-        spectrum_row = QHBoxLayout()
+        color_row.addWidget(self.color_combo)
         self._spectrum_label = QLabel("Spectrum:")
-        spectrum_row.addWidget(self._spectrum_label)
+        color_row.addWidget(self._spectrum_label)
         self.colorscale_combo = QComboBox()
+        self.colorscale_combo.setMinimumWidth(100)
         self.colorscale_combo.addItems(PLOT_COLORSCALE_CHOICES)
         self.colorscale_combo.setToolTip("Continuous colorscale for numeric Color by columns.")
-        self.colorscale_combo.currentIndexChanged.connect(self._on_colorscale_changed)
-        spectrum_row.addWidget(self.colorscale_combo, 1)
-        left_ly.addLayout(spectrum_row)
+        self.colorscale_combo.currentIndexChanged.connect(self._on_color_range_or_scale_changed)
+        color_row.addWidget(self.colorscale_combo)
+        self.color_range = PlotColorRangeControls()
+        self.color_range.connect_changed(self._on_color_range_changed)
+        color_row.addWidget(self.color_range)
+        color_row.addStretch()
+        left_ly.addLayout(color_row)
 
         run_row = QHBoxLayout()
         run_row.setContentsMargins(0, 10, 0, 6)
@@ -237,9 +237,8 @@ class DimensionReductionPanel(QWidget):
             if self.parent_app is None:
                 return
             self._refresh_structure_sources()
-            vis = self.chk_visible.isChecked()
             only_sel = selection_scope_checked(self)
-            df, _rows = table_to_dataframe(self.parent_app, visible_only=vis, only_selected=only_sel)
+            df, _rows = table_to_dataframe(self.parent_app, visible_only=True, only_selected=only_sel)
             num = numeric_subset(df, exclude_id=True)
             for col in num.columns:
                 item = QListWidgetItem(col)
@@ -272,10 +271,24 @@ class DimensionReductionPanel(QWidget):
     def _current_colorscale(self) -> str:
         return resolve_plot_colorscale(self.colorscale_combo.currentText())
 
+    def _current_color_bounds(self) -> tuple[float | None, float | None]:
+        return self.color_range.parse_bounds()
+
     def _update_spectrum_controls(self) -> None:
         enabled = self.color_combo.currentText() != "(none)"
         self._spectrum_label.setEnabled(enabled)
         self.colorscale_combo.setEnabled(enabled)
+        numeric = False
+        if enabled and self._last_result is not None:
+            color_col = self.color_combo.currentText()
+            vals = self._color_values_for_oids(self._last_result.oids, color_col)
+            numeric = color_values_are_numeric(vals)
+        self.color_range.set_enabled(enabled and numeric)
+
+    def _on_color_range_changed(self) -> None:
+        if self._last_result is None or self._job_running:
+            return
+        self._refresh_plot_colors()
 
     def _on_color_column_changed(self, _index: int = 0) -> None:
         self._update_spectrum_controls()
@@ -283,7 +296,7 @@ class DimensionReductionPanel(QWidget):
             return
         self._refresh_plot_colors()
 
-    def _on_colorscale_changed(self, _index: int = 0) -> None:
+    def _on_color_range_or_scale_changed(self, *_args) -> None:
         if self._last_result is None or self._job_running:
             return
         self._refresh_plot_colors()
@@ -302,8 +315,12 @@ class DimensionReductionPanel(QWidget):
             color_label=color_col,
         )
         try:
+            color_min, color_max = self._current_color_bounds()
             fig = build_dimension_reduction_figure(
-                updated, colorscale=self._current_colorscale()
+                updated,
+                colorscale=self._current_colorscale(),
+                color_min=color_min,
+                color_max=color_max,
             )
             self._plot_view.push_figure(fig, list(updated.oids))
         except Exception as exc:
@@ -323,15 +340,14 @@ class DimensionReductionPanel(QWidget):
         return app.collect_scoped_table_mols(
             src,
             only_selected=only_selected,
-            only_visible=self.chk_visible.isChecked(),
+            only_visible=True,
         )
 
     def _scoped_dataframe_and_oids(self) -> tuple[pd.DataFrame, list[int]]:
         app = self.parent_app
         assert app is not None
-        vis = self.chk_visible.isChecked()
         only_sel = selection_scope_checked(self)
-        df, source_rows = table_to_dataframe(app, visible_only=vis, only_selected=only_sel)
+        df, source_rows = table_to_dataframe(app, visible_only=True, only_selected=only_sel)
         oids: list[int] = []
         for r in source_rows:
             t0 = app._table_model.cell_text(r, 0)
@@ -426,10 +442,15 @@ class DimensionReductionPanel(QWidget):
             color_label=color_col,
         )
         try:
+            color_min, color_max = self._current_color_bounds()
             fig = build_dimension_reduction_figure(
-                plotted, colorscale=self._current_colorscale()
+                plotted,
+                colorscale=self._current_colorscale(),
+                color_min=color_min,
+                color_max=color_max,
             )
             self._plot_view.push_figure(fig, list(plotted.oids))
+            self._update_spectrum_controls()
             if self.parent_app is not None:
                 n = len(result.oids)
                 self.parent_app.status_label.setText(

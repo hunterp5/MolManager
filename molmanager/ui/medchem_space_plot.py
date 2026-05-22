@@ -40,6 +40,8 @@ def _scatter_marker(
     color_label: str | None,
     *,
     colorscale: str = DEFAULT_PLOT_COLORSCALE,
+    color_min: float | None = None,
+    color_max: float | None = None,
 ) -> dict:
     from ..plot_color import scatter_marker_from_column_values
 
@@ -47,6 +49,8 @@ def _scatter_marker(
         color_values,
         color_label=color_label,
         colorscale=colorscale,
+        color_min=color_min,
+        color_max=color_max,
         point_size=7,
         opacity=0.88,
     )
@@ -77,10 +81,18 @@ def build_boiled_egg_figure(
     color_values: list[Any] | None = None,
     color_label: str | None = None,
     colorscale: str = DEFAULT_PLOT_COLORSCALE,
+    color_min: float | None = None,
+    color_max: float | None = None,
 ) -> go.Figure:
     """TPSA vs LogP with GIA (white) and BBB (yellow) regions."""
     pts = dataset.points
-    marker = _scatter_marker(color_values, color_label, colorscale=colorscale)
+    marker = _scatter_marker(
+        color_values,
+        color_label,
+        colorscale=colorscale,
+        color_min=color_min,
+        color_max=color_max,
+    )
     fig = go.Figure(
         data=[
             _compound_scatter(
@@ -131,10 +143,18 @@ def build_golden_triangle_figure(
     color_values: list[Any] | None = None,
     color_label: str | None = None,
     colorscale: str = DEFAULT_PLOT_COLORSCALE,
+    color_min: float | None = None,
+    color_max: float | None = None,
 ) -> go.Figure:
     """MW vs LogP with the golden-triangle drug-likeness region."""
     pts = dataset.points
-    marker = _scatter_marker(color_values, color_label, colorscale=colorscale)
+    marker = _scatter_marker(
+        color_values,
+        color_label,
+        colorscale=colorscale,
+        color_min=color_min,
+        color_max=color_max,
+    )
     fig = go.Figure(
         data=[
             _compound_scatter(

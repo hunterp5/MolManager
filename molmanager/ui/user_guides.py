@@ -54,8 +54,8 @@ the background so the window stays responsive.</p>
 <ul>
 <li><b>File</b> — open SD-type files, import data, save/load <b>sessions</b>, export the table, <b>Browser</b> for the current selection.</li>
 <li><b>Edit</b> — undo/redo, copy and paste cells or SMILES, delete selected rows, clear the table.</li>
-<li><b>Tools</b> — chemistry operations, filters, in-table search, plotter, calculator, sketcher, <b>Boltz-2</b> (<code>boltz predict</code>), and <b>Dock (Vina)</b> (<code>vina</code>); hover a menu item for a short description.</li>
-<li><b>Data</b> — summarize columns and cluster by fingerprint.</li>
+<li><b>Tools</b> — chemistry operations, <b>Calculator</b> and <b>Sketcher</b>, filters, in-table search, <b>Boltz-2</b> (<code>boltz predict</code>), and <b>Dock (Vina)</b> (<code>vina</code>); hover a menu item for a short description.</li>
+<li><b>Data</b> — analyze and cluster the table, PCA/t-SNE/UMAP, medchem plots, and the <b>Plotter</b> (bottom of the menu); hover a menu item for a short description.</li>
 <li><b>External</b> — SQL, PubChem, ChEMBL, patents (SureChEMBL).</li>
 <li><b>Help</b> — opens this guide (topics in the left list). <b>F1</b> does the same.</li>
 <li><b>Processes</b> (top-right of the menu bar) — modeless list of queued/running background jobs, Render 2D,
@@ -90,14 +90,15 @@ on <b>Structure</b>, empty means no chemical structure in the row), rename, dupl
 chemistry actions such as <b>Open in Sketcher</b>, <b>View Conformers</b>, <b>View in 3D</b>, <b>View in 2D</b>, and
 <b>Render 2D</b> (draws into the column you clicked, using that column’s chemistry).</p>
 <p>The <b>filter panel</b> on the right can be toggled from <b>Tools → Filter</b> or <b>Ctrl+Shift+L</b>. Filter cards
-restrict which rows stay visible; combine cards as needed.</p>
+restrict which rows stay visible; combine cards as needed. <b>Tools → Filter</b> also offers
+<b>Disable All Filters</b> and <b>Delete All Filters</b> at the bottom of the menu.</p>
 """,
     "tools_chem": """
 <h2>Tools — disconnect, 2D render, descriptors, conformers</h2>
 <p><b>Tools → Prepare Structures</b> — <b>Disconnect Largest Fragments</b> (split salts/multi-component entries; keep
 largest fragment) and <b>Render 2D</b> (batch 2D images for a chosen column; listed in <b>Processes</b> while active).</p>
 <p><b>Calculate Descriptors</b> — pick a structure column and descriptor categories (RDKit-backed drug-likeness,
-counts, etc.); optional <b>only selected rows</b>.</p>
+counts, fingerprint on-bits for the full RDKit set, etc.); optional <b>only selected rows</b>.</p>
 <p><b>Tools → Conformations</b> — <b>Generate Conformations</b> (ensembles in <b>confs</b>), <b>Generate Single Conformation</b>
 (one minimized geometry per row), and <b>Superpose Conformers</b> (align packed <b>confs</b> data).</p>
 """,
@@ -108,9 +109,11 @@ conformer, heavy-atom-only, reflection, and optional SMARTS alignment.</p>
 <p><b>Tools → R-Group Decomposition</b> — <b>Core-Based Decomposition</b> (labeled core SMARTS/SMILES and substituent
 columns), <b>BRICS</b> / <b>RECAP Decomposition</b> (fragment SMILES columns with automatic 2D render), and
 <b>BRICS</b> / <b>RECAP Recomposition</b> (combinatorial products appended as new rows).</p>
-<p><b>Fingerprint Similarity</b> — pick a fingerprint type (several Morgan sizes, RDK path, MACCS, atom pair,
-or topological torsion), a query from a table row or SMILES, and compare against the table (optionally
-restricted to selected rows). Results are listed with <b>highest Tanimoto first</b>; added scores use the column <b>Tanimoto Similarity</b>. Add hits back to the main table from the results list.</p>
+<p><b>Fingerprint Similarity</b> — pick from the full RDKit fingerprint set (Morgan/FCFP, RDK path, MACCS, atom pair,
+topological torsion, pattern, layered, Avalon when available, Gobbi pharmacophore, and related count variants),
+structure source, similarity metric (Tanimoto, Dice, or cosine), and output column name; set a query from a table
+row ID or SMILES. <b>Compute and Add Column</b> writes scores for all rows in scope (including the query row when
+it is in scope); rows without a parseable structure in scope show <b>N/A</b>.</p>
 <p><b>QSAR</b> — quantitative structure–activity modeling: pick an activity column (Y), any mix of numeric descriptor
 columns and/or 2D fingerprints (X), and a scikit-learn model (ridge, random forest, gradient boosting, logistic/SVM for
 classification). Train on labeled rows with hold-out and cross-validation metrics, then add predictions for in-scope
@@ -126,7 +129,7 @@ weights at a chosen pH; results can be appended to the main table.</p>
 """,
     "tools_filter": """
 <h2>Tools — filters and search</h2>
-<p><b>Tools → Filter</b> — <b>Substructure Filter</b> (SMARTS), numeric <b>Slider</b>, <b>Text</b>, and <b>Category</b> cards.
+<p><b>Tools → Filter</b> — <b>Add Substructure</b> (SMARTS), numeric <b>Slider</b>, <b>Text</b>, and <b>Category</b> cards.
 Use <b>Toggle Panel</b> or <b>Ctrl+Shift+L</b> to show or hide the filter sidebar.</p>
 <p><b>Search</b> (<b>Ctrl+F</b>) — in-table search on one or more columns (<b>Add</b> for another row;
 <b>AND</b>/<b>OR</b> between rows). Within a row, combine terms with <code>&amp;</code> (AND),
@@ -141,7 +144,12 @@ SMARTS pattern contains <code>|</code>).</p>
     "tools_viz": """
 <h2>Tools — plot, calculator, sketcher</h2>
 <p><b>Plotter</b> — pick a <b>Plot type</b> at the top (default <b>Scatter/Histogram</b>: histogram when only X is set, 2D/3D scatter from axes).
-Other types include line, box, and violin. Choose numeric columns on X, Y, and Z; leave Y or Z as <b>None</b> when unused. Plots use visible (filtered) rows.</p>
+Other types include line, heatmap, box, and violin.
+Choose numeric columns on X, Y, and Z; leave Y or Z as <b>None</b> when unused. Plots use visible (filtered) rows.</p>
+<p><b>Data → Radar Plot</b> — compare compounds on 2–6 numeric properties using spoke dropdowns.
+Use <b>Entry 1–6</b> row ID fields (OID or table row number) to plot specific compounds, or leave them empty to plot all rows in scope.
+Values are min–max normalized across the scope before drawing.
+Click a trace to select that row.</p>
 <p><b>Calculator</b> — keypad-style expression editor to build a new numeric column from existing columns (operators,
 sqrt, log10, exp, and <code>[ColumnName]</code> references). Can be disabled via environment/config
 (<code>MOLMANAGER_DISABLE_CUSTOM_CALC</code>).</p>

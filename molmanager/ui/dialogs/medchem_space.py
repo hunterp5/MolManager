@@ -19,7 +19,12 @@ from PyQt5.QtWidgets import (
 )
 
 from ...config import load_config
-from ...plot_color import PLOT_COLORSCALE_CHOICES, resolve_plot_colorscale
+from ...plot_color import (
+    PLOT_COLORSCALE_CHOICES,
+    color_values_are_numeric,
+    resolve_plot_colorscale,
+)
+from ..plot_color_range_controls import PlotColorRangeControls
 from ...utils import mol_to_canonical_smiles
 from ...medchem_space import (
     MedChemRowSnapshot,
@@ -123,10 +128,6 @@ class MedChemPlotPanel(QWidget):
         self.refresh_btn.clicked.connect(self._on_refresh)
         scope.addWidget(self.refresh_btn)
         scope.addStretch(1)
-        self.chk_visible = QCheckBox("Visible rows only (respect filters)")
-        self.chk_visible.setChecked(True)
-        self.chk_visible.stateChanged.connect(self._on_scope_changed)
-        scope.addWidget(self.chk_visible)
         self.only_selected_cb = QCheckBox("Only selected rows")
         self._only_selected_scope_prefix = "Only selected rows"
         if self._have_selection:
@@ -144,24 +145,26 @@ class MedChemPlotPanel(QWidget):
         opts.addLayout(struct_row)
 
         color_row = QHBoxLayout()
-        color_row.addWidget(QLabel("Color by:"))
+        color_row.setSpacing(6)
+        self._color_by_label = QLabel("Color by:")
+        color_row.addWidget(self._color_by_label)
         self.color_combo = QComboBox()
-        self.color_combo.setMinimumWidth(160)
+        self.color_combo.setMinimumWidth(120)
         self.color_combo.currentIndexChanged.connect(self._on_color_column_changed)
-        color_row.addWidget(self.color_combo, 1)
-        color_row.addStretch()
-        opts.addLayout(color_row)
-
-        spectrum_row = QHBoxLayout()
+        color_row.addWidget(self.color_combo)
         self._spectrum_label = QLabel("Spectrum:")
-        spectrum_row.addWidget(self._spectrum_label)
+        color_row.addWidget(self._spectrum_label)
         self.colorscale_combo = QComboBox()
+        self.colorscale_combo.setMinimumWidth(100)
         self.colorscale_combo.addItems(PLOT_COLORSCALE_CHOICES)
         self.colorscale_combo.setToolTip("Continuous colorscale for numeric Color by columns.")
         self.colorscale_combo.currentIndexChanged.connect(self._on_color_column_changed)
-        spectrum_row.addWidget(self.colorscale_combo, 1)
-        spectrum_row.addStretch()
-        opts.addLayout(spectrum_row)
+        color_row.addWidget(self.colorscale_combo)
+        self.color_range = PlotColorRangeControls()
+        self.color_range.connect_changed(self._on_color_column_changed)
+        color_row.addWidget(self.color_range)
+        color_row.addStretch()
+        opts.addLayout(color_row)
 
         self.summary_text = QTextEdit()
         self.summary_text.setReadOnly(True)
@@ -206,10 +209,9 @@ class MedChemPlotPanel(QWidget):
                 for col in model._sorted_bounds_data_headers():
                     self.color_combo.addItem(col)
             else:
-                vis = self.chk_visible.isChecked()
                 only_sel = selection_scope_checked(self)
                 df, _rows = table_to_dataframe(
-                    self.parent_app, visible_only=vis, only_selected=only_sel
+                    self.parent_app, visible_only=True, only_selected=only_sel
                 )
                 for col in numeric_subset(df, exclude_id=True).columns:
                     self.color_combo.addItem(col)
@@ -226,6 +228,15 @@ class MedChemPlotPanel(QWidget):
         enabled = self.color_combo.currentText() != "(none)"
         self._spectrum_label.setEnabled(enabled)
         self.colorscale_combo.setEnabled(enabled)
+        numeric = False
+        if enabled and self._plot_dataset is not None:
+            color_col = self.color_combo.currentText()
+            vals = self._color_values_for_oids(self._plot_dataset.oids, color_col)
+            numeric = color_values_are_numeric(vals)
+        self.color_range.set_enabled(enabled and numeric)
+
+    def _current_color_bounds(self) -> tuple[float | None, float | None]:
+        return self.color_range.parse_bounds()
 
     def _current_colorscale(self) -> str:
         return resolve_plot_colorscale(self.colorscale_combo.currentText())
@@ -252,7 +263,6 @@ class MedChemPlotPanel(QWidget):
         for w in (
             self.refresh_btn,
             self.struct_src_combo,
-            self.chk_visible,
             self.only_selected_cb,
             getattr(self, "select_region_btn", None),
             getattr(self, "select_egg_btn", None),
@@ -307,7 +317,7 @@ class MedChemPlotPanel(QWidget):
             raise ValueError("\u201cOnly selected rows\u201d is checked but nothing is selected.")
         only_rows = app._selected_logical_rows() if only_sel else None
         visible_rows = (
-            app._visible_source_row_indices() if self.chk_visible.isChecked() else None
+            app._visible_source_row_indices()
         )
         return snapshot_scope_row_indices(
             app._table_model.rowCount(),
@@ -612,6 +622,7 @@ class MedChemPlotPanel(QWidget):
 
         color_vals, color_col = normalize_color_column(color_vals, color_col)
         colorscale = self._current_colorscale()
+        color_min, color_max = self._current_color_bounds()
         try:
             if self._plot_kind == "golden_triangle":
                 fig = build_golden_triangle_figure(
@@ -619,6 +630,8 @@ class MedChemPlotPanel(QWidget):
                     color_values=color_vals,
                     color_label=color_col,
                     colorscale=colorscale,
+                    color_min=color_min,
+                    color_max=color_max,
                 )
             else:
                 fig = build_boiled_egg_figure(
@@ -626,8 +639,11 @@ class MedChemPlotPanel(QWidget):
                     color_values=color_vals,
                     color_label=color_col,
                     colorscale=colorscale,
+                    color_min=color_min,
+                    color_max=color_max,
                 )
             self._plot_view.push_figure(fig, self._plot_dataset.oids)
+            self._update_spectrum_controls()
         except Exception as exc:
             QMessageBox.warning(self, self._window_title, f"Plot failed: {exc}")
 
