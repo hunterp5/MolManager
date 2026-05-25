@@ -21,96 +21,132 @@ from PyQt5.QtWidgets import (
 
 from ...workers import ConformerGenParams, SuperposeParams
 from ..qt_widget_utils import make_window_minimizable
-from ..strings import DISCONNECT_FRAGMENTS_HELP, TOOL_CORE_DECOMP, TOOL_SINGLE_CONFORMATION
+from ..strings import TOOL_CORE_DECOMP, TOOL_SINGLE_CONFORMATION
 from ...fragment_decomposition import detect_fragment_column_prefixes
 from .scope import selection_scope_checked
 
 
+_RESERVED_DISCONNECT_COLUMNS = frozenset({"ID_HIDDEN"})
+
+
 class DisconnectFragmentsDialog(QDialog):
-    """Pick the structure field and whether Structure is cleared or a SMILES column is added."""
+    """Pick the target structure field; update it by default or write results to new columns."""
 
     def __init__(self, source_labels: list[str], existing_headers: list[str], selected_row_count: int = 0, parent=None):
         super().__init__(parent)
         self.setWindowTitle("Disconnect Largest Fragments")
-        self.resize(500, 320)
+        self.resize(480, 280)
         self._existing = list(existing_headers)
         self._have_selection = selected_row_count > 0
 
         root = QVBoxLayout(self)
-        root.addWidget(QLabel(DISCONNECT_FRAGMENTS_HELP))
 
         f = QFormLayout()
         self.src_combo = QComboBox()
         self.src_combo.addItems(source_labels)
-        f.addRow("Structure field:", self.src_combo)
+        f.addRow("Target column:", self.src_combo)
         root.addLayout(f)
 
         out = QGroupBox("Output")
         og = QVBoxLayout(out)
-        self.radio_structure = QRadioButton(
-            "Replace Structure column (refreshes the 2D image from the largest fragment; updates working molecule)"
+        self.radio_update_target = QRadioButton(
+            "Update target column (refresh 2D image when applicable; write largest fragment there)"
         )
-        self.radio_newcol = QRadioButton(
-            "New column only (SMILES of largest fragment; Structure column unchanged)"
+        self.radio_new_columns = QRadioButton(
+            "New columns only (leave target column unchanged)"
         )
-        self.radio_structure.setChecked(True)
-        og.addWidget(self.radio_structure)
-        og.addWidget(self.radio_newcol)
-        row = QHBoxLayout()
-        row.addWidget(QLabel("New column name:"))
-        self.name_edit = QLineEdit("Largest fragment SMILES")
-        self.name_edit.setEnabled(False)
-        row.addWidget(self.name_edit)
-        og.addLayout(row)
-        self.radio_newcol.toggled.connect(self._sync_name_enabled)
+        self.radio_update_target.setChecked(True)
+        og.addWidget(self.radio_update_target)
+        og.addWidget(self.radio_new_columns)
+        ncol = QFormLayout()
+        self.largest_edit = QLineEdit("Largest fragment SMILES")
+        ncol.addRow("Largest fragment column:", self.largest_edit)
+        self.fragments_edit = QLineEdit("Fragments")
+        ncol.addRow("Smaller fragments column:", self.fragments_edit)
+        og.addLayout(ncol)
+        self.radio_update_target.toggled.connect(self._sync_output_fields)
+        self.radio_new_columns.toggled.connect(self._sync_output_fields)
         root.addWidget(out)
 
-        scope_box = QGroupBox("Scope")
-        scope_lyt = QVBoxLayout(scope_box)
         self.only_selected_cb = QCheckBox("Only selected rows")
         self._only_selected_scope_prefix = "Only selected rows"
         if self._have_selection:
             self.only_selected_cb.setText(f"{self._only_selected_scope_prefix} ({selected_row_count} row(s))")
         else:
             self.only_selected_cb.setEnabled(False)
-        scope_lyt.addWidget(self.only_selected_cb)
-        root.addWidget(scope_box)
+        root.addWidget(self.only_selected_cb)
+        self.no_render_2d_cb = QCheckBox("No Render 2D")
+        root.addWidget(self.no_render_2d_cb)
 
         box = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
         box.accepted.connect(self._try_accept)
         box.rejected.connect(self.reject)
         root.addWidget(box)
-        self._sync_name_enabled()
+        self._sync_output_fields()
         make_window_minimizable(self)
 
-    def _sync_name_enabled(self) -> None:
-        self.name_edit.setEnabled(self.radio_newcol.isChecked())
+    def _sync_output_fields(self) -> None:
+        new_only = self.radio_new_columns.isChecked()
+        self.largest_edit.setEnabled(new_only)
+        self.fragments_edit.setEnabled(True)
 
     def _try_accept(self) -> None:
-        if self.radio_newcol.isChecked():
-            name = (self.name_edit.text() or "").strip()
-            if not name:
-                QMessageBox.warning(self, self.windowTitle(), "Enter a column name for the new SMILES column.")
+        fragments = (self.fragments_edit.text() or "").strip()
+        if not fragments:
+            QMessageBox.warning(self, self.windowTitle(), "Enter a column name for the smaller fragments.")
+            return
+        if self.radio_new_columns.isChecked():
+            largest = (self.largest_edit.text() or "").strip()
+            if not largest:
+                QMessageBox.warning(self, self.windowTitle(), "Enter a column name for the largest fragment.")
                 return
-            if name in ("ID_HIDDEN", "Structure", "Fragments"):
-                QMessageBox.warning(self, self.windowTitle(), f"The column name â€œ{name}â€ is reserved.")
-                return
-            if name in self._existing:
+            if largest == fragments:
                 QMessageBox.warning(
                     self,
                     self.windowTitle(),
-                    f"A column named â€œ{name}â€ already exists. Choose another name, or use â€œReplace Structure columnâ€.",
+                    "Largest and smaller fragment columns must have different names.",
                 )
                 return
+            target = self.src_combo.currentText()
+            if largest == target:
+                QMessageBox.warning(
+                    self,
+                    self.windowTitle(),
+                    "Largest fragment column must differ from the target column when using new columns only.",
+                )
+                return
+            for label, name in (("Largest fragment", largest), ("Smaller fragments", fragments)):
+                if name in _RESERVED_DISCONNECT_COLUMNS:
+                    QMessageBox.warning(
+                        self,
+                        self.windowTitle(),
+                        f"The {label} column name “{name}” is reserved.",
+                    )
+                    return
+        elif fragments in _RESERVED_DISCONNECT_COLUMNS:
+            QMessageBox.warning(
+                self,
+                self.windowTitle(),
+                f"The smaller fragments column name “{fragments}” is reserved.",
+            )
+            return
         self.accept()
 
-    def config(self) -> tuple[str, bool, str | None, bool]:
-        """Returns ``(source_field, replace_structure_column, new_column_name_or_None, only_selected_rows)``."""
+    def config(self) -> tuple[str, bool, str | None, str, bool, bool]:
+        """
+        Returns ``(target_column, update_target, largest_column_or_None, smaller_fragments_column,
+        only_selected_rows, no_render_2d)``.
+
+        When *update_target* is true, the largest fragment is written to the target column and
+        *largest_column_or_None* is ``None``. Otherwise results go to the named largest column.
+        """
         src = self.src_combo.currentText()
-        replace_structure = self.radio_structure.isChecked()
-        new_col = None if replace_structure else (self.name_edit.text() or "").strip()
+        update_target = self.radio_update_target.isChecked()
+        largest = None if update_target else (self.largest_edit.text() or "").strip()
+        fragments = (self.fragments_edit.text() or "").strip()
         only_sel = selection_scope_checked(self)
-        return src, replace_structure, new_col, only_sel
+        no_render = self.no_render_2d_cb.isChecked()
+        return src, update_target, largest, fragments, only_sel, no_render
 
 
 class GenerateSingleConformationDialog(QDialog):

@@ -845,22 +845,27 @@ class ChemistryMixin:
         dlg.show()
 
     def _on_disconnect_fragments_dialog_accepted(self, dlg) -> None:
-        src, replace_structure, new_pixmap_col, only_selected = dlg.config()
+        src, update_target, largest_col, fragments_col, only_selected, no_render_2d = dlg.config()
         allowed = self._selected_oids_set() if only_selected else None
         if self._abort_if_only_selected_but_empty(only_selected, allowed, "Disconnect Largest Fragments"):
             return
-        self._disconnect_replace_structure = replace_structure
-        self._disconnect_pixmap_column = None if replace_structure else new_pixmap_col
+        self._disconnect_source = src
+        self._disconnect_update_target = update_target
+        self._disconnect_largest_col = src if update_target else largest_col
+        self._disconnect_fragments_col = fragments_col
+        self._disconnect_no_render_2d = no_render_2d
         self.status_label.setText("Disconnecting fragments…")
         if src == "Structure":
-            if allowed is None:
-                data = list(self.mols.items())
-            else:
-                data = []
-                for oid in self._all_oids_in_table_order():
-                    if oid not in allowed or oid not in self.mols:
-                        continue
-                    data.append((oid, self.mols[oid]))
+            data = []
+            oids_walk = self._all_oids_in_table_order()
+            if allowed is not None:
+                oids_walk = [o for o in oids_walk if o in allowed]
+            for oid in oids_walk:
+                mol = self.mols.get(oid)
+                if mol is None:
+                    continue
+                raw = self._disconnect_source_text_for_oid(oid, src)
+                data.append((oid, mol, raw))
             if not data:
                 QMessageBox.information(
                     self,
@@ -1230,44 +1235,106 @@ class ChemistryMixin:
             return
         self._start_render_2d_batch(renders, row_by_oid, src, column_pixmap_mode=False)
 
+    def _disconnect_source_text_for_oid(self, oid: int, src: str) -> str | None:
+        """Original cell text for the disconnect target column (for multi-component SMILES)."""
+        row = self.get_row_by_id(oid)
+        if row < 0:
+            return None
+        if src == "Structure":
+            raw = (self._table_model.backing_value_for_row_header(row, "Structure") or "").strip()
+            if raw:
+                return raw
+            smiles_h = self._canonical_smiles_header_for_updates()
+            if smiles_h is not None:
+                return (self._table_cell_text(row, self.headers.index(smiles_h)) or "").strip() or None
+            return None
+        col = self.headers.index(src)
+        return (self._table_cell_text(row, col) or "").strip() or None
+
+    def _ensure_disconnect_output_column(self, header_name: str) -> None:
+        """Insert a data column if the disconnect dialog named one that is not present yet."""
+        if not header_name or header_name in self.headers:
+            return
+        if header_name == "Fragments" and "Salt" in self.headers:
+            idx_old = self.headers.index("Salt")
+            self.headers[idx_old] = "Fragments"
+            self._table_model.rename_header_at(idx_old, "Fragments")
+            return
+        nc = self._table_model.columnCount()
+        self.headers.append(header_name)
+        self._table_model.insert_column_at(nc, header_name, None)
+
     def on_wash_finished(self, results):
         self.table.setSortingEnabled(False)
-        if "Fragments" not in self.headers:
-            if "Salt" in self.headers:
-                idx_old = self.headers.index("Salt")
-                self.headers[idx_old] = "Fragments"
-                self._table_model.rename_header_at(idx_old, "Fragments")
-            else:
-                self.headers.insert(2, "Fragments")
-                self._table_model.insert_column_at(2, "Fragments", None)
+        src = getattr(self, "_disconnect_source", "Structure")
+        update_target = getattr(self, "_disconnect_update_target", True)
+        largest_col = getattr(self, "_disconnect_largest_col", src)
+        fragments_col = getattr(self, "_disconnect_fragments_col", "Fragments")
+        no_render_2d = getattr(self, "_disconnect_no_render_2d", False)
+        self._disconnect_source = "Structure"
+        self._disconnect_update_target = True
+        self._disconnect_largest_col = "Structure"
+        self._disconnect_fragments_col = "Fragments"
+        self._disconnect_no_render_2d = False
 
-        replace_structure = getattr(self, "_disconnect_replace_structure", True)
-        pixmap_col = getattr(self, "_disconnect_pixmap_column", None)
-        self._disconnect_replace_structure = True
-        self._disconnect_pixmap_column = None
+        self._ensure_disconnect_output_column(fragments_col)
+        if not update_target:
+            self._ensure_disconnect_output_column(largest_col)
 
-        if not replace_structure and pixmap_col and pixmap_col not in self.headers:
-            nc = self._table_model.columnCount()
-            self.headers.append(pixmap_col)
-            self._table_model.insert_column_at(nc, pixmap_col, None)
-
+        update_mols_cache = update_target and src == "Structure"
+        if no_render_2d:
+            render_largest = False
+        elif update_target:
+            render_largest = src == "Structure" or (
+                src in self.headers and self._table_model.is_pixmap_data_column(src)
+            )
+        else:
+            render_largest = True
+            if largest_col in self.headers:
+                self._table_model.register_pixmap_column(largest_col)
         smiles_h = self._canonical_smiles_header_for_updates()
+        update_smiles_col = (
+            update_target
+            and smiles_h is not None
+            and src == smiles_h
+            and not self._table_model.is_pixmap_data_column(smiles_h)
+        )
+        target_is_text = (
+            update_target
+            and src in self.headers
+            and not self._table_model.is_pixmap_data_column(src)
+            and src != "Structure"
+        )
+        new_largest_is_text = (
+            not update_target
+            and not render_largest
+            and largest_col in self.headers
+            and not self._table_model.is_pixmap_data_column(largest_col)
+        )
 
         for oid, mol, fragments in results:
-            self.mols[oid] = mol
+            if update_mols_cache:
+                self.mols[oid] = mol
             row = self.get_row_by_id(oid)
-            if row != -1:
-                if replace_structure:
-                    self._table_model.set_structure_pixmap(oid, None)
-                elif pixmap_col:
-                    self._table_model.set_cell_text(oid, pixmap_col, mol_to_canonical_smiles(mol))
-                self._table_model.set_cell_text(oid, "Fragments", fragments)
-                if smiles_h is not None:
-                    self._table_model.set_cell_text(oid, smiles_h, mol_to_canonical_smiles(mol))
+            if row == -1:
+                continue
+            if update_target and src == "Structure":
+                self._table_model.set_structure_pixmap(oid, None)
+            elif render_largest and not update_target and largest_col in self.headers:
+                self._table_model.set_column_pixmap(oid, largest_col, None)
+            elif target_is_text:
+                self._table_model.set_cell_text(oid, src, mol_to_canonical_smiles(mol))
+            elif new_largest_is_text:
+                self._table_model.set_cell_text(oid, largest_col, mol_to_canonical_smiles(mol))
+            if fragments_col in self.headers:
+                self._table_model.set_cell_text(oid, fragments_col, fragments)
+            if update_smiles_col:
+                self._table_model.set_cell_text(oid, smiles_h, mol_to_canonical_smiles(mol))
         self.calculate_global_bounds()
         self.table.setSortingEnabled(False)
         self._clear_tool_progress()
-        if results and not getattr(self, "_render2d_batch_active", False):
+        render_src = src if update_target else largest_col
+        if results and render_largest and not getattr(self, "_render2d_batch_active", False):
             base_w, base_h = STRUCTURE_DEPICT_WIDTH, STRUCTURE_DEPICT_HEIGHT
             renders = []
             row_by_oid: dict[int, int] = {}
@@ -1285,7 +1352,10 @@ class ChemistryMixin:
                 renders.append((oid, mol, rw, rh))
                 row_by_oid[oid] = row
             if renders:
-                self._start_render_2d_batch(renders, row_by_oid, "Structure")
+                column_pixmap_mode = render_src != "Structure"
+                self._start_render_2d_batch(
+                    renders, row_by_oid, render_src, column_pixmap_mode=column_pixmap_mode
+                )
                 return
         self.status_label.setText(self._consume_partial_results_notice() or "Done.")
 
@@ -1611,6 +1681,9 @@ class ChemistryMixin:
                 elif isinstance(f, (TextFilterCard, CategoryFilterCard)):
                     f.update_prop_list(cols)
         self._refresh_active_plot_axis_columns()
+        refresh_search = getattr(self, "_refresh_table_search_column_combos", None)
+        if callable(refresh_search):
+            refresh_search()
 
     def on_calc_finished(self, res, calc_h, *, finish_progress: bool = True, progress_label: str | None = None):
         if finish_progress:

@@ -31,6 +31,8 @@ _FC_CTRL_H = 20
 _FC_SLIDER_H = 14
 _FC_LIST_MAX = 96
 _FC_MINI_LABEL_W = 26
+_FC_TOOL_BTN_MIN_W = 48
+_FC_TOOL_BTN_WIDE_MIN_W = 76
 
 
 def _fc_install_card_shell(card: QFrame, min_height_px: int) -> None:
@@ -69,16 +71,52 @@ def _fc_configure_column_combo(cb: QComboBox) -> None:
     cb.setMinimumWidth(0)
 
 
-def _fc_toggle_btn(btn: QPushButton) -> None:
+def _fc_toggle_btn(
+    btn: QPushButton,
+    *,
+    min_width: int | None = None,
+    active: bool | None = None,
+) -> None:
     from ..theme import polish_widget_property
 
     btn.setObjectName("fcToggle")
     btn.setAutoDefault(False)
     btn.setDefault(False)
     btn.setFixedHeight(_FC_CTRL_H)
-    btn.setMinimumWidth(0)
+    btn.setMinimumWidth(int(min_width) if min_width is not None else 0)
     btn.setSizePolicy(QSizePolicy.Minimum, QSizePolicy.Fixed)
-    polish_widget_property(btn, "fcActive", False)
+    if active is not None:
+        polish_widget_property(btn, "fcActive", bool(active))
+
+
+def _fc_toolbar_button(text: str, *, wide: bool = False) -> QPushButton:
+    """Compact filter-panel button matching On/Invert toggle styling."""
+    btn = QPushButton(text)
+    min_w = _FC_TOOL_BTN_WIDE_MIN_W if wide else _FC_TOOL_BTN_MIN_W
+    _fc_toggle_btn(btn, min_width=min_w, active=False)
+    return btn
+
+
+def _fc_add_column_header_row(parent_layout: QVBoxLayout, combo: QComboBox, removed_cb) -> None:
+    """Top row: column combo and remove control."""
+    row = QHBoxLayout()
+    row.setSpacing(_FC_GAP)
+    row.addWidget(combo, 1, Qt.AlignVCenter)
+    rem = QPushButton()
+    style_filter_card_remove_button(rem)
+    rem.clicked.connect(removed_cb)
+    row.addWidget(rem, 0, Qt.AlignVCenter)
+    parent_layout.addLayout(row)
+
+
+def _fc_add_bottom_tools_row(parent_layout: QVBoxLayout, buttons: list[QPushButton]) -> None:
+    """Bottom row of uniform toolbar buttons (On, Invert, …)."""
+    row = QHBoxLayout()
+    row.setSpacing(_FC_GAP)
+    for btn in buttons:
+        row.addWidget(btn, 0, Qt.AlignVCenter)
+    row.addStretch(1)
+    parent_layout.addLayout(row)
 
 
 def _fc_set_toggle_active(btn: QPushButton, active: bool) -> None:
@@ -98,18 +136,31 @@ def _fc_mini_label(text: str) -> QLabel:
 class _FilterCardEnableInvertMixin:
     """Shared On/Off + Invert controls. Subclasses must define ``changed`` and ``removed`` signals."""
 
-    def _fc_init_enable_invert(self, invert_tooltip: str) -> None:
+    def _fc_init_enable_invert(
+        self,
+        invert_tooltip: str,
+        *,
+        toolbar_min_width: int | None = None,
+    ) -> None:
         self._filter_enabled_on = True
         self.enable_btn = QPushButton("On")
         self.enable_btn.setToolTip("Turn this filter on or off.")
         self.enable_btn.clicked.connect(self._on_enable_clicked)
-        _fc_toggle_btn(self.enable_btn)
+        _fc_toggle_btn(
+            self.enable_btn,
+            min_width=toolbar_min_width,
+            active=True,
+        )
         self._sync_enable_button_appearance()
         self._invert_on = False
         self.invert_btn = QPushButton("Invert")
         self.invert_btn.setToolTip(invert_tooltip)
         self.invert_btn.clicked.connect(self._on_invert_clicked)
-        _fc_toggle_btn(self.invert_btn)
+        _fc_toggle_btn(
+            self.invert_btn,
+            min_width=toolbar_min_width,
+            active=False,
+        )
         self._sync_invert_button_appearance()
 
     def _fc_add_header_toolbar(
@@ -415,8 +466,19 @@ class TextFilterCard(_FilterCardEnableInvertMixin, QFrame):
         _fc_configure_column_combo(self.cb)
         self.cb.addItems(columns)
         self.cb.currentTextChanged.connect(lambda _t: self.changed.emit())
-        self._fc_init_enable_invert("Invert matching rows.")
-        self._fc_add_header_toolbar(l, leading=self.cb)
+        self._fc_init_enable_invert(
+            "Invert matching rows.",
+            toolbar_min_width=_FC_TOOL_BTN_MIN_W,
+        )
+        self.partial_btn = _fc_toolbar_button("Partial")
+        self.partial_btn.setToolTip("Substring vs exact cell match.")
+        self.partial_btn.clicked.connect(self._on_partial_clicked)
+        self._sync_partial_button_appearance()
+        self.case_btn = _fc_toolbar_button("Ignore Case", wide=True)
+        self.case_btn.setToolTip("Case-sensitive vs ignore case.")
+        self.case_btn.clicked.connect(self._on_case_clicked)
+        self._sync_case_button_appearance()
+        _fc_add_column_header_row(l, self.cb, lambda: self.removed.emit(self))
         self.text_edit = QLineEdit()
         self.text_edit.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         self.text_edit.setMinimumWidth(0)
@@ -426,22 +488,10 @@ class TextFilterCard(_FilterCardEnableInvertMixin, QFrame):
         self._text_filter_timer.timeout.connect(self.changed.emit)
         self.text_edit.textChanged.connect(self._schedule_text_filter_changed)
         l.addWidget(self.text_edit)
-        opt = QHBoxLayout()
-        opt.setSpacing(_FC_GAP)
-        self.case_btn = QPushButton("Case")
-        self.case_btn.setToolTip("Case-sensitive vs ignore case.")
-        self.case_btn.clicked.connect(self._on_case_clicked)
-        _fc_toggle_btn(self.case_btn)
-        self._sync_case_button_appearance()
-        self.partial_btn = QPushButton("Partial")
-        self.partial_btn.setToolTip("Substring vs exact cell match.")
-        self.partial_btn.clicked.connect(self._on_partial_clicked)
-        _fc_toggle_btn(self.partial_btn)
-        self._sync_partial_button_appearance()
-        opt.addWidget(self.case_btn, 0)
-        opt.addWidget(self.partial_btn, 0)
-        opt.addStretch(1)
-        l.addLayout(opt)
+        _fc_add_bottom_tools_row(
+            l,
+            [self.enable_btn, self.invert_btn, self.partial_btn, self.case_btn],
+        )
 
     def _schedule_text_filter_changed(self, _text: str = "") -> None:
         self._text_filter_timer.start(280)
@@ -456,7 +506,7 @@ class TextFilterCard(_FilterCardEnableInvertMixin, QFrame):
         if self._case_sensitive:
             self.case_btn.setText("Case")
         else:
-            self.case_btn.setText("Ignore case")
+            self.case_btn.setText("Ignore Case")
         _fc_set_toggle_active(self.case_btn, self._case_sensitive)
 
     def _on_case_clicked(self) -> None:
@@ -569,8 +619,17 @@ class CategoryFilterCard(_FilterCardEnableInvertMixin, QFrame):
         _fc_configure_column_combo(self.cb)
         self.cb.addItems(columns)
         self.cb.currentTextChanged.connect(self._on_column_changed)
-        self._fc_init_enable_invert("Invert category selection.")
-        self._fc_add_header_toolbar(l, leading=self.cb)
+        self._fc_init_enable_invert(
+            "Invert category selection.",
+            toolbar_min_width=_FC_TOOL_BTN_MIN_W,
+        )
+        self.all_btn = _fc_toolbar_button("All")
+        self.all_btn.setToolTip("Check every category in the list.")
+        self.all_btn.clicked.connect(self._select_all_categories)
+        self.none_btn = _fc_toolbar_button("None")
+        self.none_btn.setToolTip("Uncheck every category in the list.")
+        self.none_btn.clicked.connect(self._select_no_categories)
+        _fc_add_column_header_row(l, self.cb, lambda: self.removed.emit(self))
         self.list_widget = QListWidget()
         self.list_widget.setSelectionMode(QAbstractItemView.NoSelection)
         self.list_widget.setMaximumHeight(_FC_LIST_MAX)
@@ -581,6 +640,10 @@ class CategoryFilterCard(_FilterCardEnableInvertMixin, QFrame):
         self._category_n_checkable_cache: int | None = None
         self.list_widget.itemChanged.connect(self._on_category_list_item_changed)
         l.addWidget(self.list_widget)
+        _fc_add_bottom_tools_row(
+            l,
+            [self.enable_btn, self.invert_btn, self.all_btn, self.none_btn],
+        )
         self._populate_list()
 
     def _bust_category_selection_cache(self) -> None:
@@ -590,6 +653,22 @@ class CategoryFilterCard(_FilterCardEnableInvertMixin, QFrame):
     def _on_category_list_item_changed(self, _it) -> None:
         self._bust_category_selection_cache()
         self.changed.emit()
+
+    def _set_all_category_checkstates(self, state) -> None:
+        self.list_widget.blockSignals(True)
+        for i in range(self.list_widget.count()):
+            it = self.list_widget.item(i)
+            if it.flags() & Qt.ItemIsUserCheckable:
+                it.setCheckState(state)
+        self.list_widget.blockSignals(False)
+        self._bust_category_selection_cache()
+        self.changed.emit()
+
+    def _select_all_categories(self) -> None:
+        self._set_all_category_checkstates(Qt.Checked)
+
+    def _select_no_categories(self) -> None:
+        self._set_all_category_checkstates(Qt.Unchecked)
 
     def _ensure_category_filter_cache(self) -> None:
         if self._category_checked_cache is not None:
@@ -610,7 +689,10 @@ class CategoryFilterCard(_FilterCardEnableInvertMixin, QFrame):
 
     def set_column(self, name: str) -> None:
         if name and self.cb.findText(name) >= 0:
+            self.cb.blockSignals(True)
             self.cb.setCurrentText(name)
+            self.cb.blockSignals(False)
+            self._populate_list()
 
     def column_name(self) -> str:
         return (self.cb.currentText() or "").strip()

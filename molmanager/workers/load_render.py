@@ -19,7 +19,8 @@ from rdkit.Chem.Draw import rdMolDraw2D
 
 from ..display_constants import STRUCTURE_DEPICT_HEIGHT, STRUCTURE_DEPICT_WIDTH
 from ..import_structure import needs_structure_source_picker
-from ..utils import mol_to_canonical_smiles, parse_molecule_from_cell_text, safe_mol_prop_string
+from ..fragment_disconnect import largest_fragment_and_rest
+from ..utils import parse_molecule_from_cell_text, safe_mol_prop_string
 from .signals import WorkerSignals, emit_partial_results_if_cancelled
 
 logger = logging.getLogger(__name__)
@@ -347,32 +348,37 @@ class WashWorker(QRunnable):
         res = []
         done_count = 0
         cancelled = False
-        for done, (i, item) in enumerate(items, start=1):
+        for done, row in enumerate(items, start=1):
             if self.cancel_event is not None and self.cancel_event.is_set():
                 cancelled = True
                 break
             done_count = done
             mol = None
+            source_text: str | None = None
+            i = row[0]
             if self.is_smiles:
-                smi = str(item or "").strip()
-                mol = parse_molecule_from_cell_text(smi) if smi else None
+                source_text = str(row[1] or "").strip()
+                mol = parse_molecule_from_cell_text(source_text) if source_text else None
+            elif len(row) >= 3:
+                mol = row[1]
+                source_text = (str(row[2]).strip() if row[2] else None) or None
             else:
-                mol = item
+                mol = row[1]
+            if mol is None and source_text:
+                mol = parse_molecule_from_cell_text(source_text)
             if mol is None:
                 try:
                     self.signals.tool_progress.emit("Disconnect fragments…", done, total)
                 except Exception:
                     pass
                 continue
-            f = sorted(Chem.GetMolFrags(mol, asMols=True), key=lambda x: x.GetNumAtoms(), reverse=True)
-            if not f:
+            parent, fragments = largest_fragment_and_rest(mol, source_text)
+            if parent is None:
                 try:
                     self.signals.tool_progress.emit("Disconnect fragments…", done, total)
                 except Exception:
                     pass
                 continue
-            parent = f[0]
-            fragments = " . ".join([mol_to_canonical_smiles(s) for s in f[1:]])
             res.append((i, parent, fragments))
             try:
                 self.signals.tool_progress.emit("Disconnect fragments…", done, total)

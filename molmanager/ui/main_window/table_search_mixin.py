@@ -92,6 +92,32 @@ class TableSearchMixin:
 
         self._search_criterion_rows = []
         self._add_search_criterion_row()
+        self._wire_table_search_column_refresh()
+
+    def _wire_table_search_column_refresh(self) -> None:
+        """Refresh search column combos when the table gains or loses columns."""
+        if getattr(self, "_search_column_refresh_wired", False):
+            return
+        model = getattr(self, "_table_model", None)
+        if model is None:
+            return
+        model.columnsInserted.connect(self._on_table_search_columns_changed)
+        model.columnsRemoved.connect(self._on_table_search_columns_changed)
+        model.modelReset.connect(self._on_table_search_columns_changed)
+        model.headerDataChanged.connect(self._on_table_search_header_changed)
+        self._search_column_refresh_wired = True
+
+    def _on_table_search_columns_changed(self, *_args) -> None:
+        self._refresh_table_search_column_combos()
+
+    def _on_table_search_header_changed(self, orientation, *_args) -> None:
+        if int(orientation) == Qt.Horizontal:
+            self._refresh_table_search_column_combos()
+
+    def _refresh_table_search_column_combos(self) -> None:
+        if not getattr(self, "_search_criterion_rows", None):
+            return
+        self._populate_table_search_columns_combo()
 
     def _remove_search_criterion_row(self, row: SearchCriterionRow) -> None:
         if not self._search_criterion_rows or row is self._search_criterion_rows[0]:
