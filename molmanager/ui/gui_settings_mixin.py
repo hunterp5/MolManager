@@ -1,10 +1,11 @@
-"""Settings menu (GUI theme) for the main window."""
+"""Settings menu (GUI theme and hotkeys) for the main window."""
 
 from __future__ import annotations
 
 from PyQt5.QtGui import QPalette
-from PyQt5.QtWidgets import QAction, QActionGroup, QApplication, QFrame
+from PyQt5.QtWidgets import QAction, QActionGroup, QApplication, QDialog, QFrame
 
+from .hotkeys import apply_hotkey_to_action
 from .theme import (
     THEME_DARK,
     THEME_LIGHT,
@@ -21,6 +22,7 @@ class GuiSettingsMixin:
     """Settings → GUI: light/dark mode."""
 
     def _init_gui_settings(self) -> None:
+        self._hotkey_actions: dict[str, QAction] = {}
         self._gui_theme = load_saved_theme_name()
         apply_application_theme(QApplication.instance(), self._gui_theme)
         self._act_theme_light = QAction("Light Mode", self, checkable=True)
@@ -34,11 +36,33 @@ class GuiSettingsMixin:
         self._sync_theme_menu_checks()
         self._refresh_filter_card_styles()
 
+    def _bind_hotkey(self, action_id: str, action: QAction) -> QAction:
+        """Register *action* for persistence and apply the saved shortcut."""
+        self._hotkey_actions[action_id] = action
+        apply_hotkey_to_action(action_id, action)
+        return action
+
+    def _apply_all_hotkeys(self) -> None:
+        for action_id, action in self._hotkey_actions.items():
+            apply_hotkey_to_action(action_id, action)
+
+    def open_hotkeys_dialog(self) -> None:
+        from .dialogs.hotkeys_dialog import HotkeysDialog
+
+        dlg = HotkeysDialog(self)
+        if dlg.exec_() != QDialog.Accepted:
+            return
+        self._apply_all_hotkeys()
+        if hasattr(self, "status_label"):
+            self.status_label.setText("Hotkeys updated.")
+
     def _init_settings_menu(self, menubar) -> None:
         settings_menu = menubar.addMenu("&Settings")
         gui_menu = settings_menu.addMenu("&GUI")
         gui_menu.addAction(self._act_theme_light)
         gui_menu.addAction(self._act_theme_dark)
+        settings_menu.addSeparator()
+        settings_menu.addAction(QAction("&Hotkeys…", self, triggered=self.open_hotkeys_dialog))
 
     def _sync_theme_menu_checks(self) -> None:
         dark = current_theme_name() == THEME_DARK

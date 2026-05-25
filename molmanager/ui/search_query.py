@@ -63,12 +63,130 @@ _OR_SEPARATORS = frozenset({",", "|"})
 _AND_SEPARATORS = frozenset({"&"})
 
 
-def _split_top_level(text: str, separators: frozenset[str]) -> list[str]:
+def _flush_and_between_quoted_literals(text: str, index: int) -> bool:
+    """True when ``&`` at *index* joins two quoted literals (``"a"&"b"``), not ``>5 & <10``."""
+    if index < 0 or index >= len(text) or text[index] != "&":
+        return False
+    before = text[index - 1] if index > 0 else ""
+    after = text[index + 1] if index + 1 < len(text) else ""
+    return before in ('"', "'") or after in ('"', "'")
+
+
+def _join_and_terms_for_branch(terms: list[str]) -> str:
+    if not terms:
+        return ""
+    if len(terms) == 1:
+        return terms[0]
+    return " & ".join(terms)
+
+
+def _split_or_branches(text: str) -> list[str]:
+    """
+    Split on top-level ``,`` and ``|`` only.
+
+    ``&`` ends an AND-term within the branch but does not start a new OR branch.
+    Quote-adjacent ``&`` (``"a"&"b"``) is not copied into the branch text so AND parsing works.
+    """
+    s = text or ""
+    if not s.strip():
+        return []
+    branches: list[str] = []
+    branch_terms: list[str] = []
+    buf: list[str] = []
+    depth = 0
+    in_quote: str | None = None
+    segment_quoted = False
+    i = 0
+    n = len(s)
+
+    def _flush_term() -> None:
+        nonlocal segment_quoted
+        part = "".join(buf).strip()
+        if part:
+            branch_terms.append(f'"{part}"' if segment_quoted else part)
+        buf.clear()
+        segment_quoted = False
+
+    def _flush_branch() -> None:
+        nonlocal branch_terms
+        _flush_term()
+        if branch_terms:
+            branches.append(_join_and_terms_for_branch(branch_terms))
+        branch_terms = []
+
+    while i < n:
+        ch = s[i]
+        if in_quote is not None:
+            if ch == in_quote:
+                in_quote = None
+            else:
+                buf.append(ch)
+            i += 1
+            continue
+        if ch in ('"', "'"):
+            in_quote = ch
+            segment_quoted = True
+            i += 1
+            continue
+        if ch == "(":
+            depth += 1
+            buf.append(ch)
+            i += 1
+            continue
+        if ch == ")":
+            depth = max(0, depth - 1)
+            buf.append(ch)
+            i += 1
+            continue
+        if depth == 0:
+            if ch in _OR_SEPARATORS:
+                _flush_branch()
+                i += 1
+                continue
+            if ch == "&":
+                if _flush_and_between_quoted_literals(s, i):
+                    _flush_term()
+                else:
+                    buf.append(ch)
+                i += 1
+                continue
+        if depth == 0 and ch in "<>":
+            if ch == "<" and i + 1 < n and s[i + 1] == ">":
+                buf.append("<>")
+                i += 2
+                continue
+            if i + 1 < n and s[i + 1] == "=":
+                buf.append(ch)
+                buf.append("=")
+                i += 2
+                continue
+            buf.append(ch)
+            i += 1
+            continue
+        if depth == 0 and ch == "!" and i + 1 < n and s[i + 1] == "=":
+            buf.append("!=")
+            i += 2
+            continue
+        buf.append(ch)
+        i += 1
+    _flush_branch()
+    return branches
+
+
+def _split_top_level(
+    text: str,
+    separators: frozenset[str],
+    *,
+    flush_on: frozenset[str] | None = None,
+) -> list[str]:
     """
     Split *text* on separator characters at parenthesis depth zero.
 
     Comparison prefixes (``>=``, ``<=``, ``<>``, ``!=``) and numeric ``>`` / ``<`` are not split points.
     Commas, ``|``, and ``&`` inside ``"..."`` / ``'...'`` literals do not split.
+
+    *flush_on* ends the current segment without keeping the character (used when splitting AND
+    terms inside one OR branch so ``,``/``|`` are not absorbed).
     """
     s = text or ""
     if not s.strip():
@@ -116,10 +234,15 @@ def _split_top_level(text: str, separators: frozenset[str]) -> list[str]:
             buf.append(ch)
             i += 1
             continue
-        if depth == 0 and ch in separators:
-            _flush()
-            i += 1
-            continue
+        if depth == 0 and in_quote is None:
+            if ch in separators:
+                _flush()
+                i += 1
+                continue
+            if flush_on and ch in flush_on:
+                _flush()
+                i += 1
+                continue
         if depth == 0 and ch in "<>":
             if ch == "<" and i + 1 < n and s[i + 1] == ">":
                 buf.append("<>")
@@ -155,10 +278,14 @@ def parse_search_term_groups(query: str) -> list[list[str]]:
     q = (query or "").strip()
     if not q:
         return []
-    or_parts = _split_top_level(q, _OR_SEPARATORS)
+    or_parts = _split_or_branches(q)
     groups: list[list[str]] = []
     for part in or_parts:
-        and_terms = [t for t in _split_top_level(part, _AND_SEPARATORS) if t.strip()]
+        and_terms = [
+            t
+            for t in _split_top_level(part, _AND_SEPARATORS, flush_on=_OR_SEPARATORS)
+            if t.strip()
+        ]
         if and_terms:
             groups.append(and_terms)
     return groups
@@ -486,6 +613,29 @@ def sqlite_where_for_expression(
     return "(" + " OR ".join(or_sql) + ")", args
 
 
+def sqlite_text_match_clause(
+    header_quoted: str,
+    needle: str,
+    *,
+    partial: bool,
+    case_sensitive: bool,
+) -> tuple[str, list[object]]:
+    """
+    SQLite fragment for substring or whole-cell text match.
+
+    ``LIKE`` is case-insensitive for ASCII in SQLite, so case-sensitive partial
+    matches use ``instr`` (case-sensitive) instead of ``LIKE``.
+    """
+    qh = header_quoted
+    if partial:
+        if case_sensitive:
+            return f'(instr("{qh}", ?) > 0)', [needle]
+        return f'(LOWER("{qh}") LIKE ? ESCAPE "\\")', [f"%{needle.lower()}%"]
+    if case_sensitive:
+        return f'("{qh}" = ?)', [needle]
+    return f'(LOWER("{qh}") = ?)', [needle.lower()]
+
+
 def sqlite_clause_for_condition(
     header_quoted: str,
     cond: SearchCondition,
@@ -520,14 +670,9 @@ def sqlite_clause_for_condition(
     if cond.op == "contains":
         if "*" in (cond.value or "") or "?" in (cond.value or ""):
             return None
-        needle = cond.value or ""
-        if partial:
-            if case_sensitive:
-                return f'("{qh}" LIKE ? ESCAPE "\\")', [f"%{needle}%"]
-            return f'(LOWER("{qh}") LIKE ? ESCAPE "\\")', [f"%{needle.lower()}%"]
-        if case_sensitive:
-            return f'("{qh}" = ?)', [needle]
-        return f'(LOWER("{qh}") = ?)', [needle.lower()]
+        return sqlite_text_match_clause(
+            qh, cond.value or "", partial=partial, case_sensitive=case_sensitive
+        )
 
     if cond.op == "not_contains":
         inner = sqlite_clause_for_condition(

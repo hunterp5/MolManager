@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from molmanager.ui.search_query import (
+    SearchCondition,
     evaluate_search_condition,
     evaluate_search_conditions,
     evaluate_search_expression,
@@ -12,6 +13,8 @@ from molmanager.ui.search_query import (
     parse_search_term_groups,
     parse_substructure_term,
     split_search_terms,
+    sqlite_clause_for_condition,
+    sqlite_text_match_clause,
     validate_search_text_query,
 )
 
@@ -89,6 +92,15 @@ def test_compound_and_or_expression():
     assert evaluate_search_expression("25", expr, partial=True, case_sensitive=False)
 
 
+def test_quoted_and_requires_both_substrings():
+    expr = parse_search_expression('"ax"&"nib"', partial=True)
+    assert parse_search_term_groups('"ax"&"nib"') == [['"ax"', '"nib"']]
+    assert evaluate_search_expression("axitinib", expr, partial=True, case_sensitive=False)
+    assert not evaluate_search_expression("axate", expr, partial=True, case_sensitive=False)
+    expr2 = parse_search_expression('"ax"&"ate"', partial=True)
+    assert not evaluate_search_expression("axitinib", expr2, partial=True, case_sensitive=False)
+
+
 def test_pipe_or_expression():
     expr = parse_search_expression('"eth*"|"prop*"', partial=True)
     assert evaluate_search_expression("ethane", expr, partial=True, case_sensitive=False)
@@ -100,6 +112,29 @@ def test_wildcard_contains():
     cond = parse_search_condition('"eth*"', partial=True)
     assert evaluate_search_condition("ethane", cond, partial=True, case_sensitive=False)
     assert not evaluate_search_condition("methane", cond, partial=True, case_sensitive=False)
+
+
+def test_case_sensitive_partial_contains_python():
+    cond = parse_search_condition('"Foo"', partial=True)
+    assert cond is not None
+    assert evaluate_search_condition("xFoo", cond, partial=True, case_sensitive=True)
+    assert not evaluate_search_condition("xfoo", cond, partial=True, case_sensitive=True)
+    assert evaluate_search_condition("xfoo", cond, partial=True, case_sensitive=False)
+
+
+def test_case_sensitive_sqlite_uses_instr_not_like():
+    sql, args = sqlite_text_match_clause("Name", "Foo", partial=True, case_sensitive=True)
+    assert "instr" in sql.lower()
+    assert "LIKE" not in sql
+    assert args == ["Foo"]
+    frag = sqlite_clause_for_condition(
+        "Name",
+        SearchCondition("contains", "Foo"),
+        partial=True,
+        case_sensitive=True,
+    )
+    assert frag is not None
+    assert "instr" in frag[0].lower()
 
 
 def test_substructure_not_prefix():

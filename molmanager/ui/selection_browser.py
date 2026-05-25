@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from PyQt5.QtCore import QItemSelection, QItemSelectionModel, Qt
+from PyQt5.QtCore import QItemSelection, QItemSelectionModel, Qt, QTimer
 from PyQt5.QtGui import QImage, QKeySequence, QPixmap
 from PyQt5.QtWidgets import (
     QAbstractItemView,
@@ -94,33 +94,46 @@ class SelectionBrowserDialog(QDialog):
         root.addWidget(self._prop_box)
 
         row_btns = QHBoxLayout()
+        self._btn_first = QPushButton("<<")
+        self._btn_first.setToolTip("First eligible row in scope (Home)")
         self._btn_back = QPushButton("← Back")
-        self._btn_back.setToolTip("Previous selected row (also ←)")
+        self._btn_back.setToolTip("Previous eligible row (←)")
         self._btn_fwd = QPushButton("Forward →")
-        self._btn_fwd.setToolTip("Next selected row (also →)")
+        self._btn_fwd.setToolTip("Next eligible row (→)")
+        self._btn_last = QPushButton(">>")
+        self._btn_last.setToolTip("Last eligible row in scope (End)")
         self._btn_toggle_select = QPushButton("Select")
         self._btn_toggle_select.setToolTip("Select or deselect this row in the table")
-        self._btn_refresh = QPushButton("Refresh")
-        self._btn_refresh.setToolTip("Rebuild list from current selection (after search/filter)")
+        row_btns.addWidget(self._btn_first)
         row_btns.addWidget(self._btn_back)
         row_btns.addWidget(self._btn_fwd)
+        row_btns.addWidget(self._btn_last)
         row_btns.addWidget(self._cb_only_selected)
         row_btns.addWidget(self._btn_toggle_select)
         row_btns.addStretch()
-        row_btns.addWidget(self._btn_refresh)
         root.addLayout(row_btns)
 
+        self._btn_first.clicked.connect(self._go_first)
         self._btn_back.clicked.connect(lambda: self._step(-1))
         self._btn_fwd.clicked.connect(lambda: self._step(1))
+        self._btn_last.clicked.connect(self._go_last)
         self._btn_toggle_select.clicked.connect(self._toggle_current_row_selected)
-        self._btn_refresh.clicked.connect(self.refresh_from_app)
         self._cb_only_selected.toggled.connect(lambda _v: self.refresh_from_app())
         self._prop_combo_1.currentIndexChanged.connect(lambda _i: self._update_property_values())
         self._prop_combo_2.currentIndexChanged.connect(lambda _i: self._update_property_values())
         self._prop_combo_3.currentIndexChanged.connect(lambda _i: self._update_property_values())
 
+        QShortcut(QKeySequence(Qt.Key_Home), self, activated=self._go_first)
         QShortcut(QKeySequence(Qt.Key_Left), self, activated=lambda: self._step(-1))
         QShortcut(QKeySequence(Qt.Key_Right), self, activated=lambda: self._step(1))
+        QShortcut(QKeySequence(Qt.Key_End), self, activated=self._go_last)
+
+        self._auto_refresh_timer = QTimer(self)
+        self._auto_refresh_timer.setSingleShot(True)
+        self._auto_refresh_timer.setInterval(80)
+        self._auto_refresh_timer.timeout.connect(
+            lambda: self.refresh_from_app(preserve_position=True)
+        )
 
         # Default to "only selected" when there *is* a selection; otherwise browse whole table.
         try:
@@ -129,21 +142,66 @@ class SelectionBrowserDialog(QDialog):
             has_sel = False
         self._cb_only_selected.setChecked(has_sel)
         self.refresh_from_app()
+        self._wire_table_updates()
         make_window_minimizable(self)
+
+    def _wire_table_updates(self) -> None:
+        """Keep Browser in sync when the table, filters, or selection change."""
+        if getattr(self, "_table_updates_wired", False):
+            return
+        app = self._app
+        model = getattr(app, "_table_model", None)
+        if model is None:
+            return
+
+        def _schedule_refresh() -> None:
+            self._auto_refresh_timer.start()
+
+        model.dataChanged.connect(_schedule_refresh)
+        model.rowsInserted.connect(_schedule_refresh)
+        model.rowsRemoved.connect(_schedule_refresh)
+        model.modelReset.connect(_schedule_refresh)
+        model.layoutChanged.connect(_schedule_refresh)
+        model.headerDataChanged.connect(_schedule_refresh)
+        proxy = getattr(app, "_filter_proxy_model", None)
+        if proxy is not None:
+            proxy.layoutChanged.connect(_schedule_refresh)
+            proxy.modelReset.connect(_schedule_refresh)
+        sm = app.table.selectionModel()
+        if sm is not None:
+            sm.selectionChanged.connect(_schedule_refresh)
+        self._table_updates_wired = True
 
     def resizeEvent(self, event) -> None:
         super().resizeEvent(event)
         if self._rows and 0 <= self._idx < len(self._rows):
             self._update_preview(self._rows[self._idx])
 
-    def refresh_from_app(self) -> None:
-        """Recompute row scope and show the first navigable row."""
+    def refresh_from_app(self, *, preserve_position: bool = False) -> None:
+        """Recompute row scope; optionally keep the current row (by OID) when the table changes."""
         app = self._app
+        cur_oid: int | None = None
+        if preserve_position:
+            row = self._current_row()
+            if row is not None:
+                try:
+                    cur_oid = int(app._table_model.row_oid(row))
+                except Exception:
+                    cur_oid = None
         self._refresh_property_columns()
         self._rows = self._rows_for_scope(app)
         self._idx = 0
         if self._rows:
-            self._idx = self._first_navigable_index(0, +1)
+            if preserve_position and cur_oid is not None:
+                for j, rr in enumerate(self._rows):
+                    try:
+                        if int(app._table_model.row_oid(rr)) == cur_oid:
+                            self._idx = j
+                            break
+                    except Exception:
+                        continue
+            self._idx = self._first_navigable_index(self._idx, +1)
+        self._preview_pix_cache.clear()
         self._update_ui()
 
     def _rows_for_scope(self, app: Any) -> list[int]:
@@ -175,6 +233,27 @@ class SelectionBrowserDialog(QDialog):
                 return i
             i = (i + delta) % n
         return start % n
+
+    def _last_navigable_index(self) -> int:
+        n = len(self._rows)
+        if n == 0:
+            return 0
+        for i in range(n - 1, -1, -1):
+            if self._row_navigable(self._rows[i]):
+                return i
+        return self._first_navigable_index(0, +1)
+
+    def _go_first(self) -> None:
+        if not self._rows:
+            return
+        self._idx = self._first_navigable_index(0, +1)
+        self._focus_row(self._rows[self._idx])
+
+    def _go_last(self) -> None:
+        if not self._rows:
+            return
+        self._idx = self._last_navigable_index()
+        self._focus_row(self._rows[self._idx])
 
     def _step(self, delta: int) -> None:
         n = len(self._rows)
@@ -419,11 +498,16 @@ class SelectionBrowserDialog(QDialog):
     def _update_ui(self) -> None:
         n = len(self._rows)
         single = n <= 1
-        self._btn_back.setEnabled(not single and n > 0)
-        self._btn_fwd.setEnabled(not single and n > 0)
+        has_rows = n > 0
+        self._btn_first.setEnabled(has_rows)
+        self._btn_last.setEnabled(has_rows)
+        self._btn_back.setEnabled(not single and has_rows)
+        self._btn_fwd.setEnabled(not single and has_rows)
         if n == 0:
             if self._cb_only_selected.isChecked():
-                self._meta.setText("No rows selected — uncheck “Browse Only Selected” or select rows, then Refresh.")
+                self._meta.setText(
+                    "No rows selected — uncheck “Browse Only Selected” or select rows in the table."
+                )
             else:
                 self._meta.setText("Table is empty.")
             self._struct_label.clear()

@@ -102,22 +102,15 @@ class FilterPanelMixin:
                 case_sensitive = bool(cfg.get("case_sensitive", False))
                 partial = bool(cfg.get("partial_match", True))
                 inverted = bool(cfg.get("inverted", False))
-                if partial:
-                    if case_sensitive:
-                        expr = f'"{qp}" LIKE ? ESCAPE "\\"'
-                        arg = f"%{needle}%"
-                    else:
-                        expr = f'LOWER("{qp}") LIKE ? ESCAPE "\\"'
-                        arg = f"%{needle.lower()}%"
-                else:
-                    if case_sensitive:
-                        expr = f'"{qp}" = ?'
-                        arg = needle
-                    else:
-                        expr = f'LOWER("{qp}") = ?'
-                        arg = needle.lower()
-                where_parts.append(f"(NOT ({expr}))" if inverted else f"({expr})")
-                args.append(arg)
+                from ..search_query import sqlite_text_match_clause
+
+                expr, match_args = sqlite_text_match_clause(
+                    qp, needle, partial=partial, case_sensitive=case_sensitive
+                )
+                where_parts.append(
+                    f"(NOT ({expr}))" if inverted else f"({expr})"
+                )
+                args.extend(match_args)
                 continue
             return None
         if not where_parts:

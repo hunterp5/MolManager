@@ -3,7 +3,7 @@ import threading
 import time
 
 from PyQt5.QtCore import QThreadPool, QTimer, Qt, pyqtSlot
-from PyQt5.QtGui import QCloseEvent, QKeySequence
+from PyQt5.QtGui import QCloseEvent
 from PyQt5.QtWidgets import (
     QAction,
     QApplication,
@@ -531,7 +531,10 @@ class ChemicalTableApp(
         mb = self.menuBar()
         file_menu = mb.addMenu("&File")
         file_menu.addAction(
-            QAction("&Open File...", self, shortcut=QKeySequence.Open, triggered=self.open_file_dialog)
+            self._bind_hotkey(
+                "file.open",
+                QAction("&Open File...", self, triggered=self.open_file_dialog),
+            )
         )
         file_menu.addAction(QAction("Import &Data...", self, triggered=self.open_import_file_dialog))
         file_menu.addSeparator()
@@ -540,55 +543,68 @@ class ChemicalTableApp(
         file_menu.addAction(QAction("New Session", self, triggered=self.new_session))
         file_menu.addAction(QAction("Duplicate Session", self, triggered=self.duplicate_session))
         file_menu.addSeparator()
-        file_menu.addAction(QAction("&Export All...", self, shortcut="Ctrl+S", triggered=lambda: self.run_export(False)))
+        file_menu.addAction(
+            self._bind_hotkey(
+                "file.export_all",
+                QAction("&Export All...", self, triggered=lambda: self.run_export(False)),
+            )
+        )
         file_menu.addAction(QAction("Export Selected...", self, triggered=lambda: self.run_export(True)))
         file_menu.addSeparator()
-        act_browser = QAction("&Browser…", self, triggered=self.open_selection_browser)
+        act_browser = self._bind_hotkey(
+            "file.browser",
+            QAction("&Browser…", self, triggered=self.open_selection_browser),
+        )
         act_browser.setToolTip("Open the selection browser to review and act on selected rows.")
         file_menu.addAction(act_browser)
         edit = mb.addMenu("&Edit")
-        act_undo = self._undo_stack.createUndoAction(self)
-        act_undo.setShortcuts([QKeySequence.Undo, QKeySequence("Ctrl+Z")])
-        act_undo.setShortcutContext(Qt.ApplicationShortcut)
-        act_redo = self._undo_stack.createRedoAction(self)
-        act_redo.setShortcuts([QKeySequence.Redo, QKeySequence("Ctrl+Y"), QKeySequence("Ctrl+Shift+Z")])
-        act_redo.setShortcutContext(Qt.ApplicationShortcut)
+        act_undo = self._bind_hotkey("edit.undo", self._undo_stack.createUndoAction(self))
+        act_redo = self._bind_hotkey("edit.redo", self._undo_stack.createRedoAction(self))
         edit.addAction(act_undo)
         edit.addAction(act_redo)
         self.addAction(act_undo)
         self.addAction(act_redo)
         edit.addSeparator()
-        edit.addAction(QAction("&Copy", self, shortcut=QKeySequence.Copy, triggered=self.edit_copy))
-        edit.addAction(QAction("&Paste", self, shortcut=QKeySequence.Paste, triggered=self.edit_paste))
         edit.addAction(
-            QAction("Delete &Selection", self, shortcut=QKeySequence.Delete, triggered=self.edit_delete_selection)
+            self._bind_hotkey("edit.copy", QAction("&Copy", self, triggered=self.edit_copy))
+        )
+        edit.addAction(
+            self._bind_hotkey("edit.paste", QAction("&Paste", self, triggered=self.edit_paste))
+        )
+        edit.addAction(
+            self._bind_hotkey(
+                "edit.delete_selection",
+                QAction("Delete &Selection", self, triggered=self.edit_delete_selection),
+            )
         )
         edit.addSeparator()
-        act_invert_sel = QAction("Invert Selection", self, triggered=self.invert_table_selection)
+        act_invert_sel = self._bind_hotkey(
+            "edit.invert_selection",
+            QAction("Invert Selection", self, triggered=self.invert_table_selection),
+        )
         act_invert_sel.setToolTip(
             "Select all rows that are not currently selected (entire table, including rows hidden by filters)."
         )
         edit.addAction(act_invert_sel)
-        act_clear_sel = QAction(
-            "Clear Selection",
-            self,
-            shortcut=QKeySequence("Ctrl+Shift+D"),
-            triggered=self.clear_table_selection,
+        act_clear_sel = self._bind_hotkey(
+            "edit.clear_selection",
+            QAction("Clear Selection", self, triggered=self.clear_table_selection),
         )
         act_clear_sel.setToolTip("Clear the current cell/row selection (Ctrl+Shift+D).")
         edit.addAction(act_clear_sel)
         edit.addAction(
-            QAction(
-                "Clear Table…",
-                self,
-                shortcut=QKeySequence("Ctrl+Shift+Backspace"),
-                triggered=self.clear_table_after_confirm,
+            self._bind_hotkey(
+                "edit.clear_table",
+                QAction("Clear Table…", self, triggered=self.clear_table_after_confirm),
             )
         )
         tools = mb.addMenu("&Tools")
         tools.setToolTipsVisible(True)
 
-        act_calc_desc = QAction("Calculate Descriptors…", self, triggered=self.open_calc)
+        act_calc_desc = self._bind_hotkey(
+            "tools.calculate_descriptors",
+            QAction("Calculate Descriptors…", self, triggered=self.open_calc),
+        )
         act_calc_desc.setToolTip(
             "Compute RDKit molecular descriptors and append them as columns (selected or visible rows)."
         )
@@ -597,23 +613,30 @@ class ChemicalTableApp(
 
         prepare_menu = tools.addMenu("&Prepare Structures")
         prepare_menu.setToolTipsVisible(True)
-        for title, slot, tip in (
+        for title, slot, tip, hk_id in (
             (
                 "Disconnect Largest Fragments…",
                 self.run_disconnect_fragments,
                 "Split disconnected structure fragments into separate rows, keeping the heaviest fragment.",
+                None,
             ),
             (
                 "Render 2D…",
                 self.run_render_2d_structures,
                 "Regenerate 2D structure drawings for selected rows as a background batch (see Processes).",
+                "tools.render_2d",
             ),
         ):
             act = QAction(title, self, triggered=slot)
+            if hk_id:
+                self._bind_hotkey(hk_id, act)
             act.setToolTip(tip)
             prepare_menu.addAction(act)
 
-        self._act_custom_calc = QAction("Calculator…", self, triggered=self.open_calculator)
+        self._act_custom_calc = self._bind_hotkey(
+            "tools.calculator",
+            QAction("Calculator…", self, triggered=self.open_calculator),
+        )
         self._act_custom_calc.setToolTip(
             "Add a numeric column from a math expression using existing column names (e.g. sqrt, log10, exp)."
         )
@@ -644,44 +667,53 @@ class ChemicalTableApp(
             act.setToolTip(tip)
             conformations_menu.addAction(act)
 
-        for title, slot, tip in (
+        for title, slot, tip, hk_id in (
             (
                 "Fingerprint Similarity...",
                 self.open_fp_similarity,
                 "Search the table by 2D fingerprint similarity to a query structure.",
+                "tools.fingerprint_similarity",
             ),
             (
                 "pKa Predictor…",
                 self.open_pka_predictor,
                 "Estimate ionization / pKa-related properties when the predictor is available.",
+                None,
             ),
             (
                 "Predict Permeability…",
                 self.open_permeability_predictor,
                 "Predict Caco-2 and MDCK permeability / efflux endpoints (optional Chemprop install).",
+                None,
             ),
             (
                 "QSAR…",
                 self.open_qsar_dialog,
                 "Train regression or classification models on activity vs descriptors or fingerprints.",
+                None,
             ),
             (
                 "Generate Protomers…",
                 self.open_protomer_generator,
                 "Enumerate protomers or tautomers from structures and add results to the table.",
+                None,
             ),
             (
                 "Boltz-2 prediction…",
                 self.open_boltz2,
                 "Run Boltz protein–ligand cofolding (boltz predict): supply YAML or use quick cofold with FASTA/paste.",
+                None,
             ),
             (
                 "Dock (Vina)…",
                 self.open_vina_dock,
                 "Run AutoDock Vina rigid docking: receptor/ligand PDBQT, search box, and log (install vina separately).",
+                None,
             ),
         ):
             act = QAction(title, self, triggered=slot)
+            if hk_id:
+                self._bind_hotkey(hk_id, act)
             act.setToolTip(tip)
             tools.addAction(act)
 
@@ -720,18 +752,21 @@ class ChemicalTableApp(
 
         tools.addSeparator()
         tools.addAction(self._act_custom_calc)
-        act_sketch = QAction("&Sketcher…", self, triggered=self.open_sketcher)
+        act_sketch = self._bind_hotkey(
+            "tools.sketcher",
+            QAction("&Sketcher…", self, triggered=self.open_sketcher),
+        )
         act_sketch.setToolTip("Open the structure sketcher to draw or edit molecules.")
         tools.addAction(act_sketch)
 
         tools.addSeparator()
         filter_menu = tools.addMenu("&Filter")
         filter_menu.setToolTipsVisible(True)
-        self._act_toggle_filter_panel = QAction("Toggle Panel", self)
+        self._act_toggle_filter_panel = self._bind_hotkey(
+            "tools.toggle_filter_panel",
+            QAction("Toggle Panel", self, triggered=self.toggle_filter_panel),
+        )
         self._act_toggle_filter_panel.setToolTip("Show or hide the filter panel (Ctrl+Shift+L).")
-        self._act_toggle_filter_panel.setShortcut(QKeySequence("Ctrl+Shift+L"))
-        self._act_toggle_filter_panel.setShortcutContext(Qt.ApplicationShortcut)
-        self._act_toggle_filter_panel.triggered.connect(self.toggle_filter_panel)
         self.addAction(self._act_toggle_filter_panel)
         filter_menu.addAction(self._act_toggle_filter_panel)
         filter_menu.addSeparator()
@@ -756,17 +791,26 @@ class ChemicalTableApp(
         act_delete_all_filters = QAction("Delete All Filters", self, triggered=self.delete_all_filters_from_panel)
         act_delete_all_filters.setToolTip("Remove every filter card from the panel.")
         filter_menu.addAction(act_delete_all_filters)
-        act_search = QAction(
-            "&Search…", self, shortcut=QKeySequence("Ctrl+F"), triggered=self.toggle_table_search_panel
+        act_search = self._bind_hotkey(
+            "tools.search",
+            QAction("&Search…", self, triggered=self.toggle_table_search_panel),
         )
         act_search.setToolTip("Open or focus the in-table search panel (Ctrl+F).")
         tools.addAction(act_search)
 
         data_menu = mb.addMenu("&Data")
         data_menu.addAction(
-            QAction("Analyze Table…", self, triggered=self.open_data_analysis)
+            self._bind_hotkey(
+                "data.analyze_table",
+                QAction("Analyze Table…", self, triggered=self.open_data_analysis),
+            )
         )
-        data_menu.addAction(QAction("&Cluster…", self, triggered=self.open_cluster_dialog))
+        data_menu.addAction(
+            self._bind_hotkey(
+                "data.cluster",
+                QAction("&Cluster…", self, triggered=self.open_cluster_dialog),
+            )
+        )
         data_menu.addSeparator()
         data_menu.addAction(
             QAction("Principal Component Analysis…", self, triggered=self.open_pca_dialog)
@@ -793,16 +837,19 @@ class ChemicalTableApp(
         data_menu.addSeparator()
         plot_menu = data_menu.addMenu("&Plotter")
         plot_menu.setToolTipsVisible(True)
-        act_plot = QAction("&Plotter…", self, triggered=self.open_plot)
+        act_plot = self._bind_hotkey(
+            "data.plotter",
+            QAction("&Plotter…", self, triggered=self.open_plot),
+        )
         act_plot.setToolTip("Open the plotter or show the docked plot panel.")
         plot_menu.addAction(act_plot)
-        self._act_toggle_plot_panel = QAction("Toggle Panel", self)
+        self._act_toggle_plot_panel = self._bind_hotkey(
+            "data.toggle_plot_panel",
+            QAction("Toggle Panel", self, triggered=self.toggle_plot_panel),
+        )
         self._act_toggle_plot_panel.setToolTip(
             "Show or hide the plot panel docked beside the table (Ctrl+Shift+P)."
         )
-        self._act_toggle_plot_panel.setShortcut(QKeySequence("Ctrl+Shift+P"))
-        self._act_toggle_plot_panel.setShortcutContext(Qt.ApplicationShortcut)
-        self._act_toggle_plot_panel.triggered.connect(self.toggle_plot_panel)
         self.addAction(self._act_toggle_plot_panel)
         plot_menu.addAction(self._act_toggle_plot_panel)
 
@@ -815,9 +862,10 @@ class ChemicalTableApp(
 
         self._init_settings_menu(mb)
 
-        act_help = QAction("&Help", self, triggered=lambda: open_user_guide_dialog(self))
-        act_help.setShortcut(QKeySequence("F1"))
-        act_help.setShortcutContext(Qt.ApplicationShortcut)
+        act_help = self._bind_hotkey(
+            "help.user_guides",
+            QAction("&Help", self, triggered=lambda: open_user_guide_dialog(self)),
+        )
         act_help.setToolTip("Open user guides (pick a topic in the list, or press F1).")
         mb.addAction(act_help)
         self.addAction(act_help)

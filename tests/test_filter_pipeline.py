@@ -56,6 +56,64 @@ def test_text_filter_partial_substring(qapp):  # noqa: ARG001
     assert _src_row_visible(w, 1) is False
 
 
+def test_text_filter_enable_btn_highlighted_when_on(qapp):  # noqa: ARG001
+    w = ChemicalTableApp()
+    w.headers = ["ID_HIDDEN", "Structure", "SMILES"]
+    w._table_model.set_headers(list(w.headers))
+    w.calculate_global_bounds()
+    card = TextFilterCard(["SMILES"], w)
+    assert card.filter_enabled() is True
+    assert card.enable_btn.property("fcActive") is True
+
+
+def test_category_filter_enable_btn_highlighted_when_on(qapp):  # noqa: ARG001
+    w = ChemicalTableApp()
+    w.headers = ["ID_HIDDEN", "Structure", "SMILES", "Phase"]
+    w._table_model.set_headers(list(w.headers))
+    w.calculate_global_bounds()
+    card = CategoryFilterCard(["SMILES", "Phase"], w)
+    assert card.filter_enabled() is True
+    assert card.enable_btn.property("fcActive") is True
+
+
+def test_category_filter_defaults_to_all_selected(qapp):  # noqa: ARG001
+    w = ChemicalTableApp()
+    w.headers = ["ID_HIDDEN", "Structure", "SMILES", "Phase"]
+    w._table_model.set_headers(list(w.headers))
+    w._table_model.append_row(0, {"SMILES": "CC", "Phase": "prep"})
+    w._table_model.append_row(1, {"SMILES": "C", "Phase": "ship"})
+    w.mols[0] = Chem.MolFromSmiles("CC")
+    w.mols[1] = Chem.MolFromSmiles("C")
+    w.next_oid = 2
+    w.calculate_global_bounds()
+    card = CategoryFilterCard(["SMILES", "Phase"], w)
+    card.set_column("Phase")
+    assert card.checked_values() == frozenset({"prep", "ship"})
+    w.filters = [card]
+    w._apply_filters_impl_sync(None)
+    assert _src_row_visible(w, 0) is True
+    assert _src_row_visible(w, 1) is True
+
+
+def test_category_filter_all_button_selects_every_value(qapp):  # noqa: ARG001
+    w = ChemicalTableApp()
+    w.headers = ["ID_HIDDEN", "Structure", "SMILES", "Phase"]
+    w._table_model.set_headers(list(w.headers))
+    w._table_model.append_row(0, {"SMILES": "CC", "Phase": "prep"})
+    w._table_model.append_row(1, {"SMILES": "C", "Phase": "ship"})
+    w.mols[0] = Chem.MolFromSmiles("CC")
+    w.mols[1] = Chem.MolFromSmiles("C")
+    w.next_oid = 2
+    w.calculate_global_bounds()
+    card = CategoryFilterCard(["SMILES", "Phase"], w)
+    card.set_column("Phase")
+    card._select_all_categories()
+    w.filters = [card]
+    w._apply_filters_impl_sync(None)
+    assert _src_row_visible(w, 0) is True
+    assert _src_row_visible(w, 1) is True
+
+
 def test_category_filter_only_checked_values_visible(qapp):  # noqa: ARG001
     w = ChemicalTableApp()
     w.headers = ["ID_HIDDEN", "Structure", "SMILES", "Phase"]
