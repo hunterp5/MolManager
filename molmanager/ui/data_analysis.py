@@ -8,13 +8,12 @@ from typing import TYPE_CHECKING
 
 import numpy as np
 import pandas as pd
-from PyQt5.QtCore import Qt
+from PyQt5.QtCore import Qt, QTimer
 from PyQt5.QtWidgets import (
     QAbstractItemView,
     QCheckBox,
     QComboBox,
     QDialog,
-    QFileDialog,
     QFormLayout,
     QDoubleSpinBox,
     QGroupBox,
@@ -74,7 +73,10 @@ def iter_scoped_table_analysis_rows(
             name = app.headers[c]
             if name == "Structure":
                 continue
-            row[name] = (m.cell_text(r, c) or "").strip()
+            text = (m.cell_text(r, c) or "").strip()
+            if not text:
+                text = (m.backing_value_for_row_header(r, name) or "").strip()
+            row[name] = text
         yield r, row
 
 
@@ -93,6 +95,24 @@ def table_to_dataframe(
         source_rows.append(r)
         rows.append(row)
     return pd.DataFrame(rows), source_rows
+
+
+def selected_table_column_headers(app: ChemicalTableApp) -> list[str]:
+    """Distinct data-column header names currently spanned by the main-table selection."""
+    sm = app.table.selectionModel()
+    if sm is None or not app.headers:
+        return []
+    view_cols = sorted({ix.column() for ix in sm.selectedIndexes() if ix.isValid()})
+    names: list[str] = []
+    for col in view_cols:
+        if col <= 0 or col >= len(app.headers):
+            continue
+        name = app.headers[col]
+        if name in ("ID_HIDDEN", "Structure"):
+            continue
+        if name not in names:
+            names.append(name)
+    return names
 
 
 def numeric_subset(df: pd.DataFrame, *, exclude_id: bool = True) -> pd.DataFrame:
@@ -180,33 +200,39 @@ class DataAnalysisDialog(QDialog):
         self._df_num = pd.DataFrame()
         self._scoped_source_rows: list[int] = []
         self._last_outlier_table_rows: list[int] = []
+        self._suppress_analysis_reload = False
+        self._table_updates_wired = False
+        self._reload_debounce = QTimer(self)
+        self._reload_debounce.setSingleShot(True)
+        self._reload_debounce.setInterval(80)
+        self._reload_debounce.timeout.connect(self._reload)
         n_sel = len(parent._selected_logical_rows()) if parent is not None else 0
         self._have_selection = n_sel > 0
 
         root = QVBoxLayout(self)
-        scope = QHBoxLayout()
-        self.chk_visible = QCheckBox("Visible rows only (respect filters)")
+
+        self.tabs = QTabWidget()
+        root.addWidget(self.tabs)
+
+        self.chk_visible = QCheckBox("Visible Rows Only")
         self.chk_visible.setChecked(True)
         self.chk_visible.stateChanged.connect(self._reload)
-        scope.addWidget(self.chk_visible)
 
-        self.only_selected_cb = QCheckBox("Only selected rows")
-        self._only_selected_scope_prefix = "Only selected rows"
+        self.only_selected_cb = QCheckBox("Selected Rows Only")
+        self._only_selected_scope_prefix = "Selected Rows Only"
         if self._have_selection:
             self.only_selected_cb.setText(f"{self._only_selected_scope_prefix} ({n_sel} row(s))")
         else:
             self.only_selected_cb.setEnabled(False)
         self.only_selected_cb.stateChanged.connect(self._reload)
-        scope.addWidget(self.only_selected_cb)
 
-        scope.addStretch()
-        self.btn_refresh = QPushButton("Refresh from table")
-        self.btn_refresh.clicked.connect(self._reload)
-        scope.addWidget(self.btn_refresh)
-        root.addLayout(scope)
-
-        self.tabs = QTabWidget()
-        root.addWidget(self.tabs)
+        self.chk_selected_columns = QCheckBox("Selected Columns Only")
+        self._selected_columns_scope_prefix = "Selected Columns Only"
+        self.chk_selected_columns.setToolTip(
+            "Correlations and Percentiles use only numeric columns selected in the main table "
+            "(click a column header to select a column)."
+        )
+        self.chk_selected_columns.setEnabled(False)
 
         self._tab_summary = self._build_summary_tab()
         self._tab_corr = self._build_correlation_tab()
@@ -218,21 +244,92 @@ class DataAnalysisDialog(QDialog):
         self.tabs.addTab(self._tab_corr, "Correlations")
         self.tabs.addTab(self._tab_percentiles, "Percentiles")
         self.tabs.addTab(self._tab_outliers, "Outliers")
-        self.tabs.addTab(self._tab_curve, "Curve fit")
+        self.tabs.addTab(self._tab_curve, "Curve Fit")
         self.tabs.addTab(self._tab_stats, "Statistical tests")
 
         bottom = QHBoxLayout()
-        self.btn_export = QPushButton("Export numeric columns to CSV…")
-        self.btn_export.clicked.connect(self._export_csv)
-        bottom.addWidget(self.btn_export)
+        bottom.addWidget(self.chk_visible)
+        bottom.addWidget(self.only_selected_cb)
+        bottom.addWidget(self.chk_selected_columns)
         bottom.addStretch()
-        close_btn = QPushButton("Close")
-        close_btn.clicked.connect(self.accept)
-        bottom.addWidget(close_btn)
         root.addLayout(bottom)
 
         self._reload()
+        self._sync_selected_columns_only_scope()
+        self._wire_table_updates()
         make_window_minimizable(self)
+
+    def _wire_table_updates(self) -> None:
+        """Keep scoped table data in sync when the main table, filters, or selection change."""
+        if self._table_updates_wired or self.parent_app is None:
+            return
+        app = self.parent_app
+        model = getattr(app, "_table_model", None)
+        if model is None:
+            return
+
+        def _schedule_reload() -> None:
+            if self._suppress_analysis_reload:
+                return
+            self._reload_debounce.start()
+
+        model.dataChanged.connect(_schedule_reload)
+        model.rowsInserted.connect(_schedule_reload)
+        model.rowsRemoved.connect(_schedule_reload)
+        model.modelReset.connect(_schedule_reload)
+        model.layoutChanged.connect(_schedule_reload)
+        model.headerDataChanged.connect(_schedule_reload)
+        proxy = getattr(app, "_filter_proxy_model", None)
+        if proxy is not None:
+            proxy.layoutChanged.connect(_schedule_reload)
+            proxy.modelReset.connect(_schedule_reload)
+        sm = app.table.selectionModel()
+        if sm is not None:
+            sm.selectionChanged.connect(self._sync_selected_columns_only_scope)
+        # Do not reload on selection changes — selecting outlier rows in the main table
+        # must not clear the outlier log or cached row indices from the last Find run.
+        self._table_updates_wired = True
+
+    def _selected_table_column_headers(self) -> list[str]:
+        app = self.parent_app
+        if app is None:
+            return []
+        return selected_table_column_headers(app)
+
+    def _sync_selected_columns_only_scope(self) -> None:
+        """Enable Selected Columns Only when the main table has column(s) selected."""
+        prefix = self._selected_columns_scope_prefix
+        headers = self._selected_table_column_headers()
+        n = len(headers)
+        if n > 0:
+            self.chk_selected_columns.setEnabled(True)
+            self.chk_selected_columns.setText(f"{prefix} ({n} column(s))")
+        else:
+            self.chk_selected_columns.setEnabled(False)
+            self.chk_selected_columns.setChecked(False)
+            self.chk_selected_columns.setText(prefix)
+
+    def _numeric_for_correlation_percentiles(self) -> pd.DataFrame | None:
+        """
+        Numeric columns for Correlations / Percentiles.
+
+        Returns ``None`` when Selected Columns Only is checked but no usable columns remain.
+        """
+        df = self._df_num
+        if not self.chk_selected_columns.isChecked():
+            return df
+        chosen = self._selected_table_column_headers()
+        if not chosen:
+            return None
+        keep = [c for c in chosen if c in df.columns]
+        if not keep:
+            return None
+        return df[keep]
+
+    def refresh_table_data(self) -> None:
+        """Reload the scoped DataFrame from the main table (immediate, not debounced)."""
+        self._reload_debounce.stop()
+        self._reload()
 
     def _build_summary_tab(self) -> QWidget:
         w = QWidget()
@@ -290,8 +387,7 @@ class DataAnalysisDialog(QDialog):
     def _build_curve_fit_tab(self) -> QWidget:
         w = QWidget()
         ly = QVBoxLayout(w)
-        gb = QGroupBox("Fit Y as a function of X (paired finite values only)")
-        form = QFormLayout(gb)
+        form = QFormLayout()
         self.fit_x = QComboBox()
         self.fit_y = QComboBox()
         form.addRow("X (predictor):", self.fit_x)
@@ -315,7 +411,7 @@ class DataAnalysisDialog(QDialog):
         self.btn_curve_fit = QPushButton("Fit")
         self.btn_curve_fit.clicked.connect(self._run_curve_fit)
         form.addRow(self.btn_curve_fit)
-        ly.addWidget(gb)
+        ly.addLayout(form)
         self.curve_text = QTextEdit()
         self.curve_text.setReadOnly(True)
         apply_monospace_to_text_edit(self.curve_text)
@@ -398,26 +494,23 @@ class DataAnalysisDialog(QDialog):
             self.parent_app, visible_only=vis, only_selected=only_sel
         )
         self._df_num = numeric_subset(self._df_raw, exclude_id=True)
-        self._last_outlier_table_rows = []
         self._populate_fit_combos()
         self._run_summary()
+        self._sync_selected_columns_only_scope()
         self.curve_text.clear()
         self.stats_text.clear()
         self.corr_table.setRowCount(0)
         self.corr_table.setColumnCount(0)
         self.percentile_text.clear()
-        self.outlier_text.clear()
 
-    def _populate_fit_combos(self) -> None:
+    def _populate_fit_combos(self, *, refresh_outlier_col: bool = True) -> None:
         cols = list(self._df_num.columns)
+        prev_outlier_col = self.outlier_col.currentText()
         for combo in (self.fit_x, self.fit_y, self.stats_a, self.stats_b):
             combo.clear()
             combo.addItems(cols)
-        self.outlier_col.blockSignals(True)
-        self.outlier_col.clear()
-        self.outlier_col.addItem("All numeric columns")
-        self.outlier_col.addItems(cols)
-        self.outlier_col.blockSignals(False)
+        if refresh_outlier_col:
+            self._repopulate_outlier_col_combo(cols, prev_outlier_col)
         if len(cols) >= 2:
             self.fit_y.setCurrentIndex(1)
             self.stats_b.setCurrentIndex(min(1, len(cols) - 1))
@@ -426,7 +519,7 @@ class DataAnalysisDialog(QDialog):
         lines: list[str] = []
         only_sel = self.only_selected_cb.isChecked() and self.only_selected_cb.isEnabled()
         if only_sel and self.parent_app is not None and not self.parent_app._selected_oids_set():
-            lines.append("Only selected rows is checked, but no rows are selected.")
+            lines.append("Selected Rows Only is checked, but no rows are selected.")
             lines.append("")
         n = len(self._df_raw)
         lines.append(f"Rows: {n}")
@@ -461,7 +554,19 @@ class DataAnalysisDialog(QDialog):
         QApplication.clipboard().setText(self.summary_text.toPlainText())
 
     def _run_correlation(self) -> None:
-        if self._df_num.shape[1] < 2:
+        self.refresh_table_data()
+        num = self._numeric_for_correlation_percentiles()
+        if num is None:
+            QMessageBox.information(
+                self,
+                "Correlations",
+                "Selected Columns Only is checked, but no table columns are selected "
+                "(click a column header in the main table).",
+            )
+            self.corr_table.setRowCount(0)
+            self.corr_table.setColumnCount(0)
+            return
+        if num.shape[1] < 2:
             QMessageBox.information(
                 self,
                 "Correlations",
@@ -472,7 +577,7 @@ class DataAnalysisDialog(QDialog):
             return
         method = self.corr_method.currentText()
         try:
-            corr = self._df_num.corr(method=method, numeric_only=True)
+            corr = num.corr(method=method, numeric_only=True)
         except Exception as e:
             QMessageBox.warning(self, "Correlations", str(e))
             return
@@ -506,7 +611,15 @@ class DataAnalysisDialog(QDialog):
         return sorted(set(out))
 
     def _run_percentiles(self) -> None:
-        if self._df_num.empty:
+        self.refresh_table_data()
+        num = self._numeric_for_correlation_percentiles()
+        if num is None:
+            self.percentile_text.setPlainText(
+                "Selected Columns Only is checked, but no table columns are selected "
+                "(click a column header in the main table)."
+            )
+            return
+        if num.empty:
             self.percentile_text.setPlainText("No numeric columns.")
             return
         try:
@@ -515,7 +628,7 @@ class DataAnalysisDialog(QDialog):
             QMessageBox.warning(self, "Percentiles", str(e))
             return
         try:
-            res = self._df_num.quantile(q=qs, interpolation="linear")
+            res = num.quantile(q=qs, interpolation="linear")
         except Exception as e:
             QMessageBox.warning(self, "Percentiles", str(e))
             return
@@ -526,17 +639,7 @@ class DataAnalysisDialog(QDialog):
     def _build_outliers_tab(self) -> QWidget:
         w = QWidget()
         ly = QVBoxLayout(w)
-        hint = QLabel(
-            "Flags numeric values that are unusually high or low compared to the rest of the column "
-            "(respects visible rows / selection at the top of this dialog). "
-            "IQR is robust to skew; classic Z uses mean and SD; modified Z uses the median and MAD."
-        )
-        hint.setWordWrap(True)
-        hint.setStyleSheet("color: palette(mid);")
-        ly.addWidget(hint)
-
-        gb = QGroupBox("Detection")
-        form = QFormLayout(gb)
+        form = QFormLayout()
         self.outlier_method = QComboBox()
         self.outlier_method.addItems(
             [
@@ -577,10 +680,9 @@ class DataAnalysisDialog(QDialog):
 
         self.btn_outliers = QPushButton("Find outliers")
         self.btn_outliers.clicked.connect(self._run_outliers)
-        self.btn_select_outliers = QPushButton("Select outliers in table")
+        self.btn_select_outliers = QPushButton("Select in Table")
         self.btn_select_outliers.setToolTip(
-            "Select main-table rows that were flagged in the last Find outliers run "
-            "(same visible/selection scope as at the top of this dialog)."
+            "Select main-table rows flagged in the last Find outliers run."
         )
         self.btn_select_outliers.clicked.connect(self._select_last_outliers_in_main_table)
         out_btn_row = QHBoxLayout()
@@ -590,7 +692,7 @@ class DataAnalysisDialog(QDialog):
         out_btn_wrap = QWidget()
         out_btn_wrap.setLayout(out_btn_row)
         form.addRow(out_btn_wrap)
-        ly.addWidget(gb)
+        ly.addLayout(form)
 
         self.outlier_text = QTextEdit()
         self.outlier_text.setReadOnly(True)
@@ -598,6 +700,17 @@ class DataAnalysisDialog(QDialog):
         ly.addWidget(self.outlier_text)
         self._sync_outlier_controls()
         return w
+
+    def _repopulate_outlier_col_combo(self, cols: list[str], prev_choice: str) -> None:
+        self.outlier_col.blockSignals(True)
+        self.outlier_col.clear()
+        self.outlier_col.addItem("All numeric columns")
+        self.outlier_col.addItems(cols)
+        if prev_choice == "All numeric columns" or prev_choice in cols:
+            idx = self.outlier_col.findText(prev_choice)
+            if idx >= 0:
+                self.outlier_col.setCurrentIndex(idx)
+        self.outlier_col.blockSignals(False)
 
     def _select_last_outliers_in_main_table(self) -> None:
         app = self.parent_app
@@ -610,7 +723,14 @@ class DataAnalysisDialog(QDialog):
                 "Run Find outliers first, or no outliers were flagged in the last run.",
             )
             return
-        app.select_table_rows(self._last_outlier_table_rows)
+        self._suppress_analysis_reload = True
+        try:
+            app.select_table_rows(self._last_outlier_table_rows)
+        finally:
+            QTimer.singleShot(300, self._end_suppress_analysis_reload)
+
+    def _end_suppress_analysis_reload(self) -> None:
+        self._suppress_analysis_reload = False
 
     def _sync_outlier_controls(self) -> None:
         idx = self.outlier_method.currentIndex()
@@ -627,6 +747,7 @@ class DataAnalysisDialog(QDialog):
         return f"row_index={i + 1}"
 
     def _run_outliers(self) -> None:
+        self.refresh_table_data()
         self._last_outlier_table_rows = []
         if self._df_num.empty:
             self.outlier_text.setPlainText("No numeric columns in the current scope.")
@@ -715,6 +836,7 @@ class DataAnalysisDialog(QDialog):
         self.outlier_text.setPlainText("\n\n".join(blocks).strip())
 
     def _run_curve_fit(self) -> None:
+        self.refresh_table_data()
         xn = self.fit_x.currentText()
         yn = self.fit_y.currentText()
         if not xn or not yn or xn == yn:
@@ -815,6 +937,7 @@ class DataAnalysisDialog(QDialog):
         self.curve_text.setPlainText("\n".join(lines))
 
     def _run_stats_tests(self) -> None:
+        self.refresh_table_data()
         try:
             from scipy import stats
         except Exception as e:
@@ -906,25 +1029,3 @@ class DataAnalysisDialog(QDialog):
             lines.append(f"Test failed: {e}")
 
         self.stats_text.setPlainText("\n".join(lines))
-
-    def _export_csv(self) -> None:
-        if self._df_num.empty:
-            QMessageBox.information(self, "Export", "No numeric columns to export.")
-            return
-        path, _ = QFileDialog.getSaveFileName(self, "Export numeric data", "", "CSV (*.csv)")
-        if not path:
-            return
-        if not path.lower().endswith(".csv"):
-            path += ".csv"
-        try:
-            id_col = None
-            if "ID_HIDDEN" in self._df_raw.columns:
-                id_col = pd.to_numeric(self._df_raw["ID_HIDDEN"], errors="coerce")
-            out = self._df_num.copy()
-            if id_col is not None and len(id_col) == len(out):
-                out.insert(0, "ID_HIDDEN", id_col.values)
-            out.to_csv(path, index=False)
-        except Exception as e:
-            QMessageBox.warning(self, "Export", str(e))
-            return
-        QMessageBox.information(self, "Export", f"Wrote {path}")

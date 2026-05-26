@@ -136,6 +136,7 @@ class ChemicalTableApp(
         self.signals.structure_source_probe.connect(self._on_structure_source_probe, _qc)
         self.signals.rendered.connect(self.on_row_ready, _qc)
         self.signals.washed.connect(self.on_wash_finished, _qc)
+        self.signals.neutralized.connect(self.on_neutralize_finished, _qc)
         self.signals.calculated.connect(self.on_calc_finished, _qc)
         self.signals.conformers_finished.connect(self.on_conformers_finished, _qc)
         self.signals.superpose_finished.connect(self.on_superpose_finished, _qc)
@@ -618,6 +619,12 @@ class ChemicalTableApp(
                 "Disconnect Largest Fragments…",
                 self.run_disconnect_fragments,
                 "Split disconnected structure fragments into separate rows, keeping the heaviest fragment.",
+                None,
+            ),
+            (
+                "Neutralize…",
+                self.run_neutralize,
+                "Adjust protonation so the net formal charge is zero (RDKit Uncharger); updates the target column.",
                 None,
             ),
             (

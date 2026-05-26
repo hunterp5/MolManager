@@ -40,6 +40,7 @@ from .fingerprint_similarity import (
     pairwise_fingerprint_similarity,
 )
 from .load_render import (
+    NeutralizeWorker,
     Render2DBatchHeldJob,
     Render2DBatchProcessWorker,
     RenderWorker,
@@ -86,6 +87,7 @@ __all__ = [
     "SqliteRebuildWorker",
     "SubstructureFilterSignals",
     "SubstructureFilterWorker",
+    "NeutralizeWorker",
     "UniversalLoadWorker",
     "WashWorker",
     "WorkerSignals",

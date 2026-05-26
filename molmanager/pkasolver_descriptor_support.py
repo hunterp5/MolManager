@@ -33,7 +33,7 @@ from molmanager.workers.protomer_generator import estimate_protomer_populations_
 
 logger = logging.getLogger(__name__)
 
-INT_FNS_NEED_PKASOLVER = frozenset({"LOGD74", "LOGS74", "CNS_MPO"})
+INT_FNS_NEED_PKASOLVER = frozenset({"LOGD74", "LOGS74", "CNS_MPO", "AB_MPS"})
 
 
 @dataclass(frozen=True)
