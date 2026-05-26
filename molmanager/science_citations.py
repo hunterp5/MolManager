@@ -24,7 +24,7 @@ DIMORPHITE_DL = (
 ESOL_DELANEY = (
     "ESOL intrinsic aqueous solubility (log10 S, mol L−1): Delaney, J. S. Estimating Aqueous "
     "Solubility Directly from Molecular Structure. J. Chem. Inf. Comput. Sci. 2004, 44 (3), "
-    "1000–1005. https://doi.org/10.1021/ci034243r"
+    "1000–1005. https://doi.org/10.1021/ci034243x"
 )
 
 WAGER_CNS_MPO = (
@@ -81,6 +81,43 @@ GNN_MTL_PERMEABILITY = (
 )
 
 
+def descriptor_checkbox_citation_html(internal_key: str) -> str | None:
+    """Short rich-text citation beside a Calculate Descriptors checkbox, if applicable."""
+    key = (internal_key or "").strip()
+    citations: dict[str, str] = {
+        "LOGD74": (
+            '<a href="https://doi.org/10.3389/fchem.2022.866585">Mayr et al., 2022</a> '
+            "(pkasolver) + RDKit log P / neutral fraction at pH 7.4"
+        ),
+        "LOGS74": (
+            '<a href="https://doi.org/10.3389/fchem.2022.866585">Mayr et al., 2022</a> '
+            "(pkasolver) + RDKit log P / neutral fraction at pH 7.4"
+        ),
+        "LOGS_ESOL": (
+            '<a href="https://doi.org/10.1021/ci034243x">Delaney, J. Chem. Inf. Comput. Sci. 2004</a> '
+            "(ESOL)"
+        ),
+        "CNS_MPO": (
+            '<a href="https://doi.org/10.1021/cn100008c">Wager et al., ACS Chem. Neurosci. 2010</a>'
+        ),
+        "AB_MPS": (
+            '<a href="https://doi.org/10.1021/acs.jmedchem.7b00717">Shultz et al., J. Med. Chem. 2018</a> '
+            "(|LogD7.4 − 3| + aromatic rings + rotatable bonds)"
+        ),
+        "QED": (
+            '<a href="https://doi.org/10.1038/nchem.1243">Bickerton et al., Nat. Chem. 2012</a> '
+            "(RDKit QED)"
+        ),
+        "RO5_VIOLATIONS": "Lipinski et al., Adv. Drug Deliv. Rev. 1997 (RDKit Ro5)",
+        "RO5_PASS": "Lipinski et al., Adv. Drug Deliv. Rev. 1997 (RDKit Ro5)",
+        "FP_Pharm2D_Gobbi": (
+            "RDKit Pharm2D; Gobbi &amp; Poppinger, "
+            "<i>Perspect. Drug Discov. Des.</i> 1998"
+        ),
+    }
+    return citations.get(key)
+
+
 def descriptor_dialog_footer_html() -> str:
     """Rich text for Calculate Descriptors dialog (links open in the system browser)."""
     return (
@@ -92,7 +129,7 @@ def descriptor_dialog_footer_html() -> str:
         '<a href="https://doi.org/10.1186/s13321-019-0336-9">Ropp et al., J. Cheminform. 2019</a> '
         "(Dimorphite-DL).<br>"
         "<b>LogS intrinsic (ESOL):</b> "
-        '<a href="https://doi.org/10.1021/ci034243r">Delaney, J. Chem. Inf. Comput. Sci. 2004</a>.<br>'
+        '<a href="https://doi.org/10.1021/ci034243x">Delaney, J. Chem. Inf. Comput. Sci. 2004</a>.<br>'
         "<b>CNS MPO score:</b> "
         '<a href="https://doi.org/10.1021/cn100008c">Wager et al., ACS Chem. Neurosci. 2010</a> '
         '(<a href="https://www.ncbi.nlm.nih.gov/pmc/articles/PMC3368654/">PMC3368654</a>).<br>'

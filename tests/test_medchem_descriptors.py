@@ -17,6 +17,7 @@ from molmanager.medchem_descriptors import (
     logs74_value,
     mol_formula,
     mol_inchi_key,
+    mol_net_formal_charge,
     ro5_pass,
 )
 from molmanager.pkasolver_descriptor_support import int_fns_need_pkasolver
@@ -35,6 +36,19 @@ def test_ro5_fail_high_mw() -> None:
     assert mol is not None
     assert lipinski_violations(mol) >= 1
     assert ro5_pass(mol) == "No"
+
+
+def test_net_formal_charge() -> None:
+    neutral = Chem.MolFromSmiles("CCO")
+    assert neutral is not None
+    assert mol_net_formal_charge(neutral) == 0
+    salt = Chem.MolFromSmiles("[NH4+].[Cl-]")
+    assert salt is not None
+    assert mol_net_formal_charge(salt) == 0
+    cation = Chem.MolFromSmiles("[NH4+]")
+    assert cation is not None
+    assert mol_net_formal_charge(cation) == 1
+    assert descriptor_callable_for_int_fn("NET_FORMAL_CHARGE", {})(cation) == 1
 
 
 def test_inchi_key_and_formula_ethanol() -> None:

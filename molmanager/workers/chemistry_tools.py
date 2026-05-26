@@ -41,6 +41,7 @@ else:
 from ..config import load_config
 from ..confs_codec import format_confs_table_cell, mol_from_packed_confs_cell, pack_confs_cell
 from ..medchem_descriptors import (
+    ab_mps_score,
     cns_mpo_score,
     esol_logS_intrinsic,
     lipinski_violations,
@@ -48,6 +49,7 @@ from ..medchem_descriptors import (
     logs74_value,
     mol_formula,
     mol_inchi_key,
+    mol_net_formal_charge,
     ro5_pass,
 )
 from ..pkasolver_descriptor_support import int_fns_need_pkasolver, microstates_for_mol
@@ -106,10 +108,14 @@ def descriptor_callable_for_int_fn(i_f, smarts_cache, row_ctx=None):
         return lambda m: esol_logS_intrinsic(m) if m is not None else 0.0
     if i_f == "LOGS74":
         return lambda m: logs74_value(m, ctx.get("pkasolver_states"))
+    if i_f == "AB_MPS":
+        return lambda m: ab_mps_score(m, ctx.get("pkasolver_states")) if m is not None else 0.0
     if i_f == "CNS_MPO":
         return lambda m: cns_mpo_score(m, ctx.get("pkasolver_states")) if m is not None else 0.0
     if i_f == "QED":
         return lambda m: QED.qed(m)
+    if i_f == "NET_FORMAL_CHARGE":
+        return lambda m: mol_net_formal_charge(m) if m is not None else 0
     if i_f.startswith("Count_"):
         atom = i_f.split("_", 1)[1]
         s = Chem.MolFromSmarts(f"[{atom}]")

@@ -20,6 +20,7 @@ from rdkit.Chem.Draw import rdMolDraw2D
 from ..display_constants import STRUCTURE_DEPICT_HEIGHT, STRUCTURE_DEPICT_WIDTH
 from ..import_structure import needs_structure_source_picker
 from ..fragment_disconnect import largest_fragment_and_rest
+from ..structure_neutralize import neutralize_mol
 from ..utils import parse_molecule_from_cell_text, safe_mol_prop_string
 from .signals import WorkerSignals, emit_partial_results_if_cancelled
 
@@ -388,4 +389,48 @@ class WashWorker(QRunnable):
             self.signals, "Disconnect fragments", done_count, total, cancelled
         )
         self.signals.washed.emit(res)
+
+
+class NeutralizeWorker(QRunnable):
+    """Neutralize each structure in ``mols_data`` (``(oid, mol)`` or ``(oid, cell_text)`` when *is_smiles*)."""
+
+    def __init__(self, mols_data, signals, is_smiles: bool = False, cancel_event: threading.Event | None = None):
+        super().__init__()
+        self.mols_data, self.signals, self.is_smiles = mols_data, signals, is_smiles
+        self.cancel_event = cancel_event
+
+    def run(self):
+        items = list(self.mols_data)
+        total = max(len(items), 1)
+        res: list[tuple[int, object]] = []
+        done_count = 0
+        cancelled = False
+        for done, row in enumerate(items, start=1):
+            if self.cancel_event is not None and self.cancel_event.is_set():
+                cancelled = True
+                break
+            done_count = done
+            oid = row[0]
+            if self.is_smiles:
+                raw = str(row[1] or "").strip()
+                mol = parse_molecule_from_cell_text(raw) if raw else None
+            else:
+                mol = row[1]
+            if mol is None:
+                try:
+                    self.signals.tool_progress.emit("Neutralize…", done, total)
+                except Exception:
+                    pass
+                continue
+            neutral = neutralize_mol(mol)
+            if neutral is not None:
+                res.append((oid, neutral))
+            try:
+                self.signals.tool_progress.emit("Neutralize…", done, total)
+            except Exception:
+                pass
+        emit_partial_results_if_cancelled(
+            self.signals, "Neutralize", done_count, total, cancelled
+        )
+        self.signals.neutralized.emit(res)
 

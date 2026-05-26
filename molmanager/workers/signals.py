@@ -31,6 +31,7 @@ class WorkerSignals(QObject):
 
     # --- Batch chemistry / tools (wash, descriptors, conformers, custom calc, export) ---
     washed = pyqtSignal(list)
+    neutralized = pyqtSignal(list)
     calculated = pyqtSignal(list, list)
     # list of (oid, mol_or_None, confs_cell_json_str)
     conformers_finished = pyqtSignal(list)

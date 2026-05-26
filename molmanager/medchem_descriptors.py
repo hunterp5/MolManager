@@ -3,7 +3,8 @@
 Canonical citations (plain text, copy-paste friendly) live in ``molmanager.science_citations``.
 
 * **CNS MPO** — Wager et al., ACS Chem. Neurosci. 2010 (doi:10.1021/cn100008c); Table 1 / PMC3368654.
-* **ESOL intrinsic log S** — Delaney, J. Chem. Inf. Comput. Sci. 2004 (doi:10.1021/ci034243r).
+* **AB-MPS** — Shultz et al., J. Med. Chem. 2018 (doi:10.1021/acs.jmedchem.7b00717); |cLogD7.4 − 3| + NAR + NRB.
+* **ESOL intrinsic log S** — Delaney, J. Chem. Inf. Comput. Sci. 2004 (doi:10.1021/ci034243x).
 * **pkasolver microstates** — Mayr et al., Front. Chem. 2022 (doi:10.3389/fchem.2022.866585); GitHub mayrf/pkasolver.
 * **Dimorphite-DL** (inside pkasolver) — Ropp et al., J. Cheminform. 2019 (doi:10.1186/s13321-019-0336-9).
 
@@ -139,6 +140,19 @@ def logs74_value(mol: Chem.Mol, states: list | None = None) -> float:
     return logs74_from_microstates(st, intrinsic)
 
 
+def ab_mps_score(mol: Chem.Mol, states: list | None = None) -> float:
+    """
+    AbbVie multiparameter score (bRo5): |cLogD7.4 − 3| + aromatic rings + rotatable bonds.
+
+    Shultz et al., J. Med. Chem. 2018 (doi:10.1021/acs.jmedchem.7b00717); values ≤ 14 often
+    associated with higher oral/PK success in beyond-Ro5 space.
+    """
+    clogd = logd74_value(mol, states)
+    nar = float(rdMolDescriptors.CalcNumAromaticRings(mol))
+    nrb = float(Lipinski.NumRotatableBonds(mol))
+    return abs(clogd - 3.0) + nar + nrb
+
+
 def cns_mpo_score(mol: Chem.Mol, states: list | None = None) -> float:
     """
     Composite CNS MPO-style score (0–6) from Wager 2010 Table 1 desirability functions.
@@ -166,6 +180,11 @@ def cns_mpo_score(mol: Chem.Mol, states: list | None = None) -> float:
     t0_hbd = _mono_dec(hbd, 0.5, 3.5)
     t0_pka = _mono_dec(pka_mb, 8.0, 10.0)
     return t0_p + t0_d + t0_mw + t0_tpsa + t0_hbd + t0_pka
+
+
+def mol_net_formal_charge(mol: Chem.Mol) -> int:
+    """Sum of RDKit atom formal charges (integer net charge for the structure)."""
+    return sum(atom.GetFormalCharge() for atom in mol.GetAtoms())
 
 
 def mol_inchi_key(mol: Chem.Mol) -> str:

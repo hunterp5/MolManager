@@ -96,7 +96,8 @@ restrict which rows stay visible; combine cards as needed. <b>Tools → Filter</
     "tools_chem": """
 <h2>Tools — disconnect, 2D render, descriptors, conformers</h2>
 <p><b>Tools → Prepare Structures</b> — <b>Disconnect Largest Fragments</b> (split salts/multi-component entries; keep
-largest fragment) and <b>Render 2D</b> (batch 2D images for a chosen column; listed in <b>Processes</b> while active).</p>
+largest fragment), <b>Neutralize</b> (protonate/deprotonate to net charge 0), and <b>Render 2D</b> (batch 2D images for a
+chosen column; listed in <b>Processes</b> while active).</p>
 <p><b>Calculate Descriptors</b> — pick a structure column and descriptor categories (RDKit-backed drug-likeness,
 counts, fingerprint on-bits for the full RDKit set, etc.); optional <b>only selected rows</b>.</p>
 <p><b>Tools → Conformations</b> — <b>Generate Conformations</b> (ensembles in <b>confs</b>), <b>Generate Single Conformation</b>
@@ -160,7 +161,7 @@ are configurable from the sketcher tools.</p>
 <h2>Data — analyze table and cluster</h2>
 <p><b>Analyze Table</b> — statistical summaries for numeric columns and overviews of categorical/text columns
 for the rows currently passing filters (optionally <b>only selected rows</b>). Includes correlation matrices, percentiles,
-<b>outlier detection</b> (IQR/Tukey, Z-score, or modified Z; then <b>Select outliers in table</b> to match the main selection), polynomial and simple non-linear curve fits,
+<b>outlier detection</b> (IQR/Tukey, Z-score, or modified Z; then <b>Select in Table</b> to match the main selection), polynomial and simple non-linear curve fits,
 and common <b>statistical tests</b> (SciPy).</p>
 <p><b>Cluster</b> — cluster compounds by fingerprint (several algorithms and parameters). <b>Exploratory mode</b> samples
 many parameter combinations; review metrics, then apply a trial to add a cluster assignment column. Large tables:

@@ -6,7 +6,7 @@ from PyQt5.QtWidgets import (
     QComboBox,
     QDialog,
     QDialogButtonBox,
-    QGroupBox,
+    QHBoxLayout,
     QLabel,
     QScrollArea,
     QTabWidget,
@@ -14,7 +14,37 @@ from PyQt5.QtWidgets import (
     QWidget,
 )
 
-from ...science_citations import descriptor_dialog_footer_html
+_DESCRIPTOR_TAB_ORDER = (
+    "Physiochemical",
+    "Fingerprints",
+    "Name",
+    "Drug-likeness",
+    "Structural Counts",
+    "Ring Systems",
+    "Atom Counts",
+    "Complexity",
+    "Electronic",
+)
+
+_NAME_DESCRIPTOR_ORDER = (
+    "SMILES String",
+    "InChI Key",
+    "Molecular formula",
+)
+
+_PHYSICOCHEMICAL_DESCRIPTOR_ORDER = (
+    "Fraction CSP3",
+    "Labute ASA",
+    "LogD 7.4",
+    "LogP",
+    "LogS intrinsic (ESOL)",
+    "LogS 7.4",
+    "Mol Weight",
+    "Molar Refractivity",
+    "TPSA",
+)
+
+from ...science_citations import descriptor_checkbox_citation_html
 from ..qt_widget_utils import make_window_minimizable
 from .scope import selection_scope_checked
 
@@ -27,52 +57,45 @@ class PropertyDialog(QDialog):
         self._have_selection = selected_row_count > 0
         l = QVBoxLayout(self)
 
-        src_box = QGroupBox("1. Input Configuration")
-        s_lyt = QVBoxLayout(src_box)
+        target_row = QHBoxLayout()
+        target_row.addWidget(QLabel("Target Column:"))
         self.src_combo = QComboBox()
         self.src_combo.addItems([c for c in columns if (c or "").strip()])
-        s_lyt.addWidget(self.src_combo)
-        l.addWidget(src_box)
-
-        scope_box = QGroupBox("Scope")
-        scope_lyt = QVBoxLayout(scope_box)
+        target_row.addWidget(self.src_combo, 1)
         self.only_selected_cb = QCheckBox("Only selected rows")
         self._only_selected_scope_prefix = "Only selected rows"
         if self._have_selection:
             self.only_selected_cb.setText(f"{self._only_selected_scope_prefix} ({selected_row_count} row(s))")
         else:
             self.only_selected_cb.setEnabled(False)
-        scope_lyt.addWidget(self.only_selected_cb)
-        l.addWidget(scope_box)
+        target_row.addWidget(self.only_selected_cb, 0, Qt.AlignVCenter)
+        l.addLayout(target_row)
 
-        desc_box = QGroupBox("2. Descriptor Categories")
-        d_box_lyt = QVBoxLayout(desc_box)
-        ref_lbl = QLabel(descriptor_dialog_footer_html())
-        ref_lbl.setWordWrap(True)
-        ref_lbl.setTextFormat(Qt.RichText)
-        ref_lbl.setOpenExternalLinks(True)
-        ref_lbl.setStyleSheet("color: palette(mid);")
-        d_box_lyt.addWidget(ref_lbl)
         self.tabs = QTabWidget()
 
         categories = {
-            "Drug-likeness": {
+            "Physiochemical": {
+                "Fraction CSP3": "FractionCSP3",
+                "Labute ASA": "LabuteASA",
+                "LogD 7.4": "LOGD74",
+                "LogP": "MolLogP",
+                "LogS intrinsic (ESOL)": "LOGS_ESOL",
+                "LogS 7.4": "LOGS74",
+                "Mol Weight": "MolWt",
+                "Molar Refractivity": "MolMR",
+                "TPSA": "TPSA",
+            },
+            "Name": {
                 "SMILES String": "SMILES",
                 "InChI Key": "INCHIKEY",
                 "Molecular formula": "MOLFORMULA",
+            },
+            "Drug-likeness": {
                 "QED Score": "QED",
-                "Mol Weight": "MolWt",
-                "LogP": "MolLogP",
-                "LogD 7.4": "LOGD74",
-                "LogS intrinsic (ESOL)": "LOGS_ESOL",
-                "LogS 7.4": "LOGS74",
-                "TPSA": "TPSA",
+                "AB-MPS score": "AB_MPS",
                 "Ro5 violations": "RO5_VIOLATIONS",
                 "Ro5 pass": "RO5_PASS",
                 "CNS MPO score": "CNS_MPO",
-                "Molar Refractivity": "MolMR",
-                "Fraction CSP3": "FractionCSP3",
-                "Labute ASA": "LabuteASA",
             },
             "Structural Counts": {
                 "Heavy Atoms": "HeavyAtomCount",
@@ -111,6 +134,7 @@ class PropertyDialog(QDialog):
                 "Kappa 2": "Kappa2",
             },
             "Electronic": {
+                "Net Formal Charge": "NET_FORMAL_CHARGE",
                 "Max Partial Charge": "MaxPartialCharge",
                 "Min Partial Charge": "MinPartialCharge",
                 "Max Abs Partial Charge": "MaxAbsPartialCharge",
@@ -123,22 +147,50 @@ class PropertyDialog(QDialog):
         categories["Fingerprints"] = descriptor_fingerprint_categories()
 
         self.cbs = {}
-        for cat_name in sorted(categories, key=str.casefold):
-            props = categories[cat_name]
+        for cat_name in _DESCRIPTOR_TAB_ORDER:
+            props = categories.get(cat_name)
+            if not props:
+                continue
             scroll = QScrollArea()
             scroll.setWidgetResizable(True)
             tab = QWidget()
             tab_lyt = QVBoxLayout(tab)
-            for disp, internal in sorted(props.items(), key=lambda kv: kv[0].casefold()):
+            if cat_name == "Physiochemical":
+                ordered_items = [
+                    (disp, props[disp])
+                    for disp in _PHYSICOCHEMICAL_DESCRIPTOR_ORDER
+                    if disp in props
+                ]
+            elif cat_name == "Name":
+                ordered_items = [
+                    (disp, props[disp])
+                    for disp in _NAME_DESCRIPTOR_ORDER
+                    if disp in props
+                ]
+            else:
+                ordered_items = sorted(props.items(), key=lambda kv: kv[0].casefold())
+            for disp, internal in ordered_items:
+                row = QHBoxLayout()
+                row.setSpacing(8)
                 cb = QCheckBox(disp)
-                tab_lyt.addWidget(cb)
+                row.addWidget(cb, 0, Qt.AlignTop)
+                cite_html = descriptor_checkbox_citation_html(internal)
+                if cite_html:
+                    cite_lbl = QLabel(f"<small>{cite_html}</small>")
+                    cite_lbl.setWordWrap(True)
+                    cite_lbl.setTextFormat(Qt.RichText)
+                    cite_lbl.setOpenExternalLinks(True)
+                    cite_lbl.setStyleSheet("color: palette(mid);")
+                    row.addWidget(cite_lbl, 1, Qt.AlignVCenter)
+                else:
+                    row.addStretch(1)
+                tab_lyt.addLayout(row)
                 self.cbs[disp] = (cb, internal)
             tab_lyt.addStretch()
             scroll.setWidget(tab)
             self.tabs.addTab(scroll, cat_name)
 
-        d_box_lyt.addWidget(self.tabs)
-        l.addWidget(desc_box)
+        l.addWidget(self.tabs, 1)
         bb = QDialogButtonBox(QDialogButtonBox.Ok)
         bb.accepted.connect(self.accept)
         l.addWidget(bb)
