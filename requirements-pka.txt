@@ -1,18 +1,16 @@
-# Optional stack for Tools → pKa Predictor (pkasolver + PyTorch / PyTorch Geometric).
+# Optional stack for Tools → pKa Predictor (pkasolver + PyTorch Geometric).
 #
-# Windows: default ``pip install torch`` often pulls a wheel whose ``c10.dll`` fails to load
-# (WinError 1114). Install the official **CPU** build from PyTorch first, then PyG extensions,
-# then the lines below.
+# Use ONE Python environment (your main .venv or system Python). Do not create separate
+# .venvs/pka or admet-ai environments.
 #
-# 1) CPU PyTorch (same Python major.minor as your venv, e.g. 3.11):
-#    pip uninstall torch torchvision torchaudio -y
-#    pip install torch==2.5.1 torchvision==0.20.1 --index-url https://download.pytorch.org/whl/cpu
+# Install (recommended):
+#   Windows:  scripts\install_pytorch_pka.ps1
+#   macOS/Linux:  bash scripts/install_pytorch_pka.sh
 #
-# 2) PyG binary deps matching that torch (pick the URL that matches your installed torch):
-#    pip install torch-scatter torch-sparse -f https://data.pyg.org/whl/torch-2.5.1+cpu.html
-#
-# 3) Remaining packages:
-#    pip install -r requirements-pka.txt
+# Manual order (same as the scripts):
+#   pip install -r requirements-pytorch-cpu.txt
+#   pip install torch-scatter torch-sparse -f https://data.pyg.org/whl/torch-2.5.1+cpu.html
+#   pip install -r requirements-pka.txt
 
 pkasolver @ git+https://github.com/mayrf/pkasolver.git
 torch-geometric==2.0.1

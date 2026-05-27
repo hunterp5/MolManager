@@ -8,12 +8,12 @@ python -m pip install -U pip
 python -m pip install -r requirements.txt
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
-if (Test-Path "requirements-pka.txt") {
+if (Test-Path "scripts\install_pytorch_pka.ps1") {
     Write-Host ""
-    Write-Host "NOTE: On Windows, install CPU PyTorch before requirements-pka.txt (see file header)."
-    $pka = Read-Host "Install pKa stack now? [y/N]"
+    Write-Host "pKa uses CPU PyTorch 2.5.1 in the *same* Python as MolManager (no .venvs/pka)."
+    $pka = Read-Host "Install PyTorch + pkasolver now? [y/N]"
     if ($pka -match '^[yY]') {
-        python -m pip install -r requirements-pka.txt
+        & "$PSScriptRoot\install_pytorch_pka.ps1"
     }
 }
 

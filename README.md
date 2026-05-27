@@ -8,11 +8,15 @@ Create/activate a virtualenv, then either **core only** or **full stack** (pKa +
 
 ```bash
 pip install -r requirements.txt
-# optional full Python stack (see requirements-pka.txt for Windows PyTorch notes first):
-pip install -r requirements-all.txt
+# optional full Python stack (pKa needs CPU PyTorch 2.5.1 — use the install script, not a second venv):
+pip install -r requirements.txt
+scripts\install_pytorch_pka.ps1
+pip install -r requirements-boltz.txt
 ```
 
 Or editable install: `pip install -e ".[dev]"` (see `pyproject.toml` for extras `pka`, `boltz`, `permeability`).
+
+**pKa / PyTorch:** use **one** Python environment. Run `scripts\install_pytorch_pka.ps1` (Windows) or `bash scripts/install_pytorch_pka.sh` (macOS/Linux) to install CPU **torch 2.5.1** plus `torch-scatter` / `torch-sparse` and **pkasolver**. The script also uninstalls **admet-ai** (it pins torch ≥2.8 and breaks pkasolver). Do not use separate `.venvs/pka` or `.venvs/admet-ai` folders.
 
 **Optional CLI tools** (AutoDock Vina, Boltz predict binary): not stored in git. Copy into
 `molmanager/resources/bin/win/` (`vina.exe`, `boltz.exe`) or run
@@ -46,8 +50,10 @@ conda install -c conda-forge rdkit pyqt
 pip install -r requirements.txt
 ```
 
-**Apple Silicon:** core MolManager runs natively. Optional **pKa** (`pkasolver` + PyTorch) may need a
-CPU/MPS-compatible PyTorch build from [pytorch.org](https://pytorch.org) before `requirements-pka.txt`.
+**Apple Silicon:** core MolManager runs natively. For **pKa**, run `bash scripts/install_pytorch_pka.sh`
+(or install a CPU/MPS-compatible **torch 2.5.1** build from [pytorch.org](https://pytorch.org), then
+`pip install torch-scatter torch-sparse` from the matching [PyG wheel index](https://data.pyg.org/whl/),
+then `pip install -r requirements-pka.txt`).
 
 ### Install notes (all platforms)
 
