@@ -149,6 +149,69 @@ class DisconnectFragmentsDialog(QDialog):
         return src, update_target, largest, fragments, only_sel, no_render
 
 
+class FastPrepareDialog(QDialog):
+    """Disconnect largest fragment, neutralize, then render 2D in one pipeline."""
+
+    def __init__(self, source_labels: list[str], selected_row_count: int = 0, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Fast Prepare")
+        self.resize(440, 200)
+        self._have_selection = selected_row_count > 0
+
+        root = QVBoxLayout(self)
+        hint = QLabel(
+            "Updates the target column with the largest disconnected fragment, neutralizes it, "
+            "then redraws 2D images. Smaller fragments are written to the Fragments column."
+        )
+        hint.setWordWrap(True)
+        hint.setStyleSheet("color: palette(mid);")
+        root.addWidget(hint)
+
+        f = QFormLayout()
+        self.src_combo = QComboBox()
+        self.src_combo.addItems(source_labels)
+        f.addRow("Target column:", self.src_combo)
+        self.fragments_edit = QLineEdit("Fragments")
+        f.addRow("Smaller fragments column:", self.fragments_edit)
+        root.addLayout(f)
+
+        self.only_selected_cb = QCheckBox("Only selected rows")
+        self._only_selected_scope_prefix = "Only selected rows"
+        if self._have_selection:
+            self.only_selected_cb.setText(f"{self._only_selected_scope_prefix} ({selected_row_count} row(s))")
+        else:
+            self.only_selected_cb.setEnabled(False)
+        root.addWidget(self.only_selected_cb)
+
+        box = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        box.accepted.connect(self._try_accept)
+        box.rejected.connect(self.reject)
+        root.addWidget(box)
+        make_window_minimizable(self)
+
+    def _try_accept(self) -> None:
+        fragments = (self.fragments_edit.text() or "").strip()
+        if not fragments:
+            QMessageBox.warning(self, self.windowTitle(), "Enter a column name for the smaller fragments.")
+            return
+        if fragments in _RESERVED_DISCONNECT_COLUMNS:
+            QMessageBox.warning(
+                self,
+                self.windowTitle(),
+                f"The smaller fragments column name “{fragments}” is reserved.",
+            )
+            return
+        self.accept()
+
+    def config(self) -> tuple[str, str, bool]:
+        """Returns ``(target_column, smaller_fragments_column, only_selected_rows)``."""
+        return (
+            self.src_combo.currentText(),
+            (self.fragments_edit.text() or "").strip(),
+            selection_scope_checked(self),
+        )
+
+
 class NeutralizeDialog(QDialog):
     """Neutralize structures in a chosen column (net formal charge → 0)."""
 

@@ -1111,6 +1111,73 @@ class TableUIMixin(TableSearchMixin, FilterPanelMixin):
                 out.append((oid, mol))
         return out
 
+    def collect_scoped_table_smiles(
+        self,
+        src: str,
+        *,
+        only_selected: bool = False,
+        only_visible: bool = False,
+        process_ui_every: int = 64,
+    ) -> list[tuple[int, str]]:
+        """
+        Like :meth:`collect_scoped_table_mols` but returns ``(oid, SMILES text)`` without RDKit parsing.
+
+        Periodically pumps the event loop so large tables stay responsive while gathering inputs.
+        """
+        from PyQt5.QtWidgets import QApplication
+
+        allowed = self._selected_oids_set() if only_selected else None
+        col = None if src == "Structure" else self.headers.index(src)
+        visible_rows: set[int] | None = (
+            set(self._visible_source_row_indices()) if only_visible else None
+        )
+        is_pixmap_src = src != "Structure" and self._table_model.is_pixmap_data_column(src)
+        smiles_h = self._canonical_smiles_header_for_updates()
+        out: list[tuple[int, str]] = []
+        nrows = self._table_model.rowCount()
+        for r in range(nrows):
+            if process_ui_every > 0 and r > 0 and r % process_ui_every == 0:
+                QApplication.processEvents()
+            if visible_rows is not None and r not in visible_rows:
+                continue
+            oid = self._table_model.row_oid(r)
+            if allowed is not None and oid not in allowed:
+                continue
+            raw = ""
+            if src == "Structure":
+                if smiles_h:
+                    raw = (self._table_model.backing_value_for_row_header(r, smiles_h) or "").strip()
+                    if not raw:
+                        raw = (self._table_cell_text(r, self.headers.index(smiles_h)) or "").strip()
+                if not raw:
+                    mol = self.mols.get(oid)
+                    if mol is None:
+                        mol = self._mol_for_structure_row(r)
+                    if mol is not None:
+                        try:
+                            raw = mol_to_canonical_smiles(mol)
+                        except Exception:
+                            raw = ""
+            elif is_pixmap_src:
+                raw = (self._table_model.backing_value_for_row_header(r, src) or "").strip()
+                if not raw:
+                    mol = self.mols.get(oid)
+                    if mol is None:
+                        mol = self._mol_for_structure_row(r)
+                    if mol is not None:
+                        try:
+                            raw = mol_to_canonical_smiles(mol)
+                        except Exception:
+                            raw = ""
+            else:
+                raw = (self._table_cell_text(r, col) or "").strip()
+                if not raw:
+                    raw = (self._table_model.backing_value_for_row_header(r, src) or "").strip()
+            smi = raw.strip()
+            if smi:
+                out.append((oid, smi))
+        return out
+
     def _apply_structure_field_override(self, mol: Chem.Mol | None) -> Chem.Mol | None:
         field = getattr(self, "_structure_field_override", None)
         if not field or mol is None:

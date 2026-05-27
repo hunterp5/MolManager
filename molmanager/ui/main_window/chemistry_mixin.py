@@ -831,6 +831,38 @@ class ChemistryMixin:
             self._structure_column_autosize_after_render_oid = None
         self.start_render_worker(oid, mol, w, h)
 
+    def run_fast_prepare(self) -> None:
+        if not self.headers or not self.mols:
+            return
+        from ..dialogs import FastPrepareDialog
+
+        candidates = self.chemistry_tool_structure_sources()
+        n_sel = len(self._selected_logical_rows())
+        dlg = FastPrepareDialog(candidates, n_sel, self)
+        self._prepare_tool_dialog(dlg)
+        dlg.setAttribute(Qt.WA_DeleteOnClose, True)
+        dlg.accepted.connect(lambda *_, d=dlg: self._on_fast_prepare_dialog_accepted(d))
+        dlg.show()
+
+    def _on_fast_prepare_dialog_accepted(self, dlg) -> None:
+        src, fragments_col, only_selected = dlg.config()
+        allowed = self._selected_oids_set() if only_selected else None
+        if self._abort_if_only_selected_but_empty(only_selected, allowed, "Fast Prepare"):
+            return
+        self._fast_prepare_active = True
+        self._fast_prepare_source = src
+        self._fast_prepare_allowed_oids = allowed
+        self.status_label.setText("Fast prepare: disconnecting fragments…")
+        self._enqueue_disconnect_fragments(
+            src,
+            update_target=True,
+            largest_col=None,
+            fragments_col=fragments_col,
+            only_selected=only_selected,
+            no_render_2d=True,
+            queue_title_prefix="Fast prepare: ",
+        )
+
     def run_disconnect_fragments(self) -> None:
         if not self.headers or not self.mols:
             return
@@ -849,12 +881,33 @@ class ChemistryMixin:
         allowed = self._selected_oids_set() if only_selected else None
         if self._abort_if_only_selected_but_empty(only_selected, allowed, "Disconnect Largest Fragments"):
             return
+        self.status_label.setText("Disconnecting fragments…")
+        self._enqueue_disconnect_fragments(
+            src,
+            update_target=update_target,
+            largest_col=largest_col,
+            fragments_col=fragments_col,
+            only_selected=only_selected,
+            no_render_2d=no_render_2d,
+        )
+
+    def _enqueue_disconnect_fragments(
+        self,
+        src: str,
+        *,
+        update_target: bool,
+        largest_col: str | None,
+        fragments_col: str,
+        only_selected: bool,
+        no_render_2d: bool,
+        queue_title_prefix: str = "",
+    ) -> None:
+        allowed = self._selected_oids_set() if only_selected else None
         self._disconnect_source = src
         self._disconnect_update_target = update_target
         self._disconnect_largest_col = src if update_target else largest_col
         self._disconnect_fragments_col = fragments_col
         self._disconnect_no_render_2d = no_render_2d
-        self.status_label.setText("Disconnecting fragments…")
         if src == "Structure":
             data = []
             oids_walk = self._all_oids_in_table_order()
@@ -873,9 +926,11 @@ class ChemistryMixin:
                     "No rows match the current scope and structure field.",
                 )
                 self.status_label.setText("Ready.")
+                self._fast_prepare_active = False
                 return
+            title = f"{queue_title_prefix}disconnect largest fragments"
             self.process_queue.enqueue(
-                "Disconnect largest fragments (structure)",
+                title,
                 lambda ev, d=data, s=self.signals: WashWorker(d, s, is_smiles=False, cancel_event=ev),
             )
         else:
@@ -896,9 +951,11 @@ class ChemistryMixin:
                     "No rows match the current scope and structure field.",
                 )
                 self.status_label.setText("Ready.")
+                self._fast_prepare_active = False
                 return
+            title = f"{queue_title_prefix}disconnect largest fragments (column)"
             self.process_queue.enqueue(
-                "Disconnect largest fragments (column)",
+                title,
                 lambda ev, d=data, s=self.signals: WashWorker(d, s, is_smiles=True, cancel_event=ev),
             )
 
@@ -946,17 +1003,38 @@ class ChemistryMixin:
         allowed = self._selected_oids_set() if only_selected else None
         if self._abort_if_only_selected_but_empty(only_selected, allowed, "Neutralize"):
             return
+        self.status_label.setText("Neutralizing structures…")
+        self._enqueue_neutralize(
+            src,
+            only_selected=only_selected,
+            no_render_2d=no_render_2d,
+        )
+
+    def _enqueue_neutralize(
+        self,
+        src: str,
+        *,
+        only_selected: bool = False,
+        no_render_2d: bool = False,
+        rows: list[tuple[int, Chem.Mol]] | None = None,
+        queue_title_prefix: str = "",
+    ) -> None:
+        from ...workers import NeutralizeWorker
+
         self._neutralize_source = src
         self._neutralize_no_render_2d = no_render_2d
-        self.status_label.setText("Neutralizing structures…")
-        data: list[tuple[int, Chem.Mol]] = []
-        oids_walk = self._all_oids_in_table_order()
-        if allowed is not None:
-            oids_walk = [o for o in oids_walk if o in allowed]
-        for oid in oids_walk:
-            mol = self._mol_for_structure_tool_oid(oid, src)
-            if mol is not None:
-                data.append((oid, mol))
+        if rows is None:
+            allowed = self._selected_oids_set() if only_selected else None
+            data: list[tuple[int, Chem.Mol]] = []
+            oids_walk = self._all_oids_in_table_order()
+            if allowed is not None:
+                oids_walk = [o for o in oids_walk if o in allowed]
+            for oid in oids_walk:
+                mol = self._mol_for_structure_tool_oid(oid, src)
+                if mol is not None:
+                    data.append((oid, mol))
+        else:
+            data = list(rows)
         if not data:
             QMessageBox.information(
                 self,
@@ -965,14 +1043,17 @@ class ChemistryMixin:
             )
             self.status_label.setText("Ready.")
             return
-        from ...workers import NeutralizeWorker
-
+        title = f"{queue_title_prefix}neutralize".strip() or "Neutralize"
         self.process_queue.enqueue(
-            "Neutralize",
+            title,
             lambda ev, d=data, s=self.signals: NeutralizeWorker(d, s, is_smiles=False, cancel_event=ev),
         )
 
     def on_neutralize_finished(self, results) -> None:
+        fast_prepare = getattr(self, "_fast_prepare_active", False)
+        fast_src = getattr(self, "_fast_prepare_source", "Structure") if fast_prepare else "Structure"
+        fast_allowed = getattr(self, "_fast_prepare_allowed_oids", None) if fast_prepare else None
+
         src = getattr(self, "_neutralize_source", "Structure")
         no_render_2d = getattr(self, "_neutralize_no_render_2d", False)
         self._neutralize_source = "Structure"
@@ -1002,6 +1083,29 @@ class ChemistryMixin:
 
         self.calculate_global_bounds()
         self._clear_tool_progress()
+        if fast_prepare:
+            self._fast_prepare_active = False
+            self._fast_prepare_source = "Structure"
+            self._fast_prepare_allowed_oids = None
+            render_src = fast_src
+            allowed_oids = fast_allowed
+            if results and not getattr(self, "_render2d_batch_active", False):
+                base_w, base_h = STRUCTURE_DEPICT_WIDTH, STRUCTURE_DEPICT_HEIGHT
+                renders, row_by_oid = self._build_render2d_tasks_in_table_order(
+                    render_src, base_w, base_h, allowed_oids
+                )
+                if renders:
+                    self.status_label.setText("Fast prepare: rendering 2D…")
+                    self._start_render_2d_batch(
+                        renders,
+                        row_by_oid,
+                        render_src,
+                        column_pixmap_mode=(render_src != "Structure"),
+                        queue_title_prefix="Fast prepare: ",
+                    )
+                    return
+            self.status_label.setText(self._consume_partial_results_notice() or "Fast prepare done.")
+            return
         if results and render_target and not no_render_2d and not getattr(
             self, "_render2d_batch_active", False
         ):
@@ -1212,11 +1316,12 @@ class ChemistryMixin:
         src: str = "Structure",
         *,
         column_pixmap_mode: bool = True,
+        queue_title_prefix: str = "",
     ) -> None:
         """Queue batch 2D renders on the serial process queue (waits behind other tools)."""
         if getattr(self, "_render2d_batch_active", False):
             return
-        title = f"Render 2D ({len(renders)} rows)"
+        title = f"{queue_title_prefix}render 2D ({len(renders)} rows)".strip()
         payload = (renders, row_by_oid, src, column_pixmap_mode)
         self.process_queue.enqueue(
             title,
@@ -1460,8 +1565,31 @@ class ChemistryMixin:
         self.calculate_global_bounds()
         self.table.setSortingEnabled(False)
         self._clear_tool_progress()
+
+        if getattr(self, "_fast_prepare_active", False):
+            fast_src = getattr(self, "_fast_prepare_source", src)
+            neutral_rows = [(oid, mol) for oid, mol, _frag in results if mol is not None]
+            if not neutral_rows:
+                self._fast_prepare_active = False
+                self._fast_prepare_source = "Structure"
+                self._fast_prepare_allowed_oids = None
+                self.status_label.setText(
+                    self._consume_partial_results_notice() or "Fast prepare: no structures to neutralize."
+                )
+                return
+            self.status_label.setText("Fast prepare: neutralizing…")
+            self._enqueue_neutralize(
+                fast_src,
+                no_render_2d=True,
+                rows=neutral_rows,
+                queue_title_prefix="Fast prepare: ",
+            )
+            return
+
         render_src = src if update_target else largest_col
-        if results and render_largest and not getattr(self, "_render2d_batch_active", False):
+        if results and render_largest and not no_render_2d and not getattr(
+            self, "_render2d_batch_active", False
+        ):
             base_w, base_h = STRUCTURE_DEPICT_WIDTH, STRUCTURE_DEPICT_HEIGHT
             renders = []
             row_by_oid: dict[int, int] = {}
@@ -1736,6 +1864,22 @@ class ChemistryMixin:
                 pass
         self.status_label.setText(self._consume_partial_results_notice() or "Done.")
 
+    def _unique_table_column_names(self, bases: list[str]) -> list[str]:
+        """Return column header names; append `` (n)`` when a name already exists in the table."""
+        out: list[str] = []
+        used = set(self.headers)
+        for raw in bases:
+            base = (raw or "").strip() or "Column"
+            col = base
+            if col in used:
+                cnt = 1
+                while f"{base} ({cnt})" in used:
+                    cnt += 1
+                col = f"{base} ({cnt})"
+            out.append(col)
+            used.add(col)
+        return out
+
     def open_calc(self):
         if not self.headers:
             return
@@ -1750,6 +1894,7 @@ class ChemistryMixin:
 
     def _on_calc_descriptors_dialog_accepted(self, d) -> None:
         disp, fns = d.get_selected()
+        calc_headers = self._unique_table_column_names(disp)
         src = d.src_combo.currentText()
         is_s = src != "Structure"
         s_idx = self.headers.index(src)
@@ -1783,7 +1928,7 @@ class ChemistryMixin:
         self._begin_tool_progress("Calculate descriptors", len(data))
         self.process_queue.enqueue(
             f"Calculate descriptors ({len(data)} rows)",
-            lambda ev, d=data, dh=disp, fn=fns, sm=is_s, sigs=self.signals, p=ps: CalcWorker(
+            lambda ev, d=data, dh=calc_headers, fn=fns, sm=is_s, sigs=self.signals, p=ps: CalcWorker(
                 d, dh, fn, sm, sigs, cancel_event=ev, progress_state=p
             ),
         )
@@ -2734,10 +2879,58 @@ class ChemistryMixin:
         from ...workers import PermeabilityPredictorSignals
 
         sig = PermeabilityPredictorSignals(self)
-        sig.finished.connect(self._on_permeability_prediction_finished)
-        sig.failed.connect(self._on_permeability_prediction_failed)
+        sig.finished.connect(self._on_permeability_prediction_finished, Qt.QueuedConnection)
+        sig.failed.connect(self._on_permeability_prediction_failed, Qt.QueuedConnection)
         self._permeability_predictor_signals = sig
         return sig
+
+    def schedule_permeability_prediction(
+        self,
+        src: str,
+        *,
+        only_selected: bool,
+        output_columns: tuple[str, ...],
+    ) -> None:
+        """Gather rows and enqueue prediction on the next event-loop tick (keeps the dialog responsive)."""
+        QTimer.singleShot(
+            0,
+            lambda: self._start_permeability_prediction(src, only_selected, output_columns),
+        )
+
+    def _start_permeability_prediction(
+        self,
+        src: str,
+        only_selected: bool,
+        output_columns: tuple[str, ...],
+    ) -> None:
+        from ...workers import PermeabilityPredictorWorker
+
+        allowed = self._selected_oids_set() if only_selected else None
+        if only_selected and not allowed:
+            QMessageBox.warning(
+                self,
+                "Predict Permeability",
+                "\u201cOnly selected rows\u201d is checked but nothing is selected.",
+            )
+            return
+        rows_smi = self.collect_scoped_table_smiles(src, only_selected=only_selected)
+        if not rows_smi:
+            QMessageBox.information(
+                self,
+                "Predict Permeability",
+                "No valid structures were found for this scope and source.",
+            )
+            return
+        perm_signals = self._ensure_permeability_predictor_signals()
+        n = len(rows_smi)
+        prog = self._tool_progress_state
+        self._begin_tool_progress("Predict Permeability", n)
+        self.process_queue.enqueue(
+            f"Predict Permeability ({n} rows)",
+            lambda ev, r=rows_smi, ws=self.signals, ps=perm_signals, c=output_columns, st=prog: PermeabilityPredictorWorker(
+                r, ws, ps, cancel_event=ev, output_columns=c, progress_state=st
+            ),
+        )
 
     def _on_permeability_prediction_finished(self, results: list) -> None:
         if not results:

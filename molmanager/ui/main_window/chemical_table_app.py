@@ -616,6 +616,12 @@ class ChemicalTableApp(
         prepare_menu.setToolTipsVisible(True)
         for title, slot, tip, hk_id in (
             (
+                "Fast Prepare…",
+                self.run_fast_prepare,
+                "Disconnect largest fragment, neutralize it, and redraw 2D images in one background job.",
+                None,
+            ),
+            (
                 "Disconnect Largest Fragments…",
                 self.run_disconnect_fragments,
                 "Split disconnected structure fragments into separate rows, keeping the heaviest fragment.",

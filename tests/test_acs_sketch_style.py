@@ -16,3 +16,8 @@ def test_acs_sketch_style_scales_with_bond_length() -> None:
     large = acs_sketch_style(80.0)
     assert large.label_font_pt >= small.label_font_pt
     assert large.double_bond_offset_px > small.double_bond_offset_px
+
+
+def test_acs_sketch_style_readable_label_size() -> None:
+    style = acs_sketch_style(SKETCH_MEDIAN_BOND_PX)
+    assert style.label_font_pt >= 11

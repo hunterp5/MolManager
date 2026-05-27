@@ -8,7 +8,6 @@ import time
 
 from PyQt5 import sip
 from PyQt5.QtCore import QObject, QRunnable, pyqtSignal
-from rdkit import Chem
 
 from ..permeability_prediction import (
     format_permeability_row,
@@ -16,7 +15,6 @@ from ..permeability_prediction import (
     permeability_stack_import_error,
     predict_permeability_batch,
 )
-from ..utils import mol_to_canonical_smiles
 
 logger = logging.getLogger(__name__)
 
@@ -47,7 +45,7 @@ class PermeabilityPredictorWorker(QRunnable):
 
     def __init__(
         self,
-        rows: list[tuple[int, Chem.Mol | None]],
+        rows: list[tuple[int, str]],
         worker_signals,
         permeability_signals: PermeabilityPredictorSignals,
         cancel_event: threading.Event | None = None,
@@ -66,6 +64,31 @@ class PermeabilityPredictorWorker(QRunnable):
         self.progress_state = progress_state
 
     def run(self) -> None:
+        from ..tool_progress import report_tool_progress
+
+        cancel_ev = self.cancel_event
+        tot = max(len(self.rows), 1)
+        done = 0
+        prog_last = 0.0
+        throttle = [0, 0.0]
+
+        def _emit_progress(message: str, *, force: bool = False) -> None:
+            nonlocal prog_last
+            now = time.monotonic()
+            if force or done >= tot or (now - prog_last) >= 0.12:
+                prog_last = now
+                report_tool_progress(
+                    message=message,
+                    done=min(done, tot),
+                    total=tot,
+                    progress_state=self.progress_state,
+                    signals=self.worker_signals,
+                    throttle=throttle,
+                    force_signal=force,
+                )
+
+        _emit_progress("Predict Permeability…", force=True)
+
         err = permeability_stack_import_error()
         if err:
             _safe_emit(self.permeability_signals, "failed", err)
@@ -80,57 +103,44 @@ class PermeabilityPredictorWorker(QRunnable):
             )
             return
 
-        cancel_ev = self.cancel_event
-        tot = max(len(self.rows), 1)
-        done = 0
-        prog_last = 0.0
-
-        from ..tool_progress import report_tool_progress
-
-        throttle = [0, 0.0]
-
-        def _emit_progress(force: bool = False) -> None:
-            nonlocal prog_last
-            now = time.monotonic()
-            if force or done >= tot or (now - prog_last) >= 0.12:
-                prog_last = now
-                report_tool_progress(
-                    message="Predict Permeability",
-                    done=min(done, tot),
-                    total=tot,
-                    progress_state=self.progress_state,
-                    signals=self.worker_signals,
-                    throttle=throttle,
-                    force_signal=force,
-                )
-
-        _emit_progress(force=True)
-
         oids: list[int] = []
         smiles: list[str] = []
-        for oid, mol in self.rows:
+        for oid, smi in self.rows:
             if cancel_ev is not None and cancel_ev.is_set():
                 _safe_emit(self.permeability_signals, "failed", "Cancelled.")
                 return
             done += 1
-            _emit_progress()
-            if mol is None:
-                continue
-            try:
-                smi = mol_to_canonical_smiles(mol)
-            except Exception:
-                smi = ""
-            if not smi:
-                continue
-            oids.append(int(oid))
-            smiles.append(smi)
+            _emit_progress("Predict Permeability…")
+            text = (smi or "").strip()
+            if text:
+                oids.append(int(oid))
+                smiles.append(text)
 
         if not smiles:
             _safe_emit(self.permeability_signals, "finished", [])
             return
 
+        _emit_progress("Running GNN-MTL model…", force=True)
         try:
-            preds = predict_permeability_batch(smiles, batch_size=self.batch_size)
+
+            def _predict_progress(batch_done: int, batch_total: int) -> None:
+                if cancel_ev is not None and cancel_ev.is_set():
+                    return
+                report_tool_progress(
+                    message="Predict Permeability…",
+                    done=batch_done,
+                    total=max(batch_total, 1),
+                    progress_state=self.progress_state,
+                    signals=self.worker_signals,
+                    throttle=throttle,
+                    force_signal=batch_done >= batch_total,
+                )
+
+            preds = predict_permeability_batch(
+                smiles,
+                batch_size=self.batch_size,
+                progress_callback=_predict_progress,
+            )
         except Exception as e:
             logger.exception("Permeability prediction failed")
             _safe_emit(self.permeability_signals, "failed", f"Prediction failed: {e}")
@@ -145,5 +155,6 @@ class PermeabilityPredictorWorker(QRunnable):
             row = format_permeability_row(pred, self.output_columns)
             results.append((oid, row))
 
-        _emit_progress(force=True)
+        done = tot
+        _emit_progress("Predict Permeability", force=True)
         _safe_emit(self.permeability_signals, "finished", results)

@@ -95,9 +95,10 @@ restrict which rows stay visible; combine cards as needed. <b>Tools → Filter</
 """,
     "tools_chem": """
 <h2>Tools — disconnect, 2D render, descriptors, conformers</h2>
-<p><b>Tools → Prepare Structures</b> — <b>Disconnect Largest Fragments</b> (split salts/multi-component entries; keep
-largest fragment), <b>Neutralize</b> (protonate/deprotonate to net charge 0), and <b>Render 2D</b> (batch 2D images for a
-chosen column; listed in <b>Processes</b> while active).</p>
+<p><b>Tools → Prepare Structures</b> — <b>Fast Prepare</b> (disconnect largest fragment, neutralize, then render 2D in one
+job), <b>Disconnect Largest Fragments</b> (split salts/multi-component entries; keep largest fragment), <b>Neutralize</b>
+(protonate/deprotonate to net charge 0), and <b>Render 2D</b> (batch 2D images for a chosen column; listed in
+<b>Processes</b> while active).</p>
 <p><b>Calculate Descriptors</b> — pick a structure column and descriptor categories (RDKit-backed drug-likeness,
 counts, fingerprint on-bits for the full RDKit set, etc.); optional <b>only selected rows</b>.</p>
 <p><b>Tools → Conformations</b> — <b>Generate Conformations</b> (ensembles in <b>confs</b>), <b>Generate Single Conformation</b>

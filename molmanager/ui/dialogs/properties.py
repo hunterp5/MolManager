@@ -20,7 +20,7 @@ _DESCRIPTOR_TAB_ORDER = (
     "Name",
     "Drug-likeness",
     "Structural Counts",
-    "Ring Systems",
+    "Ring Counts",
     "Atom Counts",
     "Complexity",
     "Electronic",
@@ -53,7 +53,8 @@ class PropertyDialog(QDialog):
     def __init__(self, columns, selected_row_count: int = 0, parent=None):
         super().__init__(parent)
         self.setWindowTitle("Calculate Descriptors")
-        self.resize(600, 700)
+        self.setMinimumWidth(780)
+        self.resize(820, 700)
         self._have_selection = selected_row_count > 0
         l = QVBoxLayout(self)
 
@@ -72,6 +73,8 @@ class PropertyDialog(QDialog):
         l.addLayout(target_row)
 
         self.tabs = QTabWidget()
+        self.tabs.tabBar().setUsesScrollButtons(False)
+        self.tabs.tabBar().setExpanding(True)
 
         categories = {
             "Physiochemical": {
@@ -107,7 +110,7 @@ class PropertyDialog(QDialog):
                 "Rotatable Bonds": "NumRotatableBonds",
                 "Valence Electrons": "NumValenceElectrons",
             },
-            "Ring Systems": {
+            "Ring Counts": {
                 "Total Rings": "RingCount",
                 "Aromatic Rings": "NumAromaticRings",
                 "Saturated Rings": "NumSaturatedRings",
