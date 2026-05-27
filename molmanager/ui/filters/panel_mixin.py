@@ -11,6 +11,7 @@ from PyQt5.QtWidgets import QMessageBox
 from ...config import MolManagerConfig, load_config
 from ...utils import mol_to_canonical_smiles, safe_float
 from ...workers import SubstructureFilterWorker
+from ..background_jobs import register_background_job, unregister_background_job
 from .cards import CategoryFilterCard, FilterCard, SubstructureFilterCard, TextFilterCard
 
 logger = logging.getLogger(__name__)
@@ -166,24 +167,25 @@ class FilterPanelMixin:
         self._substructure_job_smarts = None
 
     def _substructure_filter_targets(self) -> list[tuple[int, str]]:
-        """(oid, smiles) per row — RDKit parsing runs in ``SubstructureFilterWorker``."""
+        """(oid, SMILES text) per row — RDKit matching runs in ``SubstructureFilterWorker``."""
         targets: list[tuple[int, str]] = []
         smiles_col = self.headers.index("SMILES") if "SMILES" in self.headers else None
         for r in range(self._table_model.rowCount()):
-            oid = self._table_model.row_oid(r)
+            oid = int(self._table_model.row_oid(r))
             smi = ""
             if smiles_col is not None:
                 smi = (self._table_model.cell_text(r, smiles_col) or "").strip()
-            if not smi:
-                mol = self.mols.get(oid)
-                if mol is None:
-                    mol = self._mol_for_structure_row(r)
-                if mol is not None:
-                    smi = self._smiles_for_substructure_target(oid, mol)
             targets.append((oid, smi))
         return targets
 
+    def _unregister_substructure_background_job(self, job_gen: int) -> None:
+        job_id = getattr(self, "_substructure_bg_job_id", None)
+        if job_id == f"substructure-{job_gen}":
+            unregister_background_job(self, job_id)
+            self._substructure_bg_job_id = None
+
     def _on_substructure_filter_finished(self, job_gen: int, matched) -> None:
+        self._unregister_substructure_background_job(job_gen)
         if job_gen != getattr(self, "_substructure_job_gen", 0):
             return
         dispatched = getattr(self, "_substructure_job_smarts", None) or ""
@@ -200,6 +202,7 @@ class FilterPanelMixin:
         self._apply_filters_impl_sync((dispatched, oids))
 
     def _on_substructure_filter_failed(self, job_gen: int, msg: str) -> None:
+        self._unregister_substructure_background_job(job_gen)
         if job_gen != getattr(self, "_substructure_job_gen", 0):
             return
         logger.warning("Substructure filter job failed: %s", msg)
@@ -233,6 +236,9 @@ class FilterPanelMixin:
             with scope("filters.apply_sync"):
                 proxy.set_visible_oids(None)
             self.status_label.setText(f"Showing {n_rows} / {len(self.mols)} molecules")
+            schedule_replot = getattr(self, "_schedule_active_plots_replot", None)
+            if callable(schedule_replot):
+                schedule_replot()
             return
 
         override_smarts = substructure_matches[0] if substructure_matches else None
@@ -359,6 +365,9 @@ class FilterPanelMixin:
             self.status_label.setText(invalid_smarts_msg)
         else:
             self.status_label.setText(f"Showing {vis} / {len(self.mols)} molecules")
+        schedule_replot = getattr(self, "_schedule_active_plots_replot", None)
+        if callable(schedule_replot):
+            schedule_replot()
 
     def _apply_filters_impl(self, cfg: MolManagerConfig | None = None) -> None:
         if cfg is None:
@@ -411,6 +420,9 @@ class FilterPanelMixin:
         if sigs is None:
             self._apply_filters_impl_sync(None)
             return
+        job_id = f"substructure-{gen}"
+        self._substructure_bg_job_id = job_id
+        register_background_job(self, job_id, f"Substructure filter ({n_rows:,} rows)")
         self.threadpool.start(SubstructureFilterWorker(gen, smarts, targets, sigs))
 
     def add_filter_card(self, initial_property: str | None = None):

@@ -85,6 +85,10 @@ class BackgroundActivityHub(QObject):
             rows.insert(0, ("Running", "(vina)", "Dock (Vina) — vina"))
             metas.insert(0, {"kind": "vina"})
 
+        for job_id, title in sorted((getattr(self._app, "_background_jobs", None) or {}).items()):
+            rows.append(("Running", job_id, title))
+            metas.append({"kind": "background", "job_id": job_id})
+
         return rows, metas
 
     def try_cancel_row(self, meta: dict | None) -> tuple[tuple[str, str] | None, str | None]:

@@ -13,6 +13,7 @@ from PyQt5.QtWidgets import QFileDialog, QMessageBox
 
 from rdkit import Chem
 
+from ...config import load_config
 from ...confs_codec import deserialize_confs_sidecar, serialize_confs_sidecar
 from ...utils import mol_to_canonical_smiles
 from ..strings import loaded_session_status
@@ -452,7 +453,7 @@ class SessionMixin:
         return True
 
     def load_session_csv(self, path: str) -> None:
-        """Load a session CSV exported by `_write_session_csv`."""
+        """Load a session CSV exported by `_write_session_csv` (chunked on the GUI thread)."""
         import csv
 
         self.clear_all()
@@ -461,43 +462,37 @@ class SessionMixin:
 
         with open(path, "r", encoding="utf-8", errors="replace", newline="") as f:
             reader = csv.DictReader(f)
-            cols = reader.fieldnames or []
+            cols = list(reader.fieldnames or [])
             if "SMILES" not in cols:
                 cols = ["SMILES"] + cols
-            self.headers = ["ID_HIDDEN", "Structure"] + cols
-            self.table.setSortingEnabled(False)
-            self._table_model.clear_rows()
-            self._table_model.set_headers(list(self.headers))
-            self.table.setColumnHidden(0, True)
-            self.mols = {}
-            self._clear_filter_target_smiles_cache()
-            self.global_bounds = {}
-            self.next_oid = 0
-            chunk = 256
-            loaded = 0
-            while True:
-                pack: list[tuple[int, dict[str, str]]] = []
-                for _ in range(chunk):
-                    try:
-                        row = next(reader)
-                    except StopIteration:
-                        row = None
-                    if row is None:
-                        break
-                    oid = self.next_oid
-                    self.next_oid += 1
-                    smi = (row.get("SMILES", "") or "").strip()
-                    row_cells = {c: str(row.get(c, "") or "") for c in cols}
-                    pack.append((oid, row_cells))
-                    mol = Chem.MolFromSmiles(smi) if smi else None
-                    if mol is not None:
-                        self.mols[oid] = mol
-                if not pack:
-                    break
-                self._table_model.append_rows_batch(pack)
-                loaded += len(pack)
-                self.status_label.setText(f"Loading session… ({loaded} rows)")
-        self._finalize_session_csv_load()
+            rows = list(reader)
+
+        self.headers = ["ID_HIDDEN", "Structure"] + cols
+        self.table.setSortingEnabled(False)
+        self._table_model.clear_rows()
+        self._table_model.set_headers(list(self.headers))
+        self.table.setColumnHidden(0, True)
+        self.mols = {}
+        self._clear_filter_target_smiles_cache()
+        self.global_bounds = {}
+        self.next_oid = 0
+
+        if not rows:
+            self._finalize_session_csv_load()
+            return
+
+        self._session_load_generation = int(getattr(self, "_session_load_generation", 0)) + 1
+        gen = self._session_load_generation
+        chunk = max(64, load_config().ingest_gui_chunk_size)
+        self._csv_session_ctx = {
+            "gen": gen,
+            "cols": cols,
+            "rows": rows,
+            "idx": 0,
+            "chunk": chunk,
+        }
+        self.status_label.setText(f"Loading session… (0/{len(rows)} rows)")
+        QTimer.singleShot(0, self._load_session_csv_step)
 
     def _load_session_csv_step(self) -> None:
         ctx = getattr(self, "_csv_session_ctx", None)
@@ -509,16 +504,19 @@ class SessionMixin:
         chunk = int(ctx["chunk"])
         n = len(rows)
         end = min(i + chunk, n)
+        pack: list[tuple[int, dict[str, str]]] = []
         for j in range(i, end):
             row = rows[j]
             oid = self.next_oid
             self.next_oid += 1
             smi = (row.get("SMILES", "") or "").strip()
             row_cells = {c: str(row.get(c, "") or "") for c in cols}
-            self._table_model.append_row(oid, row_cells)
+            pack.append((oid, row_cells))
             mol = Chem.MolFromSmiles(smi) if smi else None
             if mol is not None:
                 self.mols[oid] = mol
+        if pack:
+            self._table_model.append_rows_batch(pack)
         ctx["idx"] = end
         self.status_label.setText(f"Loading session… ({end}/{n} rows)")
         if end < n:

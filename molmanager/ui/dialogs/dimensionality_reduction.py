@@ -421,10 +421,23 @@ class DimensionReductionPanel(QWidget):
         self._job_running = True
         self.run_btn.setEnabled(False)
         self.summary_text.setPlainText("Computing…")
+        from ..background_jobs import register_background_job
+
+        self._bg_job_id = f"dimred-{id(self)}"
+        register_background_job(self.parent_app, self._bg_job_id, f"{self._window_title}…")
         worker = DimensionReductionWorker(params, self._signals)
         self.parent_app.threadpool.start(worker)
 
+    def _clear_dimred_background_job(self) -> None:
+        job_id = getattr(self, "_bg_job_id", None)
+        if job_id and self.parent_app is not None:
+            from ..background_jobs import unregister_background_job
+
+            unregister_background_job(self.parent_app, job_id)
+        self._bg_job_id = None
+
     def _on_finished(self, result) -> None:
+        self._clear_dimred_background_job()
         self._job_running = False
         self.run_btn.setEnabled(True)
         self.summary_text.setPlainText(result.summary)
@@ -460,6 +473,7 @@ class DimensionReductionPanel(QWidget):
             QMessageBox.warning(self, self._window_title, f"Plot failed: {exc}")
 
     def _on_failed(self, message: str) -> None:
+        self._clear_dimred_background_job()
         self._job_running = False
         self.run_btn.setEnabled(True)
         self.summary_text.setPlainText("")

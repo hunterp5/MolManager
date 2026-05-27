@@ -227,8 +227,12 @@ class ChemicalTableApp(
         self._ingest_append_mode = False
         self._structure_column_autosize_after_render_oid = None
         self.process_queue = ProcessQueueManager(self)
+        self._background_jobs: dict[str, str] = {}
         self.background_activity = BackgroundActivityHub(self)
         self.background_activity.attach()
+        self._plot_replot_timer = QTimer(self)
+        self._plot_replot_timer.setSingleShot(True)
+        self._plot_replot_timer.timeout.connect(self._replot_active_plots)
         self._processes_dialog = None
         self._perf = PerformanceTracker(
             enabled=cfg.perf_metrics_enabled,
