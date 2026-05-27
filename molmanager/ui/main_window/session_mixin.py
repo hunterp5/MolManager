@@ -543,7 +543,7 @@ class SessionMixin:
         self._finalize_session_csv_load()
 
     def _finalize_session_csv_load(self) -> None:
-        self.calculate_global_bounds()
+        self.schedule_calculate_global_bounds()
         self.table.setSortingEnabled(False)
         rows_n = self._table_model.rowCount()
         if getattr(self, "_sqlite_store", None) is not None:

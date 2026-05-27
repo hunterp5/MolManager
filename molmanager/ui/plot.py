@@ -38,12 +38,11 @@ import time
 import webbrowser
 from pathlib import Path
 
-from PyQt5.QtCore import QObject, QItemSelection, QItemSelectionModel, Qt, QTimer, QUrl, pyqtSlot
+from PyQt5.QtCore import QObject, Qt, QTimer, QUrl, pyqtSlot
 from PyQt5.QtGui import QKeySequence
 from PyQt5.QtWebChannel import QWebChannel
 from PyQt5.QtWebEngineWidgets import QWebEngineView
 from PyQt5.QtWidgets import (
-    QAbstractItemView,
     QAbstractSpinBox,
     QCheckBox,
     QComboBox,
@@ -62,7 +61,6 @@ from PyQt5.QtWidgets import (
     QWidget,
 )
 from plotly import graph_objects as go
-from plotly.offline import get_plotlyjs
 
 from ..plot_analysis import (
     FIT_NONE,
@@ -85,12 +83,6 @@ from ..plot_color import (
 from ..medchem_space import snapshot_scope_row_indices
 from ..plot_heatmap import build_heatmap_figure, oids_in_heatmap_cell, summarize_heatmap
 from .plot_color_range_controls import PlotColorRangeControls
-from .plot_table_sync import (
-    apply_table_selection_for_source_rows,
-    clear_table_selection_from_plot,
-    point_indices_for_oids,
-    source_rows_for_point_indices,
-)
 from .plot_table_sync import (
     apply_table_selection_for_source_rows,
     clear_table_selection_from_plot,
@@ -288,6 +280,7 @@ class PlotWidget(QWidget):
         self._plotted_oids: list[int] = []
         self._selected_point_indices: set[int] = set()
         self._web_ready = False
+        self._pending_table_selection_sync = False
         self._pending_payload_json: str | None = None
         self._prev_range_axis: dict[str, str] = {"x": "", "y": "", "z": ""}
         self._ignore_plot_clear_until: float = 0.0
@@ -1037,184 +1030,30 @@ class PlotWidget(QWidget):
         return vals, oids, xname
 
     def _load_plot_shell(self) -> None:
-        plotly_js = get_plotlyjs().replace(":focus-visible", ":focus").replace("</script>", "<\\/script>")
-        shell_html = f"""<!doctype html>
-<html>
-<head>
-  <meta charset="utf-8">
-  <style>html, body, #plot {{ width: 100%; height: 100%; margin: 0; }}</style>
-</head>
-<body>
-  <div id="plot"></div>
-  <script>{plotly_js}</script>
-  <script src="qrc:///qtwebchannel/qwebchannel.js"></script>
-  <script>
-    (function() {{
-      var gd = document.getElementById('plot');
-      var bridge = null;
-      try {{
-        new QWebChannel(qt.webChannelTransport, function(channel) {{
-          bridge = channel.objects.chemBridge || null;
-        }});
-      }} catch (_e) {{}}
-      var suppressPlotDeselect = false;
-      var lastNonemptyPlotSelection = 0;
-      function clearSelectionShapes() {{
-        try {{
-          if (!gd || !gd.layout) return;
-          Plotly.relayout(gd, {{selections: []}});
-        }} catch (_clrSel) {{}}
-      }}
-      function scheduleClearSelectionShapes() {{
-        setTimeout(clearSelectionShapes, 0);
-        try {{
-          requestAnimationFrame(function() {{
-            requestAnimationFrame(clearSelectionShapes);
-          }});
-        }} catch (_raf) {{
-          setTimeout(clearSelectionShapes, 16);
-        }}
-      }}
-      window.molmanagerSetSelection = function(indicesJson) {{
-        try {{
-          var idxs = JSON.parse(indicesJson || "[]");
-          if (!Array.isArray(idxs)) idxs = [];
-          if (!gd || !gd.data || !gd.data.length) return;
-          var main = gd.data[0];
-          if (main.type === "scatter3d") {{
-            var sx = [], sy = [], sz = [];
-            var x0 = main.x, y0 = main.y, z0 = main.z;
-            for (var j = 0; j < idxs.length; j++) {{
-              var ii = idxs[j];
-              if (ii >= 0 && ii < x0.length) {{
-                sx.push(x0[ii]); sy.push(y0[ii]); sz.push(z0[ii]);
-              }}
-            }}
-            if (gd.data.length > 1) {{
-              if (sx.length) {{
-                Plotly.restyle(gd, {{x: [sx], y: [sy], z: [sz]}}, [1]);
-              }} else {{
-                Plotly.deleteTraces(gd, [1]);
-              }}
-            }} else if (sx.length) {{
-              Plotly.addTraces(gd, {{
-                type: "scatter3d", x: sx, y: sy, z: sz, mode: "markers",
-                marker: {{size: 7, opacity: 1.0, color: "#d62828"}},
-                name: "Selected", showlegend: false
-              }});
-            }}
-            return;
-          }}
-          if (!idxs.length) {{
-            Plotly.restyle(gd, {{
-              selectedpoints: [null],
-              "unselected.marker.opacity": [0.85]
-            }}, [0]);
-            clearSelectionShapes();
-            return;
-          }}
-          Plotly.restyle(gd, {{
-            selectedpoints: [idxs],
-            "unselected.marker.opacity": [0.35]
-          }}, [0]);
-          clearSelectionShapes();
-        }} catch (_selVis) {{}}
-      }};
-      window.molmanagerApply = function(payloadJson) {{
-        try {{
-          var payload = JSON.parse(payloadJson);
-          var data = payload.data || [];
-          var layout = payload.layout || {{}};
-          var config = payload.config || {{}};
-          suppressPlotDeselect = true;
-          Plotly.react(gd, data, layout, config).then(function() {{
-            try {{
-              gd.removeAllListeners('plotly_click');
-              gd.removeAllListeners('plotly_selected');
-              gd.removeAllListeners('plotly_deselect');
-            }} catch (_l) {{}}
-            gd.on('plotly_click', function(ev) {{
-              try {{
-                if (!ev || !ev.points || !ev.points.length || !gd.data || !gd.data.length) return;
-                var pt = ev.points[0];
-                var trace = gd.data[pt.curveNumber];
-                if (trace && trace.type === "heatmap") {{
-                  if (bridge && bridge.heatmapCellClicked) {{
-                    var xv = Number(pt.x);
-                    var yv = Number(pt.y);
-                    if (Number.isFinite(xv) && Number.isFinite(yv)) {{
-                      bridge.heatmapCellClicked(xv, yv);
-                    }}
-                  }}
-                  return;
-                }}
-                if (trace && trace.type === "histogram") {{
-                  if (bridge && bridge.histogramPointsSelected) {{
-                    var nums = pt.pointNumbers;
-                    if (!Array.isArray(nums) || !nums.length) {{
-                      if (pt.pointNumber != null && pt.pointNumber !== undefined) {{
-                        nums = [pt.pointNumber];
-                      }}
-                    }}
-                    if (Array.isArray(nums) && nums.length) {{
-                      bridge.histogramPointsSelected(JSON.stringify(nums));
-                      return;
-                    }}
-                  }}
-                  if (bridge && bridge.histogramBinClicked) {{
-                    var bn = Number(pt.pointNumber);
-                    if (Number.isFinite(bn)) bridge.histogramBinClicked(bn);
-                  }}
-                  return;
-                }}
-                if (!bridge || !bridge.pointClicked) return;
-                if (pt.curveNumber !== 0) return;
-                var pn = Number(pt.pointNumber);
-                if (Number.isFinite(pn)) bridge.pointClicked(pn);
-              }} catch (_clickErr) {{}}
-            }});
-            gd.on('plotly_selected', function(ev) {{
-              try {{
-                var idxs = [];
-                if (ev && ev.points && ev.points.length) {{
-                  for (var i = 0; i < ev.points.length; i++) {{
-                    var pt = ev.points[i];
-                    if (pt.curveNumber !== 0) continue;
-                    var pn = Number(pt.pointNumber);
-                    if (Number.isFinite(pn)) idxs.push(pn);
-                  }}
-                }}
-                scheduleClearSelectionShapes();
-                if (!idxs.length || !bridge || !bridge.pointsSelected) return;
-                lastNonemptyPlotSelection = Date.now();
-                bridge.pointsSelected(JSON.stringify(idxs));
-              }} catch (_selErr) {{}}
-            }});
-            gd.on('plotly_deselect', function() {{
-              try {{
-                scheduleClearSelectionShapes();
-                if (suppressPlotDeselect) return;
-                if (Date.now() - lastNonemptyPlotSelection < 450) return;
-                if (bridge && bridge.pointsSelected) bridge.pointsSelected("[]");
-              }} catch (_deselErr) {{}}
-            }});
-          }}).finally(function() {{
-            setTimeout(function() {{ suppressPlotDeselect = false; }}, 200);
-          }});
-        }} catch (e) {{
-          console.error('molmanager Plotly embed failed:', e);
-        }}
-      }};
-    }})();
-  </script>
-</body>
-</html>"""
-        self._plot_shell_path.write_text(shell_html, encoding="utf-8")
+        from .plotly_shell import write_interactive_plot_shell
+
+        write_interactive_plot_shell(self._plot_shell_path)
         self.web.load(QUrl.fromLocalFile(str(self._plot_shell_path)))
+
+    def _annotate_scatter_selection_meta(self, fig: go.Figure) -> None:
+        """Tell the Plotly shell which traces map to table row indices (skip fit lines, etc.)."""
+        if not self._supports_scatter_selection():
+            return
+        indices: list[int] = []
+        for i, tr in enumerate(fig.data):
+            t = getattr(tr, "type", None)
+            mode = str(getattr(tr, "mode", "") or "")
+            if t in ("scatter", "scattergl") and "markers" in mode:
+                indices.append(i)
+            elif t == "scatter3d" and i == 0:
+                indices.append(i)
+        if indices:
+            fig.update_layout(meta={"molmanager_selection_traces": indices})
 
     def _push_plotly_figure(self, fig: go.Figure) -> None:
         from .plotly_html import figure_payload_json
 
+        self._annotate_scatter_selection_meta(fig)
         self._pending_payload_json = figure_payload_json(fig)
         self._last_browser_opened_path = None
         if self._web_ready:
@@ -1242,7 +1081,9 @@ class PlotWidget(QWidget):
 
     def _sync_plot_selection_visual(self) -> None:
         if not self._web_ready:
+            self._pending_table_selection_sync = True
             return
+        self._pending_table_selection_sync = False
         idxs = sorted(self._selected_point_indices)
         js_arg = json.dumps(idxs)
         self.web.page().runJavaScript(f"window.molmanagerSetSelection({js_arg});")
@@ -1281,6 +1122,8 @@ class PlotWidget(QWidget):
             self._web_ready = True
             self._apply_pending_payload()
             QTimer.singleShot(0, self.sync_from_table_selection)
+            if self._pending_table_selection_sync:
+                QTimer.singleShot(0, self.sync_from_table_selection)
 
         QTimer.singleShot(
             0,
