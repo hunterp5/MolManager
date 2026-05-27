@@ -87,6 +87,7 @@ from .plot_table_sync import (
     apply_table_selection_for_source_rows,
     clear_table_selection_from_plot,
     point_indices_for_oids,
+    selected_oids_for_plot,
     source_rows_for_point_indices,
 )
 from ..utils import safe_float
@@ -670,6 +671,7 @@ class PlotWidget(QWidget):
                 y=ys,
                 mode="lines",
                 name="Fit",
+                showlegend=False,
                 line={"color": "#e76f51", "width": 2.5, "dash": "solid"},
             )
         )
@@ -899,9 +901,17 @@ class PlotWidget(QWidget):
     def _shows_y_bin_width(self) -> bool:
         return self._is_heatmap_plot()
 
-    def _supports_scatter_selection(self) -> bool:
+    def _supports_table_linked_selection(self) -> bool:
+        """Plot types that mirror table row selection via ``molmanagerSetSelection``."""
+        ptype = self._current_plot_type()
         mode = self._effective_plot_mode()
-        return mode in ("2D", "3D")
+        if ptype == PLOT_TYPE_LINE_2D and mode == "2D":
+            return True
+        if ptype == PLOT_TYPE_HEATMAP:
+            return False
+        if ptype in (PLOT_TYPE_BOX, PLOT_TYPE_VIOLIN):
+            return False
+        return mode in ("2D", "3D", "Histogram")
 
     def _plot_source_row_indices(self) -> list[int]:
         """Source-model rows for plotting (visible/filtered rows; optional selection-only)."""
@@ -1037,7 +1047,7 @@ class PlotWidget(QWidget):
 
     def _annotate_scatter_selection_meta(self, fig: go.Figure) -> None:
         """Tell the Plotly shell which traces map to table row indices (skip fit lines, etc.)."""
-        if not self._supports_scatter_selection():
+        if not self._supports_table_linked_selection():
             return
         indices: list[int] = []
         for i, tr in enumerate(fig.data):
@@ -1046,6 +1056,8 @@ class PlotWidget(QWidget):
             if t in ("scatter", "scattergl") and "markers" in mode:
                 indices.append(i)
             elif t == "scatter3d" and i == 0:
+                indices.append(i)
+            elif t == "histogram" and i == 0:
                 indices.append(i)
         if indices:
             fig.update_layout(meta={"molmanager_selection_traces": indices})
@@ -1072,9 +1084,9 @@ class PlotWidget(QWidget):
         """Highlight plot points for the current table row selection."""
         if not self._plotted_oids or self.parent_app is None:
             return
-        if not self._supports_scatter_selection():
+        if not self._supports_table_linked_selection():
             return
-        selected = self.parent_app._selected_oids_set()
+        selected = selected_oids_for_plot(self.parent_app)
         self._selected_point_indices = point_indices_for_oids(self._plotted_oids, selected)
         self._arm_ignore_plot_clear()
         self._sync_plot_selection_visual()
@@ -1085,8 +1097,9 @@ class PlotWidget(QWidget):
             return
         self._pending_table_selection_sync = False
         idxs = sorted(self._selected_point_indices)
-        js_arg = json.dumps(idxs)
-        self.web.page().runJavaScript(f"window.molmanagerSetSelection({js_arg});")
+        # Pass a JSON string — Plotly bridge uses JSON.stringify; bare arrays break JSON.parse in JS.
+        js_payload = json.dumps(json.dumps(idxs))
+        self.web.page().runJavaScript(f"window.molmanagerSetSelection({js_payload});")
 
     def _clear_plot_table_selection(self, *, update_plot: bool = True) -> None:
         self._selected_point_indices = set()
@@ -1227,6 +1240,7 @@ class PlotWidget(QWidget):
                     mode="markers",
                     marker=marker,
                     name="Points",
+                    showlegend=False,
                 )
             )
             if selected_points:
@@ -1241,6 +1255,7 @@ class PlotWidget(QWidget):
                         mode="markers",
                         marker={"size": 7, "opacity": 1.0, "color": "#d62828"},
                         name="Selected",
+                        showlegend=False,
                     )
                 )
             fig.update_layout(
@@ -1264,6 +1279,7 @@ class PlotWidget(QWidget):
                     y=fy,
                     mode="markers",
                     marker=marker,
+                    showlegend=False,
                     selectedpoints=selected_points if selected_points else None,
                     selected={"marker": {"size": 9, "color": "#d62828", "opacity": 1.0}},
                     unselected={"marker": {"opacity": 0.35}},
@@ -1321,6 +1337,7 @@ class PlotWidget(QWidget):
                 mode="lines+markers",
                 line={"color": "#2a74d6", "width": 1.5},
                 marker=marker,
+                showlegend=False,
                 selectedpoints=selected_points if selected_points else None,
                 selected={"marker": {"size": 9, "color": "#d62828", "opacity": 1.0}},
                 unselected={"marker": {"opacity": 0.35}},
@@ -1425,6 +1442,7 @@ class PlotWidget(QWidget):
                 go.Histogram(
                     **hist_kwargs,
                     marker={"color": "#2a74d6", "line": {"color": "white", "width": 0.5}},
+                    showlegend=False,
                 )
             ]
         )

@@ -25,6 +25,7 @@ def iter_plot_selection_views(root: QWidget | None) -> list:
 
     add(root)
     add(getattr(root, "_plot_view", None))
+    add(getattr(root, "_plot_widget", None))
     return views
 
 

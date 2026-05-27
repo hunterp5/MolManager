@@ -492,7 +492,7 @@ class PKaPredictorWorker(QRunnable):
             else:
                 logger.debug(
                     "pKa: %s table row(s), %s unique structure(s), sequential (set "
-                    "MOLMANAGER_PKA_PROCESS_WORKERS>1 to allow parallel workers when unique≥2)",
+                    "MOLMANAGER_PKA_PROCESS_WORKERS>=1 to allow worker processes; <=0 disables)",
                     n_work,
                     n_unique,
                 )

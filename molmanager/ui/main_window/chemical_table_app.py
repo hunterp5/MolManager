@@ -1011,6 +1011,14 @@ class ChemicalTableApp(
         self.background_activity.prepare_for_quit()
 
         pq = getattr(self, "process_queue", None)
+        if pq is not None:
+            # Must be first: kill process pools and cancel running/queued jobs so
+            # long-running pkasolver/descriptor work does not keep the interpreter alive
+            # after the window closes.
+            try:
+                pq.shutdown_for_exit()
+            except Exception:
+                pass
 
         for dlg in list(getattr(self, "_plot_dialogs", [])):
             try:
@@ -1043,8 +1051,8 @@ class ChemicalTableApp(
 
         QApplication.processEvents()
 
-        # Brief drain after cancel/kill; process pools are terminated in shutdown_for_exit().
-        shutdown_wait_ms = 5_000
+        # Brief drain after cancel/kill; this should be near-instant on app close.
+        shutdown_wait_ms = 750
         deadline = time.monotonic() + shutdown_wait_ms / 1000.0
         while time.monotonic() < deadline:
             QApplication.processEvents()
@@ -1054,17 +1062,17 @@ class ChemicalTableApp(
 
         tp = getattr(self, "threadpool", None)
         if tp is not None:
-            tp.waitForDone(shutdown_wait_ms)
             clear = getattr(tp, "clear", None)
             if callable(clear):
                 clear()
 
         rtp = getattr(self, "_render_threadpool", None)
         if rtp is not None:
-            rtp.waitForDone(shutdown_wait_ms)
+            clear = getattr(rtp, "clear", None)
+            if callable(clear):
+                clear()
 
-        if pq is not None:
-            pq.wait_for_all_jobs(shutdown_wait_ms)
+        # Avoid blocking on shutdown; cooperative cancel + pool termination should be enough.
         store = getattr(self, "_sqlite_store", None)
         if store is not None:
             try:

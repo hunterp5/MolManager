@@ -758,15 +758,9 @@ class TableUIMixin(TableSearchMixin, FilterPanelMixin):
         return sorted(set(source_rows))
 
     def _selected_oids_set(self) -> set[int]:
-        override = getattr(self, "_selected_oids_override", None)
-        if override:
-            return set(override)
-        oids: set[int] = set()
-        for r in self._selected_logical_rows():
-            t0 = self._table_model.cell_text(r, 0)
-            if t0.isdigit():
-                oids.add(int(t0))
-        return oids
+        from ..plot_table_sync import selected_oids_for_plot
+
+        return selected_oids_for_plot(self)
 
     def _selected_oids_for_delete(self) -> frozenset[int]:
         """OIDs to delete without scanning the full table for logical row indices."""

@@ -62,10 +62,27 @@ def interactive_plot_shell_html() -> str:
         }} catch (_meta) {{}}
         return selTraces;
       }}
+      function parseSelectionIndices(raw) {{
+        if (Array.isArray(raw)) return raw;
+        if (typeof raw === "string") {{
+          try {{
+            var parsed = JSON.parse(raw || "[]");
+            return Array.isArray(parsed) ? parsed : [];
+          }} catch (_parse) {{
+            return [];
+          }}
+        }}
+        return [];
+      }}
+      function findSelectedOverlayTraceIndex() {{
+        for (var ti = 1; ti < gd.data.length; ti++) {{
+          if (gd.data[ti] && gd.data[ti].name === "Selected") return ti;
+        }}
+        return -1;
+      }}
       function applySelectionIndices(indicesJson) {{
         try {{
-          var idxs = JSON.parse(indicesJson || "[]");
-          if (!Array.isArray(idxs)) idxs = [];
+          var idxs = parseSelectionIndices(indicesJson);
           if (!gd || !gd.data || !gd.data.length) return;
           var selTraces = selectionTracesFromLayout();
           var main = gd.data[0];
@@ -91,6 +108,50 @@ def interactive_plot_shell_html() -> str:
                 name: "Selected", showlegend: false
               }});
             }}
+            return;
+          }}
+          if (main.type === "scatter" || main.type === "scattergl") {{
+            var sx = [], sy = [];
+            var x0 = main.x || [], y0 = main.y || [];
+            for (var j = 0; j < idxs.length; j++) {{
+              var ii = idxs[j];
+              if (ii >= 0 && ii < x0.length) {{
+                sx.push(x0[ii]); sy.push(y0[ii]);
+              }}
+            }}
+            var overlayIdx = findSelectedOverlayTraceIndex();
+            if (sx.length) {{
+              var overlay = {{
+                type: main.type,
+                x: sx,
+                y: sy,
+                mode: "markers",
+                marker: {{size: 10, color: "#d62828", opacity: 1.0, line: {{width: 1, color: "#8b0000"}}}},
+                name: "Selected",
+                showlegend: false,
+                hoverinfo: "skip",
+              }};
+              if (overlayIdx >= 0) {{
+                Plotly.restyle(gd, {{x: [sx], y: [sy]}}, [overlayIdx]);
+              }} else {{
+                Plotly.addTraces(gd, overlay);
+              }}
+              var dimPatch = {{"unselected.marker.opacity": [], selectedpoints: []}};
+              for (var di = 0; di < selTraces.length; di++) {{
+                dimPatch["unselected.marker.opacity"].push(0.35);
+                dimPatch.selectedpoints.push([]);
+              }}
+              Plotly.restyle(gd, dimPatch, selTraces);
+            }} else {{
+              if (overlayIdx >= 0) Plotly.deleteTraces(gd, [overlayIdx]);
+              var clearPatch = {{selectedpoints: [], "unselected.marker.opacity": []}};
+              for (var ci = 0; ci < selTraces.length; ci++) {{
+                clearPatch.selectedpoints.push(null);
+                clearPatch["unselected.marker.opacity"].push(0.85);
+              }}
+              Plotly.restyle(gd, clearPatch, selTraces);
+            }}
+            clearSelectionShapes();
             return;
           }}
           if (!idxs.length) {{

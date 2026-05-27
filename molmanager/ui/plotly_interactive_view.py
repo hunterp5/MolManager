@@ -18,6 +18,7 @@ from .plot_table_sync import (
     apply_table_selection_for_source_rows,
     clear_table_selection_from_plot,
     point_indices_for_oids as _point_indices_for_oids,
+    selected_oids_for_plot,
     source_rows_for_point_indices,
 )
 from .plotly_html import figure_payload_json
@@ -109,7 +110,7 @@ class PlotlyInteractiveView(QWidget):
         """Highlight plot points for the current table row selection."""
         if not self.plotted_oids or self.parent_app is None:
             return
-        selected = self.parent_app._selected_oids_set()
+        selected = selected_oids_for_plot(self.parent_app)
         self._selected_point_indices = _point_indices_for_oids(self.plotted_oids, selected)
         self._arm_ignore_plot_clear()
         self.sync_selection_visual()
@@ -120,8 +121,8 @@ class PlotlyInteractiveView(QWidget):
             return
         self._pending_table_selection_sync = False
         idxs = sorted(self._selected_point_indices)
-        js_arg = json.dumps(idxs)
-        self.web.page().runJavaScript(f"window.molmanagerSetSelection({js_arg});")
+        js_payload = json.dumps(json.dumps(idxs))
+        self.web.page().runJavaScript(f"window.molmanagerSetSelection({js_payload});")
 
     def clear_table_selection(self, *, update_plot: bool = True) -> None:
         self._selected_point_indices = set()
