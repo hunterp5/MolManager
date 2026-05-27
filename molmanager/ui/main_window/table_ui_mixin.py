@@ -1201,11 +1201,8 @@ class TableUIMixin(TableSearchMixin, FilterPanelMixin):
     def _on_patent_query_dialog_destroyed(self):
         self._patent_query_dialog = None
 
-    def _on_boltz2_dialog_destroyed(self):
-        self._boltz2_dialog = None
-
-    def _on_vina_dock_dialog_destroyed(self):
-        self._vina_dock_dialog = None
+    def _on_smina_dock_dialog_destroyed(self):
+        self._smina_dock_dialog = None
 
     def get_row_by_id(self, original_idx):
         return self._table_model.logical_row_for_oid(int(original_idx))

@@ -233,26 +233,14 @@ class ToolsSqlPredictMixin:
             self._on_patent_query_dialog_destroyed,
         )
 
-    def open_boltz2(self):
-        from ..external import Boltz2Dialog
+    def open_smina_dock(self):
+        from ..smina_dock import SminaDockDialog
 
         dlg = reuse_or_show_modeless_singleton(
             self,
-            "_boltz2_dialog",
-            lambda: Boltz2Dialog(self),
-            self._on_boltz2_dialog_destroyed,
-        )
-        dlg.setAttribute(Qt.WA_DeleteOnClose, True)
-        self._prepare_tool_dialog(dlg)
-
-    def open_vina_dock(self):
-        from ..vina_dock import VinaDockDialog
-
-        dlg = reuse_or_show_modeless_singleton(
-            self,
-            "_vina_dock_dialog",
-            lambda: VinaDockDialog(self),
-            self._on_vina_dock_dialog_destroyed,
+            "_smina_dock_dialog",
+            lambda: SminaDockDialog(self),
+            self._on_smina_dock_dialog_destroyed,
         )
         dlg.setAttribute(Qt.WA_DeleteOnClose, True)
         self._prepare_tool_dialog(dlg)

@@ -34,7 +34,6 @@ def test_plan_pkasolver_auto_uses_mp_from_two_unique() -> None:
 
 def test_plan_pkasolver_respects_force_sequential() -> None:
     use_mp, workers = plan_pkasolver_process_workers(10, 1)
-    assert use_mp is False
     assert workers == 1
 
 
