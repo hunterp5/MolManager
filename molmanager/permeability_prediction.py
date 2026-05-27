@@ -12,6 +12,7 @@ import logging
 import threading
 import warnings
 from pathlib import Path
+from collections.abc import Callable
 from typing import Sequence
 
 from .bundled_paths import gnn_mtl_model_path
@@ -211,6 +212,7 @@ def predict_permeability_batch(
     smiles_list: Sequence[str],
     *,
     batch_size: int = 64,
+    progress_callback: Callable[[int, int], None] | None = None,
 ) -> list[dict[str, float] | None]:
     """
     Predict four permeability endpoints for each SMILES string.
@@ -257,12 +259,15 @@ def predict_permeability_batch(
             accelerator="cpu",
             devices=1,
         )
-        for start in range(0, len(datapoints), bs):
+        n_dp = len(datapoints)
+        for start in range(0, n_dp, bs):
             chunk = datapoints[start : start + bs]
             dset = data.MoleculeDataset(chunk, featurizer=featurizer)
             loader = data.build_dataloader(dset, shuffle=False, num_workers=0)
             batch_preds = trainer.predict(mpnn, loader)
             preds_chunks.append(np.concatenate(batch_preds, axis=0))
+            if progress_callback is not None:
+                progress_callback(min(start + len(chunk), n_dp), n_dp)
 
     arr = np.concatenate(preds_chunks, axis=0)
     keys = _PERMEABILITY_LOG_TASK_KEYS

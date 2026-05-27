@@ -93,14 +93,22 @@ class SketchWidgetPaintMixin:
         font_pt: int,
         fill: QColor,
     ) -> None:
-        font = QFont("Helvetica", font_pt, QFont.Bold)
+        font = QFont("Helvetica", font_pt)
         font.setStyleHint(QFont.SansSerif)
+        font.setWeight(QFont.Black)
         fm = QFontMetrics(font)
         tw = fm.horizontalAdvance(text) if hasattr(fm, "horizontalAdvance") else fm.width(text)
         x = float(pos.x() - tw / 2)
         y = float(pos.y() + fm.ascent() * 0.35)
         path = QPainterPath()
         path.addText(x, y, font, text)
+        halo = QPen(QColor(255, 255, 255))
+        halo.setWidthF(max(3.0, font_pt * 0.32))
+        halo.setJoinStyle(Qt.RoundJoin)
+        halo.setCapStyle(Qt.RoundCap)
+        p.setPen(halo)
+        p.setBrush(Qt.NoBrush)
+        p.drawPath(path)
         p.fillPath(path, QBrush(fill))
 
     def _draw_formal_charge(

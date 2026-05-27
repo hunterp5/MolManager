@@ -36,10 +36,10 @@ def acs_sketch_style(median_bond_px: float = SKETCH_MEDIAN_BOND_PX) -> AcsSketch
     rdMolDraw2D.SetACS1996Mode(op, _ACS_MEAN_BOND_ANG)
     med = max(float(median_bond_px), 8.0)
     fixed = max(float(op.fixedBondLength), 1.0)
-    # Match RDKit ACS1996 proportions: thin bonds, ~18% double-bond offset, ~10pt labels at ~60px bonds.
+    # Match RDKit ACS1996 proportions: thin bonds, ~18% double-bond offset; labels slightly larger for legibility.
     bond_w = max(1.0, float(op.bondLineWidth) * med / fixed)
     multi = max(2.5, float(op.multipleBondOffset) * med)
-    label_pt = max(8, int(round(med * 0.17)))
+    label_pt = max(11, int(round(med * 0.22)))
     return AcsSketchStyle(
         median_bond_px=med,
         bond_width_px=bond_w,

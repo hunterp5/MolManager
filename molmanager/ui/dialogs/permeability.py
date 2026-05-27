@@ -13,13 +13,8 @@ from PyQt5.QtWidgets import (
     QVBoxLayout,
 )
 
-from ...permeability_prediction import (
-    PERMEABILITY_ENDPOINT_OPTIONS,
-    ensure_permeability_stack_ready,
-    permeability_model_available,
-)
+from ...permeability_prediction import PERMEABILITY_ENDPOINT_OPTIONS
 from ...science_citations import permeability_dialog_footer_html
-from ...workers import PermeabilityPredictorWorker
 from ..qt_widget_utils import make_window_minimizable
 from .scope import selection_scope_checked
 
@@ -111,38 +106,7 @@ class PermeabilityPredictorDialog(QDialog):
             )
             return
         src = self.src_combo.currentText()
-        rows_m = self.parent_app.collect_scoped_table_mols(src, only_selected=only_selected)
-        if not rows_m:
-            QMessageBox.information(
-                self,
-                "Predict Permeability",
-                "No valid structures were found for this scope and source.",
-            )
-            return
-
-        stack_err = ensure_permeability_stack_ready()
-        if stack_err:
-            QMessageBox.warning(self, "Predict Permeability", stack_err)
-            return
-        if not permeability_model_available():
-            QMessageBox.warning(
-                self,
-                "Predict Permeability",
-                "GNN-MTL model file (model.pt) is missing.\n\n"
-                "Run: python scripts/bootstrap_gnn_mtl_model.py\n"
-                "See molmanager/resources/models/gnn_mtl/README.md",
-            )
-            return
-
-        perm_signals = self.parent_app._ensure_permeability_predictor_signals()
-        n = len(rows_m)
-        cols = tuple(output_columns)
-        prog = self.parent_app._tool_progress_state
-        self.parent_app._begin_tool_progress("Predict Permeability", n)
-        self.parent_app.process_queue.enqueue(
-            f"Predict Permeability ({n} rows)",
-            lambda ev, r=rows_m, ws=self.parent_app.signals, ps=perm_signals, c=cols, st=prog: PermeabilityPredictorWorker(
-                r, ws, ps, cancel_event=ev, output_columns=c, progress_state=st
-            ),
+        self.parent_app.schedule_permeability_prediction(
+            src, only_selected=only_selected, output_columns=tuple(output_columns)
         )
         self.close()
