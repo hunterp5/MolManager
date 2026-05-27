@@ -67,6 +67,9 @@ class MolManagerConfig:
     pg_connect_timeout: int
     conformer_threads: int | None
     descriptor_threads: int | None
+    descriptor_process_pool_min_rows: int
+    background_job_poll_ms: int
+    bulk_update_defer_color_cache_rows: int
     protomer_process_workers: int | None
     pka_process_workers: int | None
     disable_custom_calc: bool
@@ -118,7 +121,16 @@ def load_config() -> MolManagerConfig:
         pg_connect_timeout=_env_int("MOLMANAGER_PG_CONNECT_TIMEOUT", 30, lo=1, hi=3600),
         conformer_threads=_env_optional_positive_int("MOLMANAGER_CONFORMER_THREADS", lo=1, hi=16),
         descriptor_threads=_env_optional_positive_int("MOLMANAGER_DESCRIPTOR_THREADS", lo=1, hi=32),
-        protomer_process_workers=_env_optional_positive_int("MOLMANAGER_PROTOmer_PROCESSES", lo=1, hi=8),
+        descriptor_process_pool_min_rows=_env_int(
+            "MOLMANAGER_DESCRIPTOR_PROCESS_POOL_MIN_ROWS", 1500, lo=0, hi=10_000_000
+        ),
+        background_job_poll_ms=_env_int(
+            "MOLMANAGER_BACKGROUND_JOB_POLL_MS", 500, lo=100, hi=5000
+        ),
+        bulk_update_defer_color_cache_rows=_env_int(
+            "MOLMANAGER_BULK_UPDATE_DEFER_COLOR_CACHE_ROWS", 5000, lo=0, hi=10_000_000
+        ),
+        protomer_process_workers=_env_optional_positive_int("MOLMANAGER_PROTOMER_PROCESSES", lo=1, hi=8),
         pka_process_workers=_env_optional_positive_int("MOLMANAGER_PKA_PROCESS_WORKERS", lo=1, hi=8),
         disable_custom_calc=_env_truthy("MOLMANAGER_DISABLE_CUSTOM_CALC"),
         custom_calc_legacy_eval=_env_truthy("MOLMANAGER_CUSTOM_CALC_LEGACY_EVAL"),

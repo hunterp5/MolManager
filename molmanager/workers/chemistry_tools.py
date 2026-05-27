@@ -167,6 +167,93 @@ def _mp_calc_descriptor_row(args: tuple):
     return (idx, row_data)
 
 
+def _descriptor_progress_emit_step(total: int) -> int:
+    """Fewer cross-thread progress signals on very large tables."""
+    tot = max(1, int(total))
+    if tot >= 100_000:
+        return max(1, tot // 200)
+    if tot >= 10_000:
+        return max(1, tot // 80)
+    return max(1, tot // 40)
+
+
+def _run_descriptor_process_pool(
+    prepared: list,
+    *,
+    disp_headers: list,
+    int_fns: tuple,
+    pka_by_idx: dict,
+    pka_cache_used: bool,
+    max_workers: int,
+    cancel_event: threading.Event | None,
+    emit_progress,
+) -> tuple[list, bool]:
+    """
+    Run descriptor rows in child processes (keeps the Qt GUI thread off the GIL).
+
+    Returns ``(results, cancelled)``.
+    """
+    mp_tasks = []
+    for i, mol in prepared:
+        blob = mol.ToBinary() if mol is not None else b""
+        mp_tasks.append(
+            (
+                i,
+                blob,
+                tuple(disp_headers),
+                tuple(int_fns),
+                pka_by_idx.get(i) if pka_cache_used else None,
+                pka_cache_used,
+            )
+        )
+    proc_workers = min(max_workers, max(2, (os.cpu_count() or 4) - 1), 8)
+    emit_progress(0, force=True)
+    mp_results_dict: dict = {}
+    done_count = 0
+    cancelled = False
+    last_pulse = 0.0
+    ex = register_process_pool(ProcessPoolExecutor(max_workers=proc_workers))
+    try:
+        pending = {ex.submit(_mp_calc_descriptor_row, t) for t in mp_tasks}
+        while pending:
+            if should_terminate_process_pool(cancel_event):
+                cancelled = True
+                for f in list(pending):
+                    if f.done() and not f.cancelled():
+                        try:
+                            idx, row_d = f.result()
+                            mp_results_dict[int(idx)] = row_d
+                            done_count += 1
+                        except Exception:
+                            logger.exception("Process-pool descriptor row failed")
+                    else:
+                        f.cancel()
+                break
+            completed, pending = wait(pending, timeout=0.25, return_when=FIRST_COMPLETED)
+            if not completed and pending:
+                now = time.monotonic()
+                if now - last_pulse >= 0.55:
+                    last_pulse = now
+                    emit_progress(done_count, force=True)
+            for f in completed:
+                if f.cancelled():
+                    continue
+                try:
+                    idx, row_d = f.result()
+                    mp_results_dict[int(idx)] = row_d
+                    done_count += 1
+                    emit_progress(done_count)
+                except Exception:
+                    logger.exception("Process-pool descriptor row failed")
+    finally:
+        shutdown_process_pool_executor(
+            ex, kill_workers=should_terminate_process_pool(cancel_event)
+        )
+    emit_progress(done_count, force=True)
+    results = [(oid, mp_results_dict[oid]) for oid, _ in prepared if oid in mp_results_dict]
+    return results, cancelled
+
+
 def _calc_descriptor_row_task(args):
     """One row for :class:`CalcWorker` parallel path (thread worker)."""
     idx, mol, disp_headers, int_fns, smarts_cache, pka_states, pka_cache_used = args
@@ -918,7 +1005,7 @@ class CalcWorker(QRunnable):
             from ..tool_progress import report_tool_progress
 
             now = time.monotonic()
-            step = max(1, tot // 40)
+            step = _descriptor_progress_emit_step(tot)
             throttle_signal = (
                 force
                 or done_count >= tot
@@ -938,70 +1025,27 @@ class CalcWorker(QRunnable):
                 force_signal=force,
             )
 
-        # Gobbi Pharm2D often holds the GIL — in-process threads starve the PyQt GUI. Run rows in
-        # child processes so the main process can run the event loop while workers compute.
+        # RDKit descriptor work holds the GIL; large tables use child processes so Qt stays responsive.
+        mp_min = int(cfg.descriptor_process_pool_min_rows)
+        use_process_pool = (
+            (heavy_pharm2d or nrows >= mp_min)
+            and nrows >= 2
+            and max_workers > 1
+        )
         mp_used = False
-        if heavy_pharm2d and nrows >= 2 and max_workers > 1:
+        if use_process_pool:
             try:
-                mp_tasks = []
-                for i, mol in prepared:
-                    blob = mol.ToBinary() if mol is not None else b""
-                    mp_tasks.append(
-                        (
-                            i,
-                            blob,
-                            tuple(self.disp_headers),
-                            tuple(self.int_fns),
-                            pka_by_idx.get(i) if pka_cache_used else None,
-                            pka_cache_used,
-                        )
-                    )
-                proc_workers = min(max_workers, max(2, (os.cpu_count() or 4) - 1), 8)
-                _emit_progress(0, force=True)
-                mp_results_dict: dict = {}
-                done_count = 0
-                user_cancelled = False
-                last_pulse = 0.0
-                ex = register_process_pool(ProcessPoolExecutor(max_workers=proc_workers))
-                try:
-                    pending = {ex.submit(_mp_calc_descriptor_row, t) for t in mp_tasks}
-                    while pending:
-                        if should_terminate_process_pool(cancel_ev):
-                            user_cancelled = True
-                            cancelled = True
-                            for f in list(pending):
-                                if f.done() and not f.cancelled():
-                                    try:
-                                        idx, row_d = f.result()
-                                        mp_results_dict[int(idx)] = row_d
-                                        done_count += 1
-                                    except Exception:
-                                        logger.exception("Process-pool descriptor row failed")
-                                else:
-                                    f.cancel()
-                            break
-                        completed, pending = wait(pending, timeout=0.25, return_when=FIRST_COMPLETED)
-                        if not completed and pending:
-                            now = time.monotonic()
-                            if now - last_pulse >= 0.55:
-                                last_pulse = now
-                                _emit_progress(done_count, force=True)
-                        for f in completed:
-                            if f.cancelled():
-                                continue
-                            try:
-                                idx, row_d = f.result()
-                                mp_results_dict[int(idx)] = row_d
-                                done_count += 1
-                                _emit_progress(done_count)
-                            except Exception:
-                                logger.exception("Process-pool descriptor row failed")
-                finally:
-                    shutdown_process_pool_executor(
-                        ex, kill_workers=should_terminate_process_pool(cancel_ev)
-                    )
-                _emit_progress(done_count, force=True)
-                results = [(oid, mp_results_dict[oid]) for oid, _ in prepared if oid in mp_results_dict]
+                results, pool_cancelled = _run_descriptor_process_pool(
+                    prepared,
+                    disp_headers=self.disp_headers,
+                    int_fns=tuple(self.int_fns),
+                    pka_by_idx=pka_by_idx,
+                    pka_cache_used=pka_cache_used,
+                    max_workers=max_workers,
+                    cancel_event=cancel_ev,
+                    emit_progress=_emit_progress,
+                )
+                cancelled = cancelled or pool_cancelled
                 mp_used = True
             except Exception:
                 logger.exception("Process-pool descriptors failed; falling back to in-process pool")

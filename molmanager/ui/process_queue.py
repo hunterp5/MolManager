@@ -245,11 +245,18 @@ class _QueueJobRunner(QRunnable):
         self._inner = inner
 
     def run(self) -> None:
+        app = self._manager._app
+        enter_ui = getattr(app, "_enter_background_job_ui", None)
+        exit_ui = getattr(app, "_exit_background_job_ui", None)
+        if callable(enter_ui):
+            enter_ui()
         try:
             self._inner.run()
         except Exception:
             logger.exception("Queued job crashed (job_id=%s)", self._job_id)
         finally:
+            if callable(exit_ui):
+                exit_ui()
             self._manager.thread_finished.emit(self._job_id)
 
 

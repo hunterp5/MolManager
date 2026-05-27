@@ -40,6 +40,9 @@ htmlcov/
 # IDE (machine-local; keep .cursor/rules if you version team rules)
 .idea/
 
+# Cursor (machine-local)
+.cursor/
+
 # Optional CLI binaries placed under resources/bin (keep README + .gitkeep)
 molmanager/resources/bin/**/*
 !molmanager/resources/bin/**/
@@ -56,6 +59,18 @@ fda_approved_full.SDF
 export_test.sdf
 BindingDB_*.sdf
 BindingDB_*.SDF
+
+# Local training logs / scratch outputs
+lightning_logs/
+
+# Local scratch exports and sessions
+test_export.sdf
+test_session.cms
+testcsv.csv
+
+# Project planning notes / changelog drafts (keep out of distributed repo)
+ChemManager v* update.txt
+BACKLOG.md
 
 # Editor / OS junk
 .~lock.*

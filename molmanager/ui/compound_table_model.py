@@ -928,11 +928,14 @@ class CompoundTableModel(QAbstractTableModel):
         rows_changed: list[int],
         lo_col: int,
         hi_col: int,
+        *,
+        roles: list | None = None,
     ) -> None:
         """Notify the view only for changed rows (merged ranges), not the whole table."""
         if not rows_changed or not self._rows:
             return
-        roles = [Qt.DisplayRole, Qt.EditRole, Qt.BackgroundRole]
+        if roles is None:
+            roles = [Qt.DisplayRole, Qt.EditRole, Qt.BackgroundRole]
         n = len(self._rows)
         unique = sorted({int(r) for r in rows_changed if 0 <= int(r) < n})
         if not unique:
@@ -995,6 +998,9 @@ class CompoundTableModel(QAbstractTableModel):
         if not cols or not col_set:
             return
         colored_cols = [h for h in col_set if h in self._column_color_rules]
+        from ..config import load_config
+
+        defer_color = len(oid_value_rows) >= int(load_config().bulk_update_defer_color_cache_rows)
         rows_changed: list[int] = []
         for oid, row_d in oid_value_rows:
             r = self._oid_to_row.get(int(oid), -1)
@@ -1006,13 +1012,22 @@ class CompoundTableModel(QAbstractTableModel):
                     continue
                 row_obj.values[header_name] = str(row_d[header_name])
             rows_changed.append(r)
-        for header_name in colored_cols:
-            self._rebuild_column_color_cache(header_name)
+        if defer_color:
+            for header_name in colored_cols:
+                self._column_color_cache.pop(header_name, None)
+        else:
+            for header_name in colored_cols:
+                self._rebuild_column_color_cache(header_name)
         dirty_bounds = {h for h in col_set if h in self._bounds_data_headers()}
         if dirty_bounds:
             self._mark_numeric_bounds_dirty(dirty_bounds)
         if emit and rows_changed and cols:
-            self._emit_data_changed_row_spans(rows_changed, min(cols), max(cols))
+            roles = [Qt.DisplayRole, Qt.EditRole]
+            if not defer_color:
+                roles.append(Qt.BackgroundRole)
+            self._emit_data_changed_row_spans(
+                rows_changed, min(cols), max(cols), roles=roles
+            )
 
     def fill_column_from_oid_map(
         self,

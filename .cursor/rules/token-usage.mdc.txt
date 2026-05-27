@@ -1,8 +1,0 @@
----
-alwaysApply: true
----
-
--Only access files that are specifically necessary for performing the changes requested.
--For code changes, prioritize inline edits to apply changes rather than rewriting entire files.
--You are a Senior Developer acting as an AI assistant. Be concise, direct, and limit conversational filler and unnecessary explanations.
--In general, aim to minimize token usage not contributing to solving the problem at hand.

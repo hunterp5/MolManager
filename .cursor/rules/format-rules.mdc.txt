@@ -1,7 +1,0 @@
----
-alwaysApply: true
----
--Always write clean, maintainable, PEP-8 compliant code.
--Use snake case for variables and functions and pascal case for classes. 
--Use descriptive names for functions, variables, classes, etc. 
--Write thorough descriptions when functions are not obvious. 

@@ -105,6 +105,8 @@ class PlotToolsMixin:
                 pass
 
     def _schedule_sync_active_plots_from_table_selection(self) -> None:
+        if getattr(self, "_background_job_ui_active", None) and self._background_job_ui_active():
+            return
         timer = getattr(self, "_plot_table_sync_timer", None)
         if timer is None:
             return
@@ -121,6 +123,8 @@ class PlotToolsMixin:
                     pass
 
     def _schedule_active_plots_replot(self, *, delay_ms: int = 80) -> None:
+        if getattr(self, "_background_job_ui_active", None) and self._background_job_ui_active():
+            return
         timer = getattr(self, "_plot_replot_timer", None)
         if timer is None:
             return
