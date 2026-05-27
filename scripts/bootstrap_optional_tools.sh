@@ -7,10 +7,12 @@ echo "Installing core Python packages..."
 python -m pip install -U pip
 python -m pip install -r requirements.txt
 
-if [[ -f requirements-pka.txt ]]; then
-  read -r -p "Install pKa stack (requirements-pka.txt)? [y/N] " pka
+if [[ -f scripts/install_pytorch_pka.sh ]]; then
+  echo ""
+  echo "pKa uses CPU PyTorch 2.5.1 in the same Python as MolManager (no extra .venvs/pka)."
+  read -r -p "Install PyTorch + pkasolver now? [y/N] " pka
   if [[ "$pka" =~ ^[yY] ]]; then
-    python -m pip install -r requirements-pka.txt
+    bash scripts/install_pytorch_pka.sh
   fi
 fi
 

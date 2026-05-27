@@ -22,18 +22,22 @@ pip install -U pip
 pip install -r requirements-all.txt
 ```
 
-Optional pKa stack on Windows: install CPU PyTorch first (see comments in `requirements-pka.txt`), then:
+Optional pKa stack: install into the **same** venv as MolManager (no `.venvs/pka`):
 
 ```bash
-pip install -r requirements-pka.txt
+# Windows
+scripts\install_pytorch_pka.ps1
+# macOS / Linux
+bash scripts/install_pytorch_pka.sh
 ```
 
-Editable install with extras:
+Editable install with extras (install PyTorch via the script above before `[pka]`):
 
 ```bash
 pip install -e ".[dev]"
-pip install -e ".[pka]"    # after torch
+pip install -e ".[pka]"
 pip install -e ".[boltz]"
+pip install -e ".[permeability]"   # after PyTorch 2.5.1 + pKa script
 ```
 
 ## Bundling external tools

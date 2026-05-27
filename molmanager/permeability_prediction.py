@@ -125,12 +125,10 @@ def permeability_model_available() -> bool:
 
 _WINDOWS_TORCH_DLL_HELP = (
     "PyTorch could not load its native libraries (Windows DLL error).\n\n"
-    "Install the official CPU build, then Chemprop:\n"
-    "  pip uninstall torch torchvision torchaudio -y\n"
-    "  pip install torch==2.5.1 torchvision==0.20.1 "
-    "--index-url https://download.pytorch.org/whl/cpu\n"
+    "Install the shared CPU PyTorch 2.5.1 stack (same as pKa), then Chemprop:\n"
+    "  scripts\\install_pytorch_pka.ps1\n"
     "  pip install -r requirements-permeability.txt\n\n"
-    "See requirements-permeability.txt (same issue as requirements-pka.txt)."
+    "See requirements-pytorch-cpu.txt and requirements-pka.txt."
 )
 
 
@@ -166,10 +164,8 @@ def permeability_stack_import_error() -> str | None:
         if "torchvision" in msg or "torch" in msg:
             return (
                 "Chemprop could not load PyTorch / Lightning (version mismatch is common).\n\n"
-                "Reinstall matched CPU wheels, then Chemprop:\n"
-                "  pip uninstall torch torchvision torchaudio -y\n"
-                "  pip install torch==2.5.1 torchvision==0.20.1 "
-                "--index-url https://download.pytorch.org/whl/cpu\n"
+                "Reinstall the shared CPU PyTorch 2.5.1 stack, then Chemprop:\n"
+                "  scripts\\install_pytorch_pka.ps1\n"
                 "  pip install -r requirements-permeability.txt\n\n"
                 f"Details: {e}"
             )
