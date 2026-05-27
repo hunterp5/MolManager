@@ -143,6 +143,7 @@ class ToolsSqlPredictMixin:
             try:
                 self._plot_panel.setVisible(True)
                 self._sync_dialog_only_selected_scope(w)
+                self._sync_active_plots_from_table_selection()
                 self.activateWindow()
                 self.raise_()
                 return
@@ -151,6 +152,7 @@ class ToolsSqlPredictMixin:
         dlg = self._create_plot_dialog()
         self._register_plot_dialog(dlg)
         self._sync_dialog_only_selected_scope(dlg)
+        self._sync_active_plots_from_table_selection()
         dlg.show()
         dlg.raise_()
         dlg.activateWindow()

@@ -5,6 +5,7 @@ from __future__ import annotations
 import numpy as np
 
 from .plot_color import resolve_plot_colorscale
+from .ui.plotly_html import finalize_plot_legend
 
 
 def binned_count_matrix(
@@ -129,6 +130,7 @@ def build_heatmap_figure(
                 y=y_centers,
                 z=z,
                 colorscale=resolve_plot_colorscale(colorscale),
+                showlegend=False,
                 colorbar={"title": "Count"},
                 hovertemplate=(
                     f"{x_label}: %{{x}}<br>{y_label}: %{{y}}<br>Count: %{{z}}<extra></extra>"
@@ -139,6 +141,7 @@ def build_heatmap_figure(
     fig.update_layout(
         xaxis={"title": x_label},
         yaxis={"title": y_label},
+        showlegend=False,
         margin={"l": 50, "r": 20, "t": 20, "b": 45},
     )
-    return fig, z
+    return finalize_plot_legend(fig), z

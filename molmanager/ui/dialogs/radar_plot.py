@@ -20,6 +20,7 @@ from PyQt5.QtWidgets import (
 )
 
 from ...medchem_space import snapshot_scope_row_indices
+from ..plotly_html import finalize_plot_legend
 from ...plot_radar import (
     MAX_RADAR_DISPLAY_ENTRIES,
     MAX_RADAR_TRACES,
@@ -356,8 +357,9 @@ def _empty_radar_figure_hint():
             }
         ],
         margin={"l": 40, "r": 40, "t": 30, "b": 30},
+        showlegend=False,
     )
-    return fig
+    return finalize_plot_legend(fig)
 
 
 class RadarPlotDialog(QDialog):

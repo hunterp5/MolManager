@@ -7,6 +7,8 @@ from typing import Any
 import numpy as np
 from plotly import graph_objects as go
 
+from molmanager.ui.plotly_html import finalize_plot_legend
+
 SPOKE_NONE = "(none)"
 ENTRY_NONE = "(none)"
 
@@ -228,7 +230,7 @@ def build_radar_figure(
             "font": {"size": 10},
         },
     )
-    return fig
+    return finalize_plot_legend(fig)
 
 
 def _hex_to_rgba(hex_color: str, alpha: float) -> str:

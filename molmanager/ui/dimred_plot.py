@@ -9,6 +9,7 @@ from plotly import graph_objects as go
 
 from ..dimensionality_reduction import DimensionReductionResult
 from ..plot_color import DEFAULT_PLOT_COLORSCALE, scatter_marker_from_column_values
+from ..ui.plotly_html import finalize_plot_legend
 
 
 def dimension_reduction_result_with_color(
@@ -61,6 +62,7 @@ def build_dimension_reduction_figure(
                 text=result.hover,
                 hoverinfo="text",
                 marker=marker,
+                showlegend=False,
                 unselected={"marker": {"opacity": 0.35}},
                 selected={"marker": {"size": 9, "color": "#d62828", "opacity": 1.0}},
             )
@@ -72,6 +74,7 @@ def build_dimension_reduction_figure(
         yaxis_title=y_label,
         template="plotly_white",
         dragmode="lasso",
+        showlegend=False,
         margin=dict(l=48, r=24, t=48, b=48),
     )
-    return fig
+    return finalize_plot_legend(fig)

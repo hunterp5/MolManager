@@ -977,7 +977,9 @@ class CalcWorker(QRunnable):
                 prepared,
                 cancel_event=self.cancel_event,
                 progress_state=self.progress_state,
-                progress_message="pkasolver microstates…",
+                signals=self.signals,
+                progress_message="Calculate descriptors",
+                progress_total=tot,
             )
             pka_cache_used = True
             from ..tool_progress import report_tool_progress
@@ -990,6 +992,43 @@ class CalcWorker(QRunnable):
                 signals=self.signals,
                 force_signal=True,
             )
+
+            # If the user cancelled while pkasolver was still computing microstates, we can still
+            # return partial descriptor results for the structures whose microstates we already
+            # have. This prevents "blank columns" after cancellation for LogD/LogS and similar
+            # pkasolver-dependent descriptors.
+            if cancel_ev is not None and cancel_ev.is_set():
+                cancelled = True
+                results = []
+                done_count = 0
+                _emit_progress(0, force=True)
+                for i, mol in prepared:
+                    if pka_by_idx.get(i) is None:
+                        continue
+                    try:
+                        results.append(
+                            _calc_descriptor_row_task(
+                                (
+                                    i,
+                                    mol,
+                                    self.disp_headers,
+                                    tuple(self.int_fns),
+                                    smarts_cache,
+                                    pka_by_idx.get(i),
+                                    True,
+                                )
+                            )
+                        )
+                        done_count += 1
+                    except Exception:
+                        logger.exception("Descriptor row task failed (partial-cancel path)")
+                    _emit_progress(min(done_count, tot))
+                _emit_progress(min(done_count, tot), force=True)
+                emit_partial_results_if_cancelled(
+                    self.signals, "Calculate descriptors", len(results), tot, cancelled
+                )
+                self.signals.calculated.emit(results, self.disp_headers)
+                return
         # ThreadPoolExecutor row tasks so RDKit never runs on the Qt GUI thread and small jobs
         # still use a worker thread instead of the process-queue thread doing every row inline.
         heavy_pharm2d = _descriptor_int_fns_include_pharm2d(self.int_fns)

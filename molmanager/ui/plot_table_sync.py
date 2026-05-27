@@ -13,6 +13,28 @@ if TYPE_CHECKING:
     from .main_window import ChemicalTableApp
 
 
+def selected_oids_for_plot(parent_app: ChemicalTableApp) -> set[int]:
+    """
+    OIDs that should drive plot highlighting — matches what the table shows as selected.
+
+    Includes Qt selection, large-selection override, and model-level highlighted OIDs.
+    """
+    override = getattr(parent_app, "_selected_oids_override", None)
+    if override:
+        return {int(x) for x in override}
+    oids: set[int] = set()
+    model = parent_app._table_model
+    for r in parent_app._selected_logical_rows():
+        try:
+            oids.add(int(model.row_oid(r)))
+        except (IndexError, ValueError, TypeError):
+            continue
+    highlighted = model.highlighted_oids()
+    if highlighted:
+        oids |= {int(x) for x in highlighted}
+    return oids
+
+
 def point_indices_for_oids(plotted_oids: list[int], selected_oids: set[int] | frozenset[int]) -> set[int]:
     """Map table OIDs to scatter point indices for the current plot."""
     if not plotted_oids or not selected_oids:

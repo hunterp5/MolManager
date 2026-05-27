@@ -13,6 +13,7 @@ from ..medchem_space import (
     golden_triangle_polygon,
 )
 from ..plot_color import DEFAULT_PLOT_COLORSCALE
+from ..ui.plotly_html import finalize_plot_legend
 
 
 def _path_shape(
@@ -70,6 +71,7 @@ def _compound_scatter(
         hoverinfo="text",
         marker=marker,
         name="Compounds",
+        showlegend=False,
         unselected={"marker": {"opacity": 0.35}},
         selected={"marker": {"size": 10, "color": "#d62828", "opacity": 1.0}},
     )
@@ -106,6 +108,7 @@ def build_boiled_egg_figure(
     fig.update_layout(
         template="plotly_white",
         dragmode="lasso",
+        showlegend=False,
         margin=dict(l=56, r=24, t=24, b=48),
         shapes=[
             dict(
@@ -134,7 +137,7 @@ def build_boiled_egg_figure(
     )
     fig.update_xaxes(title_text="TPSA (Ų)", range=[-20, 220])
     fig.update_yaxes(title_text="LogP", range=[-3, 8])
-    return fig
+    return finalize_plot_legend(fig)
 
 
 def build_golden_triangle_figure(
@@ -168,6 +171,7 @@ def build_golden_triangle_figure(
     fig.update_layout(
         template="plotly_white",
         dragmode="lasso",
+        showlegend=False,
         margin=dict(l=56, r=24, t=24, b=48),
         shapes=[
             _path_shape(
@@ -179,4 +183,4 @@ def build_golden_triangle_figure(
     )
     fig.update_xaxes(title_text="LogP", range=[-3, 6])
     fig.update_yaxes(title_text="Molecular weight (Da)", range=[150, 520])
-    return fig
+    return finalize_plot_legend(fig)

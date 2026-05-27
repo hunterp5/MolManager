@@ -32,13 +32,23 @@ def plan_pkasolver_process_workers(
     ``configured`` is the tool-specific env override (``None`` = auto).
     """
     cpu = os.cpu_count() or 4
-    auto_workers = min(n_unique, max(2, min(8, cpu - 1)))
+    # Prefer offloading pkasolver into a child process whenever possible so the Qt GUI thread
+    # can keep polling/updating tool progress even if pkasolver dependencies hold the GIL.
+    # For n_unique == 1 this uses a 1-worker pool (still isolates heavy work).
+    auto_workers = min(n_unique, max(1, min(8, cpu - 1)))
     if configured is None:
-        use_mp = n_unique >= 2 and auto_workers > 1
+        use_mp = cpu > 1 and n_unique >= 1
         return use_mp, auto_workers if use_mp else 1
-    if configured <= 1:
+    # Config semantics:
+    # - <= 0: force in-process execution
+    # - 1: keep sequential behavior, but still isolate in a child process when possible so UI progress updates.
+    # - >= 2: parallelize across processes (bounded).
+    cfg_i = int(configured)
+    if cfg_i <= 0:
         return False, 1
-    proc_workers = min(int(configured), n_unique, 8)
+    if cfg_i == 1:
+        return cpu > 1 and n_unique >= 1, 1
+    proc_workers = min(cfg_i, n_unique, 8)
     return proc_workers > 1 and n_unique >= 2, proc_workers
 
 
@@ -97,7 +107,9 @@ def build_microstates_cache_by_key(
     workers_cfg: int | None = None,
     cancel_event: threading.Event | None = None,
     progress_state=None,
+    signals=None,
     progress_message: str = "pkasolver microstates…",
+    progress_total: int | None = None,
 ) -> dict[str, list | None]:
     """
     Predict pkasolver microstates once per unique structure.
@@ -122,12 +134,30 @@ def build_microstates_cache_by_key(
 
     _ensure_cairosvg_importable()
 
-    def _report_pkasolver(done: int, *, force: bool = False) -> None:
+    def _report_pkasolver(done_unique: int, *, force: bool = False) -> None:
+        # Map pkasolver progress onto a stable total so the GUI status bar behaves like other
+        # descriptor jobs (never “stuck at 100%” mid-computation).
+        if progress_total is None:
+            done_mapped = done_unique
+            total_mapped = n_unique
+        else:
+            tot = max(1, int(progress_total))
+            # Reserve the final step for the actual descriptor pass.
+            ceiling = max(0, tot - 1)
+            if n_unique <= 0:
+                done_mapped = 0
+            elif ceiling <= 0:
+                done_mapped = 0
+            else:
+                done_mapped = int((float(done_unique) / float(n_unique)) * float(ceiling))
+                done_mapped = max(0, min(done_mapped, ceiling))
+            total_mapped = tot
         report_tool_progress(
             message=progress_message,
-            done=done,
-            total=n_unique,
+            done=done_mapped,
+            total=total_mapped,
             progress_state=progress_state,
+            signals=signals,
             force_signal=force,
         )
 
@@ -204,7 +234,9 @@ def build_microstates_cache_for_rows(
     workers_cfg: int | None = None,
     cancel_event: threading.Event | None = None,
     progress_state=None,
+    signals=None,
     progress_message: str = "pkasolver microstates…",
+    progress_total: int | None = None,
 ) -> dict[int, list | None]:
     """Map each row index to pkasolver microstates (deduplicated by structure)."""
     mols = [mol for _idx, mol in rows if mol is not None]
@@ -213,7 +245,9 @@ def build_microstates_cache_for_rows(
         workers_cfg=workers_cfg,
         cancel_event=cancel_event,
         progress_state=progress_state,
+        signals=signals,
         progress_message=progress_message,
+        progress_total=progress_total,
     )
     out: dict[int, list | None] = {}
     for idx, mol in rows:
