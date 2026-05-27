@@ -27,6 +27,7 @@ from ..display_constants import (
 )
 from .compound_table_model import CompoundTableModel
 from .qt_widget_utils import make_window_minimizable
+from .table_selection import item_selection_for_view_rows
 
 
 class SelectionBrowserDialog(QDialog):
@@ -278,19 +279,31 @@ class SelectionBrowserDialog(QDialog):
         if self._rows:
             self._focus_row(self._rows[self._idx])
 
+    def _view_index_for_source_row(self, logical_row: int, *, column: int = CompoundTableModel.STRUCTURE_COL):
+        app = self._app
+        m = app._table_model
+        if logical_row < 0 or logical_row >= m.rowCount():
+            return None
+        src_ix = m.index(logical_row, column)
+        proxy = getattr(app, "_filter_proxy_model", None)
+        view_model = app.table.model()
+        if proxy is not None and view_model is proxy:
+            view_ix = proxy.mapFromSource(src_ix)
+            return view_ix if view_ix.isValid() else None
+        return src_ix if src_ix.isValid() else None
+
     def _focus_row(self, logical_row: int) -> None:
         app = self._app
         tbl = app.table
-        m = app._table_model
-        if logical_row < 0 or logical_row >= m.rowCount():
+        view_ix = self._view_index_for_source_row(logical_row)
+        if view_ix is None:
             return
-        ix = m.index(logical_row, CompoundTableModel.STRUCTURE_COL)
         # Update the current cell only; do not replace the user's multi-selection
         # (plain setCurrentIndex behaves like navigating to another row).
         sm = tbl.selectionModel()
         if sm is not None:
-            sm.setCurrentIndex(ix, QItemSelectionModel.Current)
-        tbl.scrollTo(ix, QAbstractItemView.PositionAtCenter)
+            sm.setCurrentIndex(view_ix, QItemSelectionModel.Current)
+        tbl.scrollTo(view_ix, QAbstractItemView.PositionAtCenter)
         self._sync_caption(logical_row)
         self._update_preview(logical_row)
 
@@ -355,18 +368,25 @@ class SelectionBrowserDialog(QDialog):
         return str(app._table_model.data(app._table_model.index(logical_row, col), Qt.DisplayRole) or "")
 
     def _is_row_selected(self, logical_row: int) -> bool:
-        try:
-            sm = self._app.table.selectionModel()
-            if sm is None:
-                return False
-            return bool(sm.isRowSelected(logical_row, sm.model().index(logical_row, 0).parent()))
-        except Exception:
-            # Fallback: check if any selected index is on this row.
+        app = self._app
+        override = getattr(app, "_selected_oids_override", None)
+        if override is not None:
             try:
-                sm = self._app.table.selectionModel()
-                return any(ix.row() == logical_row for ix in (sm.selectedIndexes() if sm is not None else []))
-            except Exception:
+                oid = int(app._table_model.row_oid(logical_row))
+                return oid in override
+            except (IndexError, ValueError, TypeError):
                 return False
+        view_rows = app._source_rows_to_view_rows([logical_row])
+        if not view_rows:
+            return False
+        try:
+            sm = app.table.selectionModel()
+            view_model = app.table.model()
+            if sm is None or view_model is None:
+                return False
+            return bool(sm.isRowSelected(int(view_rows[0]), view_model.index(int(view_rows[0]), 0).parent()))
+        except Exception:
+            return False
 
     def _toggle_current_row_selected(self) -> None:
         r = self._current_row()
@@ -374,11 +394,16 @@ class SelectionBrowserDialog(QDialog):
             return
         app = self._app
         sm = app.table.selectionModel()
-        if sm is None:
+        view_model = app.table.model()
+        if sm is None or view_model is None:
             return
-        top = app._table_model.index(r, 0)
-        bottom = app._table_model.index(r, max(0, app._table_model.columnCount() - 1))
-        sel = QItemSelection(top, bottom)
+        view_rows = app._source_rows_to_view_rows([r])
+        if not view_rows:
+            return
+        last_col = max(0, view_model.columnCount() - 1)
+        sel = item_selection_for_view_rows(view_model, view_rows, last_col=last_col)
+        if sel.isEmpty():
+            return
         already = self._is_row_selected(r)
         mode = QItemSelectionModel.Deselect if already else QItemSelectionModel.Select
         sm.select(sel, mode | QItemSelectionModel.Rows)

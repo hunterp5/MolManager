@@ -13,7 +13,7 @@ def selection_scope_checked(dialog: QDialog) -> bool:
     cb = getattr(dialog, "only_selected_cb", None)
     if cb is None or not cb.isChecked():
         return False
-    host = dialog.parent()
+    host = getattr(dialog, "parent_app", None) or dialog.parent()
     if host is not None and hasattr(host, "_selected_logical_rows"):
         return len(host._selected_logical_rows()) > 0
     return bool(getattr(dialog, "_have_selection", False))

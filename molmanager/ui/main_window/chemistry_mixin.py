@@ -466,7 +466,7 @@ class ChemistryMixin:
                 self._structures_queued = 0
                 self._table_stack.setCurrentIndex(1)
                 self._import_progress_active = False
-                self._clear_tool_progress()
+                self._clear_tool_progress(status_message=None)
                 self._ingest_append_mode = False
                 started_render = self._try_auto_render_all_structures_after_ingest()
                 if not started_render:
@@ -1959,7 +1959,7 @@ class ChemistryMixin:
 
     def on_calc_finished(self, res, calc_h, *, finish_progress: bool = True, progress_label: str | None = None):
         if finish_progress:
-            self._finish_tool_progress(progress_label)
+            self._finish_tool_progress(progress_label, status_message=None)
         self.table.setSortingEnabled(False)
         try:
             self.table.setUpdatesEnabled(False)
@@ -2849,7 +2849,6 @@ class ChemistryMixin:
             QMessageBox.information(self, "pKa Predictor", lone[0])
         if not table_rows:
             self._finish_tool_progress("pKa prediction")
-            self.status_label.setText("Ready.")
 
     def _on_pka_prediction_failed(self, msg: str) -> None:
         self._finish_tool_progress("pKa prediction")
@@ -2935,7 +2934,6 @@ class ChemistryMixin:
     def _on_permeability_prediction_finished(self, results: list) -> None:
         if not results:
             self._finish_tool_progress("Predict Permeability")
-            self.status_label.setText("Ready.")
             return
         calc_h = list(results[0][1].keys())
         res = [(oid, row_d) for oid, row_d in results]

@@ -209,8 +209,10 @@ class ProtomerGeneratorDialog(QDialog):
             self.results_table.setItem(r, 0, QTableWidgetItem(oid_txt))
             self.results_table.setItem(r, 1, QTableWidgetItem(smi))
             self.results_table.setItem(r, 2, QTableWidgetItem(f"{pct:.2f}"))
-        self.parent_app._finish_tool_progress("Generate protomers")
-        self.parent_app.status_label.setText(self.parent_app._consume_partial_results_notice() or "Ready.")
+        self.parent_app._finish_tool_progress(
+            "Generate protomers",
+            status_message=self.parent_app._consume_partial_results_notice() or "Ready.",
+        )
 
     def _on_failed(self, msg: str) -> None:
         self.generate_btn.setEnabled(True)

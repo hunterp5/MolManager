@@ -12,6 +12,13 @@ from ..qsar import QSARFitResult, fit_qsar_model, predict_qsar_rows
 logger = logging.getLogger(__name__)
 
 
+def _emit_qsar_cancelled(signals: QSARSignals) -> None:
+    try:
+        signals.failed.emit("Cancelled.")
+    except Exception:
+        pass
+
+
 class QSARSignals(QObject):
     train_finished = pyqtSignal(object)
     predict_finished = pyqtSignal(list)
@@ -29,6 +36,7 @@ class QSARTrainWorker(QRunnable):
 
     def run(self) -> None:
         if self.cancel_event is not None and self.cancel_event.is_set():
+            _emit_qsar_cancelled(self.signals)
             return
         try:
             use_fp = bool(self.params.get("use_fingerprints"))
@@ -46,6 +54,7 @@ class QSARTrainWorker(QRunnable):
                 standardize=bool(self.params.get("standardize", True)),
             )
             if self.cancel_event is not None and self.cancel_event.is_set():
+                _emit_qsar_cancelled(self.signals)
                 return
             self.signals.train_finished.emit(result)
         except Exception as exc:
@@ -67,6 +76,7 @@ class QSARPredictWorker(QRunnable):
 
     def run(self) -> None:
         if self.cancel_event is not None and self.cancel_event.is_set():
+            _emit_qsar_cancelled(self.signals)
             return
         try:
             bundle = self.params["bundle"]
@@ -78,6 +88,7 @@ class QSARPredictWorker(QRunnable):
                 output_column=self.params.get("output_column"),
             )
             if self.cancel_event is not None and self.cancel_event.is_set():
+                _emit_qsar_cancelled(self.signals)
                 return
             self.signals.predict_finished.emit(rows)
         except Exception as exc:
