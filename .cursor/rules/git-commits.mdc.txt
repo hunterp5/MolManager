@@ -1,9 +1,0 @@
----
-alwaysApply: true
----
-
--After substantial molmanager work (multiple files, new features, refactors, behavior or API changes, or anything risky to leave uncommitted), finish with a git commit so the tree is not left dirty with completed work.
--Write commit messages for humans: imperative mood ("Add cluster dialog" not "Added"), specific enough to understand the change without opening the diff. Mention the area of the app when helpful (e.g. UI, workers, tests).
--For large or subtle changes, use a subject line (about 72 characters or fewer), a blank line, then a body: what changed, why, and how to verify if non-obvious.
--Split unrelated work into separate commits when practical; avoid one commit that mixes unrelated concerns.
--If the user asked not to commit or only to prepare a message, respect that; otherwise use `git add` and `git commit` in the project root when the change set is coherent.

@@ -398,7 +398,17 @@ class ConformersDescriptorsMixin:
                     )
                 else:
                     self._table_model.apply_columns_values_bulk(calc_h, bulk_rows)
-            self._sync_global_bounds_for_headers(calc_h, refresh_filters=bool(new_h))
+            if self._table_model.rowCount() >= 5000:
+                dirty = {
+                    h
+                    for h in calc_h
+                    if h in self._table_model._bounds_data_headers()
+                }
+                if dirty:
+                    self._table_model._mark_numeric_bounds_dirty(dirty)
+                self.schedule_calculate_global_bounds()
+            else:
+                self._sync_global_bounds_for_headers(calc_h, refresh_filters=bool(new_h))
             self.table.setSortingEnabled(False)
         finally:
             try:

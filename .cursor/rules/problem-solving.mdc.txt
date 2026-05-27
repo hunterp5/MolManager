@@ -1,6 +1,0 @@
----
-alwaysApply: true
----
-
--Ensure that problems are fixed at the cause, not the symptom
--Adhere to common coding paradigms

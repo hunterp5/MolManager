@@ -82,7 +82,7 @@ Optional environment variables:
 | `MOLMANAGER_PERF_LOG_EVERY` | Log interval for perf metrics (default `25` samples). |
 | `MOLMANAGER_CONFORMER_THREADS` | Parallel workers for conformer generation (`1`–`16`; unset = auto). |
 | `MOLMANAGER_DESCRIPTOR_THREADS` | Parallel workers for descriptor calculation (`1`–`32`; unset = auto). |
-| `MOLMANAGER_PROTOmer_PROCESSES` | Parallel **processes** for Tools → Generate Protomers (`1`–`8`). `1` = always sequential (one shared model). Unset = auto: **dedupe** identical structures, then use a small process pool when there are **≥4 unique** structures (each process loads its own pkasolver model — faster but more RAM). |
+| `MOLMANAGER_PROTOMER_PROCESSES` | Parallel **processes** for Tools → Generate Protomers (`1`–`8`). `1` = always sequential (one shared model). Unset = auto: **dedupe** identical structures, then use a small process pool when there are **≥4 unique** structures (each process loads its own pkasolver model — faster but more RAM). |
 | `MOLMANAGER_SQL_MAX_ROWS_HARD` | Hard ceiling for “Max rows” when loading from SQL (default `2000000`; caps UI spinbox and server `LIMIT`). |
 | `MOLMANAGER_SQL_PRECOUNT_WARN` | If a pre-load `COUNT(*)` is ≥ this value, confirm before fetching (default `100000`). |
 | `MOLMANAGER_SQLITE_TIMEOUT_S` | SQLite `connect_args["timeout"]` seconds (default `30`, clamped when applied). |

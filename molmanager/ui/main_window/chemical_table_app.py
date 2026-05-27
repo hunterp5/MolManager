@@ -256,8 +256,11 @@ class ChemicalTableApp(
         self._wire_table_plot_refresh()
         self._tool_progress_state = ToolProgressState()
         self._tool_progress_poll_timer = QTimer(self)
-        self._tool_progress_poll_timer.setInterval(cfg.tool_progress_poll_ms)
+        self._tool_progress_poll_interval_ms = int(cfg.tool_progress_poll_ms)
+        self._tool_progress_poll_timer.setInterval(self._tool_progress_poll_interval_ms)
         self._tool_progress_poll_timer.timeout.connect(self._poll_tool_progress_state)
+        self._background_job_ui_depth = 0
+        self._last_tool_progress_status = ""
 
     def _begin_tool_progress(self, message: str, total: int) -> None:
         """Start polled status updates for a long-running queued tool."""
@@ -274,6 +277,24 @@ class ChemicalTableApp(
             self._tool_progress_poll_timer.stop()
             return
         self._on_tool_progress(message, done, total)
+
+    def _background_job_ui_active(self) -> bool:
+        return int(getattr(self, "_background_job_ui_depth", 0)) > 0
+
+    def _enter_background_job_ui(self) -> None:
+        """Reduce main-thread churn while a queued tool holds the machine busy."""
+        self._background_job_ui_depth = int(getattr(self, "_background_job_ui_depth", 0)) + 1
+        if self._background_job_ui_depth != 1:
+            return
+        cfg = load_config()
+        self._tool_progress_poll_timer.setInterval(int(cfg.background_job_poll_ms))
+
+    def _exit_background_job_ui(self) -> None:
+        self._background_job_ui_depth = max(0, int(getattr(self, "_background_job_ui_depth", 0)) - 1)
+        if self._background_job_ui_depth != 0:
+            return
+        ms = int(getattr(self, "_tool_progress_poll_interval_ms", 200))
+        self._tool_progress_poll_timer.setInterval(ms)
 
     def _finish_tool_progress(
         self,
@@ -1060,15 +1081,19 @@ class ChemicalTableApp(
         if total >= 0 and message:
             self._tool_progress_state.update(message, done, total)
         if total < 0:
-            if message:
-                self.status_label.setText(message)
+            text = message or ""
         else:
             dv = min(max(done, 0), total)
             pct = int(100 * dv / total) if total > 0 else 100
             if message:
-                self.status_label.setText(f"{message} — {dv}/{total} ({pct}%)")
+                text = f"{message} — {dv}/{total} ({pct}%)"
             else:
-                self.status_label.setText(f"{dv}/{total} ({pct}%)")
+                text = f"{dv}/{total} ({pct}%)"
+        if text and text == getattr(self, "_last_tool_progress_status", ""):
+            return
+        self._last_tool_progress_status = text
+        if text:
+            self.status_label.setText(text)
 
     def _on_partial_results_notice(self, tool_label: str, done: int, total: int) -> None:
         d = max(0, int(done))
