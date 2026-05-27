@@ -452,20 +452,32 @@ class SessionMixin:
             return False
         return True
 
+    def _abort_csv_session_load(self) -> None:
+        """Close an in-progress streamed session CSV load."""
+        ctx = getattr(self, "_csv_session_ctx", None)
+        if not ctx:
+            return
+        handle = ctx.get("file")
+        if handle is not None:
+            try:
+                handle.close()
+            except Exception:
+                pass
+        self._csv_session_ctx = None
+
     def load_session_csv(self, path: str) -> None:
-        """Load a session CSV exported by `_write_session_csv` (chunked on the GUI thread)."""
+        """Load a session CSV exported by `_write_session_csv` (streamed + chunked on the GUI thread)."""
         import csv
 
         self.clear_all()
         self._table_stack.setCurrentIndex(1)
         self.status_label.setText("Loading session…")
 
-        with open(path, "r", encoding="utf-8", errors="replace", newline="") as f:
-            reader = csv.DictReader(f)
-            cols = list(reader.fieldnames or [])
-            if "SMILES" not in cols:
-                cols = ["SMILES"] + cols
-            rows = list(reader)
+        f = open(path, "r", encoding="utf-8", errors="replace", newline="")
+        reader = csv.DictReader(f)
+        cols = list(reader.fieldnames or [])
+        if "SMILES" not in cols:
+            cols = ["SMILES"] + cols
 
         self.headers = ["ID_HIDDEN", "Structure"] + cols
         self.table.setSortingEnabled(False)
@@ -477,21 +489,17 @@ class SessionMixin:
         self.global_bounds = {}
         self.next_oid = 0
 
-        if not rows:
-            self._finalize_session_csv_load()
-            return
-
         self._session_load_generation = int(getattr(self, "_session_load_generation", 0)) + 1
         gen = self._session_load_generation
         chunk = max(64, load_config().ingest_gui_chunk_size)
         self._csv_session_ctx = {
             "gen": gen,
             "cols": cols,
-            "rows": rows,
-            "idx": 0,
+            "reader": reader,
+            "file": f,
             "chunk": chunk,
+            "loaded": 0,
         }
-        self.status_label.setText(f"Loading session… (0/{len(rows)} rows)")
         QTimer.singleShot(0, self._load_session_csv_step)
 
     def _load_session_csv_step(self) -> None:
@@ -499,14 +507,16 @@ class SessionMixin:
         if not ctx or ctx.get("gen") != getattr(self, "_session_load_generation", 0):
             return
         cols = ctx["cols"]
-        rows = ctx["rows"]
-        i = int(ctx["idx"])
+        reader = ctx["reader"]
         chunk = int(ctx["chunk"])
-        n = len(rows)
-        end = min(i + chunk, n)
         pack: list[tuple[int, dict[str, str]]] = []
-        for j in range(i, end):
-            row = rows[j]
+        done = False
+        for _ in range(chunk):
+            try:
+                row = next(reader)
+            except StopIteration:
+                done = True
+                break
             oid = self.next_oid
             self.next_oid += 1
             smi = (row.get("SMILES", "") or "").strip()
@@ -517,13 +527,20 @@ class SessionMixin:
                 self.mols[oid] = mol
         if pack:
             self._table_model.append_rows_batch(pack)
-        ctx["idx"] = end
-        self.status_label.setText(f"Loading session… ({end}/{n} rows)")
-        if end < n:
+            ctx["loaded"] = int(ctx.get("loaded", 0)) + len(pack)
+        loaded = int(ctx.get("loaded", 0))
+        self.status_label.setText(f"Loading session… ({loaded:,} rows)")
+        if not done:
             QTimer.singleShot(0, self._load_session_csv_step)
-        else:
-            self._csv_session_ctx = None
-            self._finalize_session_csv_load()
+            return
+        handle = ctx.get("file")
+        if handle is not None:
+            try:
+                handle.close()
+            except Exception:
+                pass
+        self._csv_session_ctx = None
+        self._finalize_session_csv_load()
 
     def _finalize_session_csv_load(self) -> None:
         self.calculate_global_bounds()

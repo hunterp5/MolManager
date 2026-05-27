@@ -114,13 +114,17 @@ python scripts/benchmark_large_table.py --runs 3 --scales 10000,50000,100000
 
 ### Project structure
 
-- `molmanager/app.py`: application entry point
-- `molmanager/ui/main_window/`: main window package (`ChemicalTableApp` composes session, table UI, ingest/export, and chemistry mixins)
-- `molmanager/ui/sketcher/widget_painting.py`: sketch canvas 2D rendering (mixed into `SketchWidget`)
-- `molmanager/ui/widgets.py`: small reusable widgets
-- `molmanager/ui/dialogs/`: tool dialogs (package; import from `molmanager.ui.dialogs` as before)
-- `molmanager/workers.py`: background workers (load/render/calc/export)
-- `physical_property_calculator.py`: original prototype (kept for compatibility during refactor)
+- `molmanager/app.py` — application entry point
+- `molmanager/ui/main_window/` — `ChemicalTableApp` and mixins (session, table, ingest, chemistry tools)
+- `molmanager/ui/compound_table_model.py` — table data model
+- `molmanager/ui/filter_proxy_model.py` — OID-based row visibility (filters)
+- `molmanager/ui/dialogs/` — tool dialogs
+- `molmanager/ui/plot.py` — Plotter (Plotly)
+- `molmanager/ui/plotly_interactive_view.py` — shared Plotly embed (PCA, dimred, radar)
+- `molmanager/ui/plot_table_sync.py` — table ↔ plot selection helpers
+- `molmanager/workers/` — background workers (render, export, cluster, pKa, …)
+- `molmanager/storage/` — SQLite table mirror for fast filters/search
+- `docs/ARCHITECTURE.md` — how the pieces fit together
 
 ### Stereochemistry and isomerism
 

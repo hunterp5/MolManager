@@ -510,7 +510,7 @@ class ChemistryMixin:
             self._sqlite_rebuild_in_progress = False
 
     def _schedule_sqlite_rebuild(self) -> None:
-        """Export on the UI thread, rebuild SQLite mirror in a background worker."""
+        """Export in UI chunks, then rebuild the SQLite mirror in a background worker."""
         store = getattr(self, "_sqlite_store", None)
         if store is None or self._sqlite_rebuild_in_progress:
             return
@@ -523,7 +523,6 @@ class ChemistryMixin:
         gen = self._sqlite_rebuild_gen
         self._sqlite_rebuild_in_progress = True
         data_headers = [h for h in self.headers[2:] if h and not self._table_model.is_pixmap_data_column(h)]
-        entries = self._table_model.export_rows_for_sqlite(data_headers)
         import os
         import tempfile
         from pathlib import Path
@@ -534,16 +533,54 @@ class ChemistryMixin:
         except OSError:
             pass
         self._sqlite_rebuild_pending_path = Path(db_path)
-        n = len(entries)
-        self.status_label.setText(f"Indexing table… ({n} rows)")
+        n_rows = self._table_model.rowCount()
         from ..background_jobs import register_background_job
 
         job_id = f"sqlite-rebuild-{gen}"
         self._sqlite_rebuild_bg_job_id = job_id
-        register_background_job(self, job_id, f"Indexing table ({n:,} rows)")
-        pool.start(
-            SqliteRebuildWorker(gen, list(self.headers), entries, db_path, sigs),
-        )
+        register_background_job(self, job_id, f"Indexing table ({n_rows:,} rows)")
+        chunk = max(500, load_config().ingest_gui_chunk_size)
+        self._sqlite_export_ctx = {
+            "gen": gen,
+            "data_headers": data_headers,
+            "entries": [],
+            "row_idx": 0,
+            "n_rows": n_rows,
+            "chunk": chunk,
+            "db_path": str(db_path),
+            "signals": sigs,
+        }
+        self.status_label.setText(f"Indexing table… (0/{n_rows:,} rows)")
+        QTimer.singleShot(0, self._sqlite_export_chunk_step)
+
+    def _sqlite_export_chunk_step(self) -> None:
+        ctx = getattr(self, "_sqlite_export_ctx", None)
+        if not ctx or ctx.get("gen") != getattr(self, "_sqlite_rebuild_gen", -1):
+            return
+        if not self._sqlite_rebuild_in_progress:
+            self._sqlite_export_ctx = None
+            return
+        data_headers = ctx["data_headers"]
+        row_idx = int(ctx["row_idx"])
+        n_rows = int(ctx["n_rows"])
+        chunk = int(ctx["chunk"])
+        end = min(row_idx + chunk, n_rows)
+        ctx["entries"].extend(self._table_model.export_rows_for_sqlite_slice(data_headers, row_idx, end))
+        ctx["row_idx"] = end
+        self.status_label.setText(f"Indexing table… ({end:,}/{n_rows:,} rows)")
+        if end < n_rows:
+            QTimer.singleShot(0, self._sqlite_export_chunk_step)
+            return
+        gen = int(ctx["gen"])
+        entries = ctx["entries"]
+        db_path = ctx["db_path"]
+        sigs = ctx["signals"]
+        self._sqlite_export_ctx = None
+        pool = getattr(self, "threadpool", None)
+        if pool is None:
+            self._sqlite_rebuild_in_progress = False
+            return
+        pool.start(SqliteRebuildWorker(gen, list(self.headers), entries, db_path, sigs))
 
     def _unregister_sqlite_rebuild_background_job(self, job_gen: int) -> None:
         from ..background_jobs import unregister_background_job
