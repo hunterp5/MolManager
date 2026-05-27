@@ -43,14 +43,25 @@ flowchart TB
 | `SessionMixin` | Open/save `.cms` sessions, CSV session import |
 | `TableUIMixin` | Selection, search, column UI, `clear_all` |
 | `IngestExportMixin` | File/SQL ingest, export |
-| `ChemistryMixin` | Tools menu: descriptors, conformers, render, filters prep, SQLite rebuild |
+| `ChemistryMixin` | Composite tools mixin (see sub-mixins below) |
 | `ClusterMixin` | Clustering dialogs |
 | `DimensionReductionMixin` | PCA / t-SNE / UMAP docking |
 | `MedChemSpaceMixin` | MedChem space plot |
 | `QsarMixin` | QSAR entry points |
 | `GuiSettingsMixin` | Persisted UI settings |
 
-**Note:** `ChemistryMixin` is large; future splits could move prepare/render/predict groups into separate mixins without changing behavior.
+`ChemistryMixin` composes (same MRO order):
+
+| Sub-mixin | Responsibility |
+|-----------|----------------|
+| `PlotToolsMixin` | Plot panel dock/undock, plot↔table sync hooks |
+| `IngestRenderMixin` | File ingest chunks, SQLite rebuild, 2D render batch |
+| `PrepareStructuresMixin` | Fast prepare, wash/neutralize, render-2D tools |
+| `ConformersDescriptorsMixin` | Conformers, superposition, descriptor calc |
+| `FragmentToolsMixin` | BRICS/RECAP/R-group fragment tools |
+| `ToolsSqlPredictMixin` | Calculator, SQL load, external DB, pKa/permeability |
+
+**Filter bounds:** bulk load/ingest calls `schedule_calculate_global_bounds()` (debounced); undo and session JSON restore call `calculate_global_bounds()` immediately when filter cards need fresh min/max.
 
 ## Table and visibility
 
@@ -74,7 +85,7 @@ Progress: `WorkerSignals.tool_progress` + `ToolProgressState` polling → bottom
 
 - **Plotter:** `ui/plot.py` (`PlotWidget`)
 - **PCA / radar / dimred:** `ui/plotly_interactive_view.py`
-- **Shared helpers:** `ui/plot_table_sync.py` (selection mapping, clear override)
+- **Shared helpers:** `ui/plot_table_sync.py` (selection mapping, clear override); `ui/plotly_shell.py` (interactive Plotly HTML/JS for Plotter + Plotly views)
 - **Table → plot:** debounced `_schedule_sync_active_plots_from_table_selection`
 - **Plot → table:** `apply_table_selection_for_source_rows`
 - **Filters / edits:** `_schedule_active_plots_replot` after filter apply; `dataChanged` on model for open plots

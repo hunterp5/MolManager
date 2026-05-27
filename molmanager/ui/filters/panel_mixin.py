@@ -129,7 +129,8 @@ class FilterPanelMixin:
             offset += len(recs)
         return frozenset(out)
 
-    def calculate_global_bounds(self):
+    def calculate_global_bounds(self) -> None:
+        """Scan all numeric columns and refresh filter/plot axis bounds (synchronous)."""
         self.global_bounds = self._table_model.numeric_bounds_by_column()
         data_cols = self._filterable_data_column_names()
         for f in self.filters:
@@ -140,6 +141,16 @@ class FilterPanelMixin:
         refresh_plot_axes = getattr(self, "_refresh_active_plot_axis_columns", None)
         if callable(refresh_plot_axes):
             refresh_plot_axes()
+
+    def schedule_calculate_global_bounds(self, *, delay_ms: int | None = None) -> None:
+        """Debounce full-table bounds scans after bulk load/ingest (keeps UI responsive)."""
+        timer = getattr(self, "_bounds_recalc_timer", None)
+        if timer is None:
+            return
+        cfg = load_config()
+        ms = int(delay_ms if delay_ms is not None else cfg.filter_debounce_default_ms)
+        timer.stop()
+        timer.start(max(0, ms))
 
     def _filters_include_substructure(self) -> bool:
         return any(
