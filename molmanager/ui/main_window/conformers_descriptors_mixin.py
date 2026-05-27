@@ -130,24 +130,21 @@ class ConformersDescriptorsMixin:
         )
 
     def cancel_active_tool_process(self) -> None:
-        """Request cooperative cancellation of the process-queue job, Render 2D, Boltz-2, and/or Vina."""
+        """Request cooperative cancellation of the process-queue job, Render 2D, and/or Smina."""
         r2d = self.cancel_render_2d_batch()
-        boltz = self.cancel_boltz2_predict()
-        vina = self.cancel_vina_dock()
+        smina = self.cancel_smina_dock()
         pq_ok = self.process_queue.cancel_running()
         if pq_ok:
             self.status_label.setText("Cancelling…")
         elif r2d:
             self.status_label.setText("Render 2D cancelled.")
-        elif boltz:
-            self.status_label.setText("Boltz-2 stopped.")
-        elif vina:
-            self.status_label.setText("Vina stopped.")
+        elif smina:
+            self.status_label.setText("Smina stopped.")
         else:
             QMessageBox.information(
                 self,
                 "Cancel Process",
-                "Nothing to cancel (no process-queue job, Render 2D batch, Boltz-2 run, or Vina run), "
+                "Nothing to cancel (no process-queue job, Render 2D batch, or Smina run), "
                 "or cancellation was already requested.",
             )
 

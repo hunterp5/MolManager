@@ -43,7 +43,7 @@ from ..compound_table_model import (
 from ..filter_proxy_model import FilterProxyModel
 from ..table_selection_delegate import RowHighlightDelegate
 from ..process_queue import ProcessQueueManager
-from ..user_guides import open_user_guide_dialog
+from ..user_guides import add_user_guide_menu_entries, open_user_guide_dialog
 from .cluster_mixin import ClusterMixin
 from .dimension_reduction_mixin import DimensionReductionMixin
 from .medchem_space_mixin import MedChemSpaceMixin
@@ -204,8 +204,7 @@ class ChemicalTableApp(
         self._pubchem_dialog = None
         self._chembl_dialog = None
         self._patent_query_dialog = None
-        self._boltz2_dialog = None
-        self._vina_dock_dialog = None
+        self._smina_dock_dialog = None
         self._export_busy = False
         self._export_prep = None
         self._render2d_queue = None
@@ -334,46 +333,24 @@ class ChemicalTableApp(
             cancel_event=cancel_event,
         )
 
-    def boltz2_predict_active(self) -> bool:
-        """True while Tools → Boltz-2 has a ``boltz predict`` subprocess running."""
-        dlg = getattr(self, "_boltz2_dialog", None)
+    def smina_dock_active(self) -> bool:
+        """True while Tools → Dock has a ``smina`` subprocess running."""
+        dlg = getattr(self, "_smina_dock_dialog", None)
         if dlg is None:
             return False
         try:
-            fn = getattr(dlg, "is_predict_running", None)
+            fn = getattr(dlg, "is_smina_running", None)
             return bool(fn()) if callable(fn) else False
         except RuntimeError:
             return False
 
-    def cancel_boltz2_predict(self) -> bool:
-        """Stop the Boltz-2 ``QProcess`` if the dialog exists and a run is active."""
-        dlg = getattr(self, "_boltz2_dialog", None)
+    def cancel_smina_dock(self) -> bool:
+        """Stop the Smina ``QProcess`` if the dialog exists and a run is active."""
+        dlg = getattr(self, "_smina_dock_dialog", None)
         if dlg is None:
             return False
         try:
-            fn = getattr(dlg, "cancel_predict", None)
-            return bool(fn()) if callable(fn) else False
-        except RuntimeError:
-            return False
-
-    def vina_dock_active(self) -> bool:
-        """True while Tools → Dock has a ``vina`` subprocess running."""
-        dlg = getattr(self, "_vina_dock_dialog", None)
-        if dlg is None:
-            return False
-        try:
-            fn = getattr(dlg, "is_vina_running", None)
-            return bool(fn()) if callable(fn) else False
-        except RuntimeError:
-            return False
-
-    def cancel_vina_dock(self) -> bool:
-        """Stop the Vina ``QProcess`` if the dialog exists and a run is active."""
-        dlg = getattr(self, "_vina_dock_dialog", None)
-        if dlg is None:
-            return False
-        try:
-            fn = getattr(dlg, "cancel_vina", None)
+            fn = getattr(dlg, "cancel_smina", None)
             return bool(fn()) if callable(fn) else False
         except RuntimeError:
             return False
@@ -748,15 +725,9 @@ class ChemicalTableApp(
                 None,
             ),
             (
-                "Boltz-2 prediction…",
-                self.open_boltz2,
-                "Run Boltz protein–ligand cofolding (boltz predict): supply YAML or use quick cofold with FASTA/paste.",
-                None,
-            ),
-            (
-                "Dock (Vina)…",
-                self.open_vina_dock,
-                "Run AutoDock Vina rigid docking: receptor/ligand PDBQT, search box, and log (install vina separately).",
+                "Dock (Smina)…",
+                self.open_smina_dock,
+                "Run Smina rigid docking: receptor/ligand PDBQT, search box, and log (install smina separately).",
                 None,
             ),
         ):
@@ -911,13 +882,19 @@ class ChemicalTableApp(
 
         self._init_settings_menu(mb)
 
-        act_help = self._bind_hotkey(
+        help_menu = mb.addMenu("&Help")
+        help_menu.setToolTipsVisible(True)
+        act_guides = self._bind_hotkey(
             "help.user_guides",
-            QAction("&Help", self, triggered=lambda: open_user_guide_dialog(self)),
+            QAction("&User guides…", self, triggered=lambda: open_user_guide_dialog(self)),
         )
-        act_help.setToolTip("Open user guides (pick a topic in the list, or press F1).")
-        mb.addAction(act_help)
-        self.addAction(act_help)
+        act_guides.setToolTip(
+            "Browse all help topics by category (sidebar). Press F1 from anywhere in the window."
+        )
+        help_menu.addAction(act_guides)
+        self.addAction(act_guides)
+        help_menu.addSeparator()
+        add_user_guide_menu_entries(help_menu, self)
 
         # Native Windows menu bars can swallow clicks meant for the corner widget; use in-window bar.
         if sys.platform == "win32":
@@ -1038,8 +1015,7 @@ class ChemicalTableApp(
             "_pubchem_dialog",
             "_chembl_dialog",
             "_patent_query_dialog",
-            "_boltz2_dialog",
-            "_vina_dock_dialog",
+            "_smina_dock_dialog",
         ):
             dlg = getattr(self, attr, None)
             if dlg is None:

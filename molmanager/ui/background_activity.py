@@ -1,4 +1,4 @@
-"""Unified signals and helpers for background work (process queue, Render 2D, Boltz-2, Vina, …)."""
+"""Unified signals and helpers for background work (process queue, Render 2D, Smina, …)."""
 
 from __future__ import annotations
 
@@ -11,7 +11,7 @@ class BackgroundActivityHub(QObject):
     """
     Single ``changed`` signal for anything that should refresh the Processes dialog
     or other observers. Relays ``ProcessQueueManager.snapshot_changed`` and accepts
-    explicit ``notify_changed()`` for activity outside the queue (e.g. Render 2D, Boltz-2, Vina).
+    explicit ``notify_changed()`` for activity outside the queue (e.g. Render 2D, Smina).
     """
 
     changed = pyqtSignal()
@@ -32,12 +32,8 @@ class BackgroundActivityHub(QObject):
         fn = getattr(self._app, "render2d_batch_active", None)
         return bool(fn()) if callable(fn) else False
 
-    def boltz2_predict_active(self) -> bool:
-        fn = getattr(self._app, "boltz2_predict_active", None)
-        return bool(fn()) if callable(fn) else False
-
-    def vina_dock_active(self) -> bool:
-        fn = getattr(self._app, "vina_dock_active", None)
+    def smina_dock_active(self) -> bool:
+        fn = getattr(self._app, "smina_dock_active", None)
         return bool(fn()) if callable(fn) else False
 
     def processes_view_rows(
@@ -77,13 +73,9 @@ class BackgroundActivityHub(QObject):
             rows.insert(0, ("Running", "(render-2d)", "Render 2D — drawing structures…"))
             metas.insert(0, {"kind": "render2d"})
 
-        if self.boltz2_predict_active():
-            rows.insert(0, ("Running", "(boltz2)", "Boltz-2 — boltz predict"))
-            metas.insert(0, {"kind": "boltz2"})
-
-        if self.vina_dock_active():
-            rows.insert(0, ("Running", "(vina)", "Dock (Vina) — vina"))
-            metas.insert(0, {"kind": "vina"})
+        if self.smina_dock_active():
+            rows.insert(0, ("Running", "(smina)", "Dock (Smina) — smina"))
+            metas.insert(0, {"kind": "smina"})
 
         for job_id, title in sorted((getattr(self._app, "_background_jobs", None) or {}).items()):
             rows.append(("Running", job_id, title))
@@ -111,17 +103,11 @@ class BackgroundActivityHub(QObject):
                 return (None, "Render 2D cancelled.")
             return (("Cancel", "Render 2D is not active."), None)
 
-        if kind == "boltz2":
-            cancel = getattr(app, "cancel_boltz2_predict", None)
+        if kind == "smina":
+            cancel = getattr(app, "cancel_smina_dock", None)
             if callable(cancel) and cancel():
-                return (None, "Boltz-2 stopped.")
-            return (("Cancel", "Boltz-2 is not running."), None)
-
-        if kind == "vina":
-            cancel = getattr(app, "cancel_vina_dock", None)
-            if callable(cancel) and cancel():
-                return (None, "Vina stopped.")
-            return (("Cancel", "Vina is not running."), None)
+                return (None, "Smina stopped.")
+            return (("Cancel", "Smina is not running."), None)
 
         if kind == "pq_running":
             run = pq.snapshot().get("running") if pq else None
@@ -162,10 +148,8 @@ class BackgroundActivityHub(QObject):
             app._invalidate_substructure_async_jobs()
         if hasattr(app, "cancel_render_2d_batch"):
             app.cancel_render_2d_batch()
-        if hasattr(app, "cancel_boltz2_predict"):
-            app.cancel_boltz2_predict()
-        if hasattr(app, "cancel_vina_dock"):
-            app.cancel_vina_dock()
+        if hasattr(app, "cancel_smina_dock"):
+            app.cancel_smina_dock()
         pq = getattr(app, "process_queue", None)
         if pq is not None:
             shutdown = getattr(pq, "shutdown_for_exit", None)

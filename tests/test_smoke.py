@@ -18,6 +18,22 @@ def test_user_guides_html_contains_topics():
     assert "PubChem" in h and "Tanimoto Similarity" in h
 
 
+def test_user_guides_sections_cover_all_topics():
+    from molmanager.ui.user_guides import GUIDE_MENU, GUIDE_SECTIONS, iter_guide_entries
+
+    flat = list(iter_guide_entries())
+    assert len(flat) == len(GUIDE_MENU)
+    assert {e.guide_id for e in flat} == {gid for gid, _ in GUIDE_MENU}
+    assert sum(len(s.entries) for s in GUIDE_SECTIONS) == len(flat)
+
+
+def test_user_guides_data_viz_topic():
+    from molmanager.ui.user_guides import guide_html
+
+    h = guide_html("data_viz")
+    assert "Principal Component" in h and "BOILED-Egg" in h
+
+
 def test_pubchem_similarity_results_sort_key():
     from molmanager.ui.external.pubchem import PubChemResult, _pubchem_similarity_sort_key
     from molmanager.ui.strings import COLUMN_TANIMOTO_SIMILARITY
@@ -62,17 +78,17 @@ def test_parse_molecule_from_cell_text_accepts_smiles_and_inchi():
     assert m2 is not None and m2.GetNumAtoms() == 3
 
 
-def test_vina_dock_guide_html(qapp):  # noqa: ARG001
+def test_smina_dock_guide_html(qapp):  # noqa: ARG001
     from molmanager.ui.user_guides import guide_html
 
-    h = guide_html("vina_dock")
-    assert "Vina" in h and "PDBQT" in h
+    h = guide_html("smina_dock")
+    assert "Smina" in h and "PDBQT" in h
 
 
-def test_vina_dock_dialog_constructible(qapp):  # noqa: ARG001
-    from molmanager.ui.vina_dock import VinaDockDialog
+def test_smina_dock_dialog_constructible(qapp):  # noqa: ARG001
+    from molmanager.ui.smina_dock import SminaDockDialog
 
-    d = VinaDockDialog(None)
+    d = SminaDockDialog(None)
     assert d.windowTitle()
     d.close()
 
@@ -164,16 +180,6 @@ def test_canonical_structure_keys_for_dedup(qapp):  # noqa: ARG001
     assert k
     assert k in w.existing_canonical_structure_keys()
     assert w.canonical_structure_key_from_smiles("C(C)") == k
-
-
-def test_parse_fasta_records() -> None:
-    from molmanager.ui.external.boltz2 import _parse_fasta_records
-
-    text = ">prot1 extra\nAC\n DE\n>sp|Q|x\nLL\n"
-    r = _parse_fasta_records(text)
-    assert len(r) == 2
-    assert r[0][0] == "prot1 extra" and r[0][1] == "ACDE"
-    assert r[1][1] == "LL"
 
 
 def test_data_analysis_outlier_masks() -> None:

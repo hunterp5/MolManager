@@ -1,9 +1,8 @@
-"""Modeless UI to run AutoDock Vina for rigid receptor–ligand docking."""
+"""Modeless UI to run Smina for rigid receptor–ligand docking."""
 
 from __future__ import annotations
 
 import shlex
-import shutil
 import time
 from pathlib import Path
 
@@ -31,21 +30,22 @@ from ..bundled_paths import default_external_executable
 from .qt_widget_utils import apply_monospace_to_text_edit, make_window_minimizable
 
 
-class VinaDockDialog(QDialog):
+class SminaDockDialog(QDialog):
     """
-    Front-end for the AutoDock Vina CLI.
+    Front-end for the Smina CLI (Vina-compatible docking with additional scoring options).
 
     Expects a rigid receptor and ligand in PDBQT format and a search box (center + size in Å).
-    Install Vina separately and ensure ``vina`` is on PATH, or set the executable path below.
+    Install Smina separately and ensure ``smina`` is on PATH, or set the executable path below.
     """
 
     def __init__(self, parent=None):
         super().__init__(parent)
         self._main_window = parent
-        self.setWindowTitle("Dock — AutoDock Vina")
+        self.setWindowTitle("Dock — Smina")
         self.setModal(False)
         self.setWindowModality(Qt.NonModal)
         self.resize(780, 640)
+
         self._proc = QProcess(self)
         self._proc.finished.connect(self._on_proc_finished)
         self._proc.readyReadStandardOutput.connect(self._append_stdout)
@@ -53,16 +53,16 @@ class VinaDockDialog(QDialog):
         self._proc.started.connect(self._on_proc_started)
         self._stdout_buf = ""
         self._stderr_buf = ""
+
         self._heartbeat = QTimer(self)
         self._heartbeat.setInterval(2000)
         self._heartbeat.timeout.connect(self._on_heartbeat)
 
         root = QVBoxLayout(self)
         intro = QLabel(
-            "<p><b>AutoDock Vina</b> scores docked poses in a user-defined box. "
+            "<p><b>Smina</b> is a Vina-compatible docking tool with additional options. "
             "Prepare rigid <b>receptor</b> and <b>ligand</b> as PDBQT (e.g. with MGLTools / "
-            "<code>prepare_receptor4.py</code>, <code>prepare_ligand4.py</code>, or Open Babel). "
-            "See the <a href=\"https://vina.scripps.edu\">Vina documentation</a> for details.</p>"
+            "<code>prepare_receptor4.py</code>, <code>prepare_ligand4.py</code>, or Open Babel).</p>"
         )
         intro.setWordWrap(True)
         intro.setOpenExternalLinks(True)
@@ -71,11 +71,11 @@ class VinaDockDialog(QDialog):
         root.addWidget(intro)
 
         exe_row = QHBoxLayout()
-        exe_row.addWidget(QLabel("Vina executable:"))
-        self.edit_exe = QLineEdit(default_external_executable("vina"))
+        exe_row.addWidget(QLabel("Smina executable:"))
+        self.edit_exe = QLineEdit(default_external_executable("smina"))
         self.edit_exe.setToolTip(
-            "Path to the vina binary. Uses molmanager/resources/bin/<platform>/vina when bundled, "
-            "otherwise PATH (e.g. C:\\Program Files\\vina\\vina.exe)."
+            "Path to the smina binary. Uses molmanager/resources/bin/<platform>/smina when bundled, "
+            "otherwise PATH (e.g. C:\\Program Files\\smina\\smina.exe)."
         )
         exe_row.addWidget(self.edit_exe, 1)
         root.addLayout(exe_row)
@@ -108,7 +108,7 @@ class VinaDockDialog(QDialog):
 
         self.edit_out = QLineEdit()
         self.edit_out.setPlaceholderText("Path for docked poses (e.g. out.pdbqt)")
-        self.edit_out.setToolTip("Vina writes docked ligand poses (PDBQT) here.")
+        self.edit_out.setToolTip("Smina writes docked ligand poses (PDBQT) here.")
         bo = QHBoxLayout()
         bo.addWidget(self.edit_out, 1)
         btn_o = QPushButton("Browse…")
@@ -174,12 +174,14 @@ class VinaDockDialog(QDialog):
         self.spin_cpu.setRange(0, 128)
         self.spin_cpu.setValue(0)
         self.spin_cpu.setSpecialValueText("auto")
-        self.spin_cpu.setToolTip("CPU threads for Vina; 0 / auto omits --cpu (Vina default).")
+        self.spin_cpu.setToolTip("CPU threads for Smina; 0 / auto omits --cpu (tool default).")
         opt_form.addRow("CPU threads:", self.spin_cpu)
 
         self.edit_wd = QLineEdit()
         self.edit_wd.setPlaceholderText("Optional working directory (empty = inherit)")
-        self.edit_wd.setToolTip("If set, Vina starts with this as the current directory (relative paths resolve here).")
+        self.edit_wd.setToolTip(
+            "If set, Smina starts with this as the current directory (relative paths resolve here)."
+        )
         opt_form.addRow("Working dir:", self.edit_wd)
 
         self.edit_extra = QLineEdit()
@@ -201,8 +203,8 @@ class VinaDockDialog(QDialog):
         root.addWidget(log_gb, 1)
 
         btn_row = QHBoxLayout()
-        self.btn_run = QPushButton("Run Vina")
-        self.btn_run.clicked.connect(self._run_vina)
+        self.btn_run = QPushButton("Run Smina")
+        self.btn_run.clicked.connect(self._run_smina)
         btn_row.addWidget(self.btn_run)
         self.btn_stop = QPushButton("Stop")
         self.btn_stop.setEnabled(False)
@@ -214,13 +216,13 @@ class VinaDockDialog(QDialog):
         btn_row.addWidget(close_btn)
         root.addLayout(btn_row)
 
-        QShortcut(QKeySequence("Ctrl+Return"), self, activated=self._run_vina)
+        QShortcut(QKeySequence("Ctrl+Return"), self, activated=self._run_smina)
         make_window_minimizable(self)
 
-    def is_vina_running(self) -> bool:
+    def is_smina_running(self) -> bool:
         return self._proc.state() != QProcess.NotRunning
 
-    def cancel_vina(self) -> bool:
+    def cancel_smina(self) -> bool:
         if self._proc.state() == QProcess.NotRunning:
             return False
         self._stop_proc()
@@ -240,9 +242,7 @@ class VinaDockDialog(QDialog):
             self.edit_receptor.setText(path)
 
     def _browse_ligand(self) -> None:
-        path, _ = QFileDialog.getOpenFileName(
-            self, "Ligand PDBQT", "", "PDBQT (*.pdbqt);;All files (*.*)"
-        )
+        path, _ = QFileDialog.getOpenFileName(self, "Ligand PDBQT", "", "PDBQT (*.pdbqt);;All files (*.*)")
         if path:
             self.edit_ligand.setText(path)
 
@@ -253,14 +253,22 @@ class VinaDockDialog(QDialog):
         if path:
             self.edit_out.setText(path)
 
-    def _vina_executable(self) -> str:
-        return (self.edit_exe.text() or "").strip() or "vina"
+    def _smina_executable(self) -> str:
+        return (self.edit_exe.text() or "").strip() or "smina"
 
     def _build_argv(self) -> list[str]:
         rec = (self.edit_receptor.text() or "").strip()
         lig = (self.edit_ligand.text() or "").strip()
         out = (self.edit_out.text() or "").strip()
-        args: list[str] = [
+        if not rec:
+            raise ValueError("Choose a receptor PDBQT file.")
+        if not lig:
+            raise ValueError("Choose a ligand PDBQT file.")
+        if not out:
+            raise ValueError("Set an output PDBQT path.")
+
+        # Smina uses Vina-compatible flags for common docking parameters.
+        argv = [
             "--receptor",
             rec,
             "--ligand",
@@ -268,144 +276,113 @@ class VinaDockDialog(QDialog):
             "--out",
             out,
             "--center_x",
-            f"{self.spin_cx.value():.6g}",
+            f"{self.spin_cx.value():.3f}",
             "--center_y",
-            f"{self.spin_cy.value():.6g}",
+            f"{self.spin_cy.value():.3f}",
             "--center_z",
-            f"{self.spin_cz.value():.6g}",
+            f"{self.spin_cz.value():.3f}",
             "--size_x",
-            f"{self.spin_sx.value():.6g}",
+            f"{self.spin_sx.value():.2f}",
             "--size_y",
-            f"{self.spin_sy.value():.6g}",
+            f"{self.spin_sy.value():.2f}",
             "--size_z",
-            f"{self.spin_sz.value():.6g}",
+            f"{self.spin_sz.value():.2f}",
             "--exhaustiveness",
             str(int(self.spin_exhaust.value())),
             "--num_modes",
             str(int(self.spin_modes.value())),
             "--energy_range",
-            f"{self.spin_energy_range.value():.6g}",
+            f"{self.spin_energy_range.value():.2f}",
         ]
         cpu = int(self.spin_cpu.value())
         if cpu > 0:
-            args.extend(["--cpu", str(cpu)])
+            argv.extend(["--cpu", str(cpu)])
         extra = (self.edit_extra.text() or "").strip()
         if extra:
-            try:
-                args.extend(shlex.split(extra, posix=False))
-            except ValueError:
-                args.extend(extra.split())
-        return args
+            argv.extend(shlex.split(extra))
+        return argv
 
-    def _run_vina(self) -> None:
+    def _stop_proc(self) -> None:
+        try:
+            self._proc.terminate()
+        except Exception:
+            pass
+        QTimer.singleShot(2500, self._kill_if_running)
+        self.progress.setText("Stopping…")
+
+    def _kill_if_running(self) -> None:
         if self._proc.state() != QProcess.NotRunning:
-            QMessageBox.information(self, "Dock", "A Vina run is already in progress.")
-            return
-        exe = self._vina_executable()
-        if shutil.which(exe) is None and not Path(exe).is_file():
-            self.log.append(f"Note: '{exe}' not found on PATH — the run may fail unless the path is correct.\n")
-
-        rec = (self.edit_receptor.text() or "").strip()
-        lig = (self.edit_ligand.text() or "").strip()
-        out = (self.edit_out.text() or "").strip()
-        if not rec or not lig or not out:
-            QMessageBox.warning(self, "Dock", "Set receptor, ligand, and output PDBQT paths.")
-            return
-        if not Path(rec).is_file():
-            QMessageBox.warning(self, "Dock", "Receptor file does not exist.")
-            return
-        if not Path(lig).is_file():
-            QMessageBox.warning(self, "Dock", "Ligand file does not exist.")
-            return
-        out_p = Path(out)
-        if not out_p.parent.is_dir():
-            QMessageBox.warning(self, "Dock", "Output directory does not exist.")
-            return
-
-        argv = self._build_argv()
-        cmd = [exe] + argv
-        stamp = time.strftime("%H:%M:%S")
-        self.log.append(f"[{stamp}][system] $ " + " ".join(cmd) + "\n")
-
-        self.btn_run.setEnabled(False)
-        self.btn_stop.setEnabled(True)
-        self._heartbeat.start()
-        self.progress.setText("Starting Vina…")
-        self._notify_activity()
-
-        env = QProcessEnvironment.systemEnvironment()
-        env.insert("PYTHONUNBUFFERED", "1")
-        self._proc.setProcessEnvironment(env)
-        wd = (self.edit_wd.text() or "").strip()
-        if wd:
-            self._proc.setWorkingDirectory(wd)
-        self._proc.setProgram(exe)
-        self._proc.setArguments(argv)
-        self._proc.start()
-
-    def _append_stream(self, channel: str, chunk: bytes) -> None:
-        if not chunk:
-            return
-        buf_attr = "_stdout_buf" if channel == "stdout" else "_stderr_buf"
-        buf = getattr(self, buf_attr) + chunk.decode("utf-8", errors="replace")
-        lines = buf.split("\n")
-        setattr(self, buf_attr, lines[-1])
-        for line in lines[:-1]:
-            line = line.rstrip("\r")
-            if not line.strip():
-                continue
-            stamp = time.strftime("%H:%M:%S")
-            self.log.append(f"[{stamp}][{channel}] {line}")
-
-    def _append_stdout(self) -> None:
-        self._append_stream("stdout", bytes(self._proc.readAllStandardOutput()))
-
-    def _append_stderr(self) -> None:
-        self._append_stream("stderr", bytes(self._proc.readAllStandardError()))
+            try:
+                self._proc.kill()
+            except Exception:
+                pass
 
     def _on_proc_started(self) -> None:
-        try:
-            pid = int(self._proc.pid())
-        except Exception:
-            pid = -1
+        self.btn_run.setEnabled(False)
+        self.btn_stop.setEnabled(True)
+        self._stdout_buf = ""
+        self._stderr_buf = ""
+        self._heartbeat.start()
+        pid = self._proc.processId()
         stamp = time.strftime("%H:%M:%S")
-        self.log.append(f"[{stamp}][system] Vina started (PID {pid}).")
-        self.progress.setText(f"Running Vina (PID {pid})…")
+        self.log.append(f"[{stamp}][system] Smina started (PID {pid}).")
+        self.progress.setText(f"Running Smina (PID {pid})…")
+        self._notify_activity()
+
+    def _on_proc_finished(self, code: int, status: QProcess.ExitStatus) -> None:  # noqa: ARG002
+        self.btn_run.setEnabled(True)
+        self.btn_stop.setEnabled(False)
+        self._heartbeat.stop()
+        stamp = time.strftime("%H:%M:%S")
+        self.log.append(f"[{stamp}][system] Smina finished (exit code {code}).")
+        self.progress.setText(f"Finished (exit code {code}).")
+        self._notify_activity()
+
+    def _append_stdout(self) -> None:
+        text = bytes(self._proc.readAllStandardOutput()).decode("utf-8", errors="replace")
+        self._stdout_buf += text
+        if text:
+            self.log.append(text.rstrip("\n"))
+
+    def _append_stderr(self) -> None:
+        text = bytes(self._proc.readAllStandardError()).decode("utf-8", errors="replace")
+        self._stderr_buf += text
+        if text:
+            self.log.append(text.rstrip("\n"))
 
     def _on_heartbeat(self) -> None:
         if self._proc.state() == QProcess.NotRunning:
-            self._heartbeat.stop()
+            return
+        pid = self._proc.processId()
+        self.progress.setText(f"Running Smina (PID {pid})…")
 
-    def _on_proc_finished(self, code: int = 0, _status: int = 0) -> None:
-        self._heartbeat.stop()
-        for ch, attr in (("stdout", "_stdout_buf"), ("stderr", "_stderr_buf")):
-            tail = (getattr(self, attr, "") or "").strip("\r\n")
-            setattr(self, attr, "")
-            if tail.strip():
-                stamp = time.strftime("%H:%M:%S")
-                self.log.append(f"[{stamp}][{ch}] {tail}")
-        self.btn_run.setEnabled(True)
-        self.btn_stop.setEnabled(False)
+    def _run_smina(self) -> None:
+        if self._proc.state() != QProcess.NotRunning:
+            QMessageBox.information(self, "Dock", "A Smina run is already in progress.")
+            return
+        try:
+            exe = self._smina_executable()
+            argv = self._build_argv()
+        except Exception as e:
+            QMessageBox.warning(self, "Dock", str(e))
+            return
+
+        env = QProcessEnvironment.systemEnvironment()
+        self._proc.setProcessEnvironment(env)
+
+        wd = (self.edit_wd.text() or "").strip()
+        if wd:
+            self._proc.setWorkingDirectory(str(Path(wd)))
+
         stamp = time.strftime("%H:%M:%S")
-        self.log.append(f"\n[{stamp}][system] Finished with exit code {code}.\n")
-        self.progress.setText(f"Finished — exit code {code}.")
+        self.log.append(f"[{stamp}][system] Launch: {exe} {' '.join(argv)}")
+        self.progress.setText("Starting Smina…")
         self._notify_activity()
+        self._proc.start(exe, argv)
 
-    def _stop_proc(self) -> None:
+    def closeEvent(self, event: QCloseEvent) -> None:  # noqa: N802
         if self._proc.state() != QProcess.NotRunning:
-            self._proc.kill()
-            self._heartbeat.stop()
-            stamp = time.strftime("%H:%M:%S")
-            self.log.append(f"\n[{stamp}][system] Stopped by user.\n")
-            self.progress.setText("Stopped.")
-        self.btn_run.setEnabled(True)
-        self.btn_stop.setEnabled(False)
-        self._notify_activity()
-
-    def closeEvent(self, event: QCloseEvent) -> None:
-        self._heartbeat.stop()
-        if self._proc.state() != QProcess.NotRunning:
-            self._proc.kill()
-            self._proc.waitForFinished(3000)
+            self._stop_proc()
         self._notify_activity()
         super().closeEvent(event)
+

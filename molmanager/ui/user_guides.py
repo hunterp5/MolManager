@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 from PyQt5.QtCore import Qt
+from PyQt5.QtGui import QFont
 from PyQt5.QtWidgets import (
     QAction,
     QDialog,
@@ -23,225 +25,451 @@ if TYPE_CHECKING:
     from PyQt5.QtWidgets import QWidget
 
 
-# (guide_id, short title for menus / list)
+@dataclass(frozen=True)
+class GuideEntry:
+    """One help topic: stable id, short menu label, sidebar label, and tooltip blurb."""
+
+    guide_id: str
+    menu_label: str
+    list_label: str
+    blurb: str
+
+
+@dataclass(frozen=True)
+class GuideSection:
+    """A group of related help topics (shown as a submenu and sidebar section)."""
+
+    title: str
+    entries: tuple[GuideEntry, ...]
+
+
+GUIDE_SECTIONS: tuple[GuideSection, ...] = (
+    GuideSection(
+        "Getting started",
+        (
+            GuideEntry(
+                "overview",
+                "Overview",
+                "Overview — how MolManager is organized",
+                "What the app does, where menus live, and how background work is shown.",
+            ),
+        ),
+    ),
+    GuideSection(
+        "Main window",
+        (
+            GuideEntry(
+                "file_menu",
+                "File",
+                "File — open, import, sessions, export",
+                "Load data, save your working session, and export rows or the full table.",
+            ),
+            GuideEntry(
+                "edit_menu",
+                "Edit",
+                "Edit — undo, clipboard, selection",
+                "Undo/redo, copy/paste, and row selection shortcuts.",
+            ),
+            GuideEntry(
+                "table",
+                "Table",
+                "Table — columns, filters, context menus",
+                "Sort columns, filter rows, and chemistry actions from cell menus.",
+            ),
+        ),
+    ),
+    GuideSection(
+        "Tools — structures",
+        (
+            GuideEntry(
+                "tools_chem",
+                "Prepare & descriptors",
+                "Prepare structures, descriptors, conformers",
+                "Fast prepare, neutralize, 2D render, RDKit descriptors, and conformer generation.",
+            ),
+            GuideEntry(
+                "smina_dock",
+                "Dock (Smina)",
+                "Dock (Smina) — rigid receptor–ligand docking",
+                "Run smina on PDBQT files with a defined search box; cancel from Processes.",
+            ),
+        ),
+    ),
+    GuideSection(
+        "Tools — analysis",
+        (
+            GuideEntry(
+                "tools_adv",
+                "Decomposition & modeling",
+                "R-group tools, fingerprints, QSAR",
+                "BRICS/RECAP, core decomposition, similarity columns, and QSAR models.",
+            ),
+            GuideEntry(
+                "tools_ion",
+                "Ionization & ADME",
+                "pKa, protomers, permeability",
+                "Microstate pKa, protomer enumeration, and permeability prediction.",
+            ),
+            GuideEntry(
+                "tools_filter",
+                "Filters & search",
+                "Filters, search panel, query syntax",
+                "Substructure and numeric filters plus multi-column in-table search.",
+            ),
+        ),
+    ),
+    GuideSection(
+        "Tools — visualization",
+        (
+            GuideEntry(
+                "tools_viz",
+                "Plotter & sketcher",
+                "Plotter, radar, calculator, sketcher",
+                "Interactive plots, radar charts, custom column formulas, and structure drawing.",
+            ),
+        ),
+    ),
+    GuideSection(
+        "Data menu",
+        (
+            GuideEntry(
+                "data",
+                "Analyze & cluster",
+                "Analyze Table and clustering",
+                "Column statistics, outliers, correlations, and fingerprint clustering.",
+            ),
+            GuideEntry(
+                "data_viz",
+                "Plots & embeddings",
+                "PCA, t-SNE, UMAP, medchem space",
+                "Dimensionality reduction and BOILED-Egg / golden-triangle plots.",
+            ),
+        ),
+    ),
+    GuideSection(
+        "External sources",
+        (
+            GuideEntry(
+                "sql",
+                "SQL database",
+                "SQL — load query or table results",
+                "Connect with SQLAlchemy and import rows (best with a SMILES column).",
+            ),
+            GuideEntry(
+                "pubchem",
+                "PubChem",
+                "PubChem — identity and similarity",
+                "Look up compounds or run 2D similarity searches against PubChem.",
+            ),
+            GuideEntry(
+                "chembl",
+                "ChEMBL",
+                "ChEMBL — identity, similarity, bioactivity",
+                "Resolve SMILES in ChEMBL and optionally pull activities or targets.",
+            ),
+            GuideEntry(
+                "patents",
+                "Patents",
+                "Patents — SureChEMBL similarity",
+                "Find patent-associated chemistry similar to your query structure.",
+            ),
+        ),
+    ),
+    GuideSection(
+        "Background work",
+        (
+            GuideEntry(
+                "processes",
+                "Processes",
+                "Processes — queue, cancel, Render 2D, Smina",
+                "See running and queued jobs; cancel cooperatively or stop external tools.",
+            ),
+        ),
+    ),
+)
+
+# Flat list for tests and legacy callers.
 GUIDE_MENU: list[tuple[str, str]] = [
-    ("overview", "Overview"),
-    ("file_menu", "File — open, import, session, export"),
-    ("edit_menu", "Edit — undo, clipboard, selection"),
-    ("table", "Table — columns, context menu, structures"),
-    ("tools_chem", "Tools — disconnect, 2D, descriptors, conformers"),
-    ("tools_adv", "Tools — superpose, core/fragment tools, FP similarity"),
-    ("tools_ion", "Tools — pKa, protomers"),
-    ("tools_filter", "Tools — filters and search"),
-    ("tools_viz", "Tools — browser, plot, calculator, sketcher"),
-    ("data", "Data — Analyze Table and cluster"),
-    ("processes", "Background jobs — Processes"),
-    ("sql", "External — SQL database"),
-    ("pubchem", "External — PubChem"),
-    ("chembl", "External — ChEMBL"),
-    ("patents", "External — Query Patents"),
-    ("boltz2", "Tools — Boltz-2"),
-    ("vina_dock", "Tools — Dock (Vina)"),
+    (entry.guide_id, entry.list_label) for section in GUIDE_SECTIONS for entry in section.entries
 ]
+
+
+def iter_guide_entries() -> list[GuideEntry]:
+    """All topics in menu order."""
+    out: list[GuideEntry] = []
+    for section in GUIDE_SECTIONS:
+        out.extend(section.entries)
+    return out
+
+
+def guide_entry(guide_id: str) -> GuideEntry | None:
+    for entry in iter_guide_entries():
+        if entry.guide_id == guide_id:
+            return entry
+    return None
+
 
 _GUIDE_HTML: dict[str, str] = {
     "overview": """
 <h2>MolManager overview</h2>
-<p>MolManager is a desktop compound table built on <b>PyQt5</b> and <b>RDKit</b>. Each row is a record;
-the <b>Structure</b> column shows 2D depictions when a structure is available. Most heavy work runs in
-the background so the window stays responsive.</p>
-<p><b>Where to find things</b></p>
+<p>MolManager is a desktop compound table for medicinal and computational chemistry. Each row is one
+compound (or record); the <b>Structure</b> column shows 2D depictions when RDKit can parse the chemistry.
+Long-running work runs in the background so the table stays usable on large sets.</p>
+<h3>Main menus</h3>
 <ul>
-<li><b>File</b> — open SD-type files, import data, save/load <b>sessions</b>, export the table, <b>Browser</b> for the current selection.</li>
-<li><b>Edit</b> — undo/redo, copy and paste cells or SMILES, delete selected rows, clear the table.</li>
-<li><b>Tools</b> — chemistry operations, <b>Calculator</b> and <b>Sketcher</b>, filters, in-table search, <b>Boltz-2</b> (<code>boltz predict</code>), and <b>Dock (Vina)</b> (<code>vina</code>); hover a menu item for a short description.</li>
-<li><b>Data</b> — analyze and cluster the table, PCA/t-SNE/UMAP, medchem plots, and the <b>Plotter</b> (bottom of the menu); hover a menu item for a short description.</li>
-<li><b>External</b> — SQL, PubChem, ChEMBL, patents (SureChEMBL).</li>
-<li><b>Help</b> — opens this guide (topics in the left list). <b>F1</b> does the same.</li>
-<li><b>Processes</b> (top-right of the menu bar) — modeless list of queued/running background jobs, Render 2D,
-an active Boltz-2 run, and an active Vina docking run.</li>
+<li><b>File</b> — open or import SD-type and related files, save/load <b>sessions</b>, export, and open the
+<b>Browser</b> for the current selection.</li>
+<li><b>Edit</b> — undo/redo, clipboard, delete rows, invert/clear selection, clear the table.</li>
+<li><b>Tools</b> — structure preparation, descriptors, conformers, decomposition, similarity, QSAR, pKa,
+permeability, protomers, filters, search, calculator, sketcher, and <b>Dock (Smina)</b>.</li>
+<li><b>Data</b> — <b>Analyze Table</b>, <b>Cluster</b>, PCA / t-SNE / UMAP, medchem plots (BOILED-Egg,
+golden triangle), <b>Radar Plot</b>, and the <b>Plotter</b> (dockable beside the table).</li>
+<li><b>External</b> — SQL, PubChem, ChEMBL, and patent chemistry (SureChEMBL).</li>
+<li><b>Help</b> (or <b>F1</b>) — grouped topics in this guide; menu tooltips summarize each command.</li>
 </ul>
-<p>The <b>status line</b> at the bottom of the main window shows short messages (including debounced Boltz-2 log lines).</p>
+<h3>Status and background work</h3>
+<p>The <b>status line</b> at the bottom reports progress for queued tools. <b>Processes</b> (top-right of the
+menu bar) lists the process queue, an active <b>Render 2D</b> batch, and an active <b>Smina</b> docking run.
+Use it to cancel or dequeue work without closing the app.</p>
+<p><b>Tip:</b> Hover any menu item for a short description of what it does before opening a dialog.</p>
 """,
     "file_menu": """
 <h2>File menu</h2>
-<p><b>Open File</b> (<b>Ctrl+O</b>) — load a supported table file into the current session (structures are parsed with RDKit where possible).</p>
-<p><b>Import Data</b> — append or merge from another file with column mapping options.</p>
-<p><b>Sessions</b> — <b>Open Session</b> / <b>Save Session</b> store the working table and related state so you can resume later.
-<b>New Session</b> clears and starts fresh (with confirmation if needed). <b>Duplicate Session</b> opens a second MolManager window with a copy of the data.</p>
-<p><b>Export All</b> (<b>Ctrl+S</b>) writes every row; <b>Export Selected</b> writes only the current selection. Pick format and columns in the export dialog.</p>
-<p><b>Browser</b> — review and operate on the current row selection in a dedicated dialog.</p>
+<p>Use <b>File</b> to bring data in, persist your session, and write results out. Structures are parsed with
+RDKit when possible; failed rows may still load as text.</p>
+<h3>Open and import</h3>
+<ul>
+<li><b>Open File</b> (<b>Ctrl+O</b>) — load a supported file into the current session (replaces or merges
+depending on the dialog).</li>
+<li><b>Import Data</b> — append or merge from another file with column mapping so fields align with your table.</li>
+</ul>
+<h3>Sessions</h3>
+<ul>
+<li><b>Open Session</b> / <b>Save Session</b> — restore or store the working table, columns, filters, and
+related UI state so you can resume later.</li>
+<li><b>New Session</b> — start empty (with confirmation if you have unsaved work).</li>
+<li><b>Duplicate Session</b> — open a second window with a copy of the current data.</li>
+</ul>
+<h3>Export and browser</h3>
+<ul>
+<li><b>Export All</b> (<b>Ctrl+S</b>) — every row; <b>Export Selected</b> — only highlighted rows. Choose format
+and columns in the export dialog.</li>
+<li><b>Browser</b> — review and operate on the current row selection in a dedicated window.</li>
+</ul>
 """,
     "edit_menu": """
 <h2>Edit menu</h2>
-<p><b>Undo / Redo</b> — standard stack for many table edits.</p>
-<p><b>Copy / Paste</b> — work on the current selection in the table (including SMILES-oriented paste where applicable).</p>
-<p><b>Delete Selection</b> (<b>Delete</b>) — remove selected rows.</p>
-<p><b>Invert Selection</b> — select every row that is not selected (whole table, including rows hidden by filters).</p>
-<p><b>Clear Selection</b> (<b>Ctrl+Shift+D</b>) — clear the cell/row highlight without deleting data.</p>
-<p><b>Clear Table</b> (<b>Ctrl+Shift+Backspace</b>) — remove all rows after confirmation.</p>
+<p>Standard editing for the compound table. Selection follows the visible (filtered) rows unless noted.</p>
+<ul>
+<li><b>Undo / Redo</b> — reverses many table edits (column changes, cell edits, row add/delete).</li>
+<li><b>Copy / Paste</b> — works on the current cell selection; SMILES-oriented paste is supported where applicable.</li>
+<li><b>Delete Selection</b> (<b>Delete</b>) — removes selected rows permanently.</li>
+<li><b>Invert Selection</b> — selects every row that is not currently selected (includes rows hidden by filters).</li>
+<li><b>Clear Selection</b> (<b>Ctrl+Shift+D</b>) — clears highlights without deleting data.</li>
+<li><b>Clear Table</b> (<b>Ctrl+Shift+Backspace</b>) — removes all rows after confirmation.</li>
+</ul>
 """,
     "table": """
-<h2>Table, columns, and context menus</h2>
-<p>Click column headers to sort (numeric vs alphabetic options appear from the header context menu where supported).
-Right-click a <b>column name</b> for <b>Select</b> (first row per distinct value, or empty cells;
-on <b>Structure</b>, empty means no chemical structure in the row), rename, duplicate, delete the column, search, or sort.</p>
-<p>Right-click a <b>cell</b> for copy/paste, edit value, clear, row duplicate/delete, and (on structure-capable columns)
-chemistry actions such as <b>Open in Sketcher</b>, <b>View Conformers</b>, <b>View in 3D</b>, <b>View in 2D</b>, and
-<b>Render 2D</b> (draws into the column you clicked, using that column’s chemistry).</p>
-<p>The <b>filter panel</b> on the right can be toggled from <b>Tools → Filter</b> or <b>Ctrl+Shift+L</b>. Filter cards
-restrict which rows stay visible; combine cards as needed. <b>Tools → Filter</b> also offers
-<b>Disable All Filters</b> and <b>Delete All Filters</b> at the bottom of the menu.</p>
+<h2>Table, columns, and filters</h2>
+<p>The grid is the center of the app. Column 0 (<b>ID_HIDDEN</b>) stores internal row IDs (OIDs); the
+<b>Structure</b> column shows 2D images when available.</p>
+<h3>Column header menu</h3>
+<p>Right-click a <b>column name</b> to sort, rename, duplicate, or delete the column; <b>Select</b> picks the
+first row per distinct value (on <b>Structure</b>, “empty” means no parseable structure). Use header menus for
+numeric vs text sort where supported.</p>
+<h3>Cell and row menus</h3>
+<p>Right-click a <b>cell</b> for copy/paste, edit, clear, duplicate/delete row, and chemistry actions on
+structure-capable columns: <b>Open in Sketcher</b>, <b>View Conformers</b>, <b>View in 3D</b> / <b>2D</b>,
+<b>Render 2D</b> (draws into the column you clicked).</p>
+<h3>Filter panel</h3>
+<p>Toggle with <b>Tools → Filter → Toggle Panel</b> or <b>Ctrl+Shift+L</b>. Cards restrict visible rows;
+combine substructure, numeric slider, text, and category filters. <b>Disable All Filters</b> turns cards off
+without deleting them; <b>Delete All Filters</b> removes every card.</p>
+<p>Plots and many tools use <b>visible (filtered) rows</b> unless a dialog offers “selected rows only”.</p>
 """,
     "tools_chem": """
-<h2>Tools — disconnect, 2D render, descriptors, conformers</h2>
-<p><b>Tools → Prepare Structures</b> — <b>Fast Prepare</b> (disconnect largest fragment, neutralize, then render 2D in one
-job), <b>Disconnect Largest Fragments</b> (split salts/multi-component entries; keep largest fragment), <b>Neutralize</b>
-(protonate/deprotonate to net charge 0), and <b>Render 2D</b> (batch 2D images for a chosen column; listed in
-<b>Processes</b> while active).</p>
-<p><b>Calculate Descriptors</b> — pick a structure column and descriptor categories (RDKit-backed drug-likeness,
-counts, fingerprint on-bits for the full RDKit set, etc.); optional <b>only selected rows</b>.</p>
-<p><b>Tools → Conformations</b> — <b>Generate Conformations</b> (ensembles in <b>confs</b>), <b>Generate Single Conformation</b>
-(one minimized geometry per row), and <b>Superpose Conformers</b> (align packed <b>confs</b> data).</p>
+<h2>Prepare structures, descriptors, and conformers</h2>
+<p>These tools read chemistry from a chosen structure column (or in-memory molecules) and write results back
+to the table or to packed <b>confs</b> data.</p>
+<h3>Tools → Prepare Structures</h3>
+<ul>
+<li><b>Fast Prepare</b> — disconnect largest fragment, neutralize, then batch <b>Render 2D</b> in one queued job.</li>
+<li><b>Disconnect Largest Fragments</b> — split salts and multi-component SMILES; keep the largest fragment.</li>
+<li><b>Neutralize</b> — adjust protonation toward net charge 0 for the dominant form.</li>
+<li><b>Render 2D</b> — batch 2D depictions for a column; appears in <b>Processes</b> while running.</li>
+</ul>
+<h3>Calculate Descriptors</h3>
+<p>Pick categories (Lipinski-style drug-likeness, atom/bond counts, fingerprint on-bits, LogD/LogS when
+pkasolver-backed descriptors are enabled, etc.). Scope can be all visible rows or <b>only selected rows</b>.
+New numeric columns are added to the right of the table.</p>
+<h3>Tools → Conformations</h3>
+<ul>
+<li><b>Generate Conformations</b> — ensembles stored in a <b>confs</b> column.</li>
+<li><b>Generate Single Conformation</b> — one minimized geometry per row.</li>
+<li><b>Superpose Conformers</b> — align structures already in <b>confs</b> (reference conformer, optional SMARTS).</li>
+</ul>
 """,
     "tools_adv": """
-<h2>Tools — superpose, core/fragment tools, fingerprint similarity</h2>
-<p><b>Superpose Conformers</b> — align conformers already stored for rows (packed <code>confs</code> data); tune reference
-conformer, heavy-atom-only, reflection, and optional SMARTS alignment.</p>
-<p><b>Tools → R-Group Decomposition</b> — <b>Core-Based Decomposition</b> (labeled core SMARTS/SMILES and substituent
-columns), <b>BRICS</b> / <b>RECAP Decomposition</b> (fragment SMILES columns with automatic 2D render), and
-<b>BRICS</b> / <b>RECAP Recomposition</b> (combinatorial products appended as new rows).</p>
-<p><b>Fingerprint Similarity</b> — pick from the full RDKit fingerprint set (Morgan/FCFP, RDK path, MACCS, atom pair,
-topological torsion, pattern, layered, Avalon when available, Gobbi pharmacophore, and related count variants),
-structure source, similarity metric (Tanimoto, Dice, or cosine), and output column name; set a query from a table
-row ID or SMILES. <b>Compute and Add Column</b> writes scores for all rows in scope (including the query row when
-it is in scope); rows without a parseable structure in scope show <b>N/A</b>.</p>
-<p><b>QSAR</b> — quantitative structure–activity modeling: pick an activity column (Y), any mix of numeric descriptor
-columns and/or 2D fingerprints (X), and a scikit-learn model (ridge, random forest, gradient boosting, logistic/SVM for
-classification). Train on labeled rows with hold-out and cross-validation metrics, then add predictions for in-scope
-rows as a new column.</p>
+<h2>Decomposition, similarity, and QSAR</h2>
+<h3>R-group decomposition (Tools → R-Group Decomposition)</h3>
+<ul>
+<li><b>Core-Based Decomposition</b> — labeled core SMARTS/SMILES and substituent columns per attachment point.</li>
+<li><b>BRICS</b> / <b>RECAP Decomposition</b> — retrosynthetic fragments as new SMILES columns (2D render optional).</li>
+<li><b>BRICS</b> / <b>RECAP Recomposition</b> — combine fragment columns into new product rows.</li>
+</ul>
+<h3>Fingerprint Similarity</h3>
+<p>Choose a fingerprint type (Morgan/FCFP, RDK path, MACCS, atom pair, topological torsion, pattern, and
+related variants), a query from row ID or SMILES, and Tanimoto/Dice/cosine. <b>Compute and Add Column</b>
+writes scores for all rows in scope; missing structures show <b>N/A</b>.</p>
+<h3>QSAR</h3>
+<p>Train regression or classification models: activity column (Y), numeric descriptors and/or 2D fingerprints (X),
+scikit-learn model (ridge, random forest, gradient boosting, logistic/SVM). Review hold-out and cross-validation
+metrics, then predict in-scope rows into a new column.</p>
 """,
     "tools_ion": """
-<h2>Tools — pKa and protomers</h2>
-<p><b>pKa Predictor</b> — microstate pKa estimates from a structure column or a single SMILES; optional filters for
-most basic / most acidic pKa; table scope can be limited to selected rows.</p>
-<p><b>Generate Protomers</b> — enumerate protonation states informed by the same engine, with approximate population
-weights at a chosen pH; results can be appended to the main table.</p>
-<p>Both tools run longer jobs through the <b>process queue</b>; watch progress in <b>Processes</b> and the status line.</p>
+<h2>Ionization and permeability</h2>
+<h3>pKa Predictor</h3>
+<p>Estimates microstate pKa values from a structure column or a single SMILES. Filter to most basic or most
+acidic sites; limit scope to selected rows for large tables. Runs through the <b>process queue</b>.</p>
+<h3>Generate Protomers</h3>
+<p>Enumerates protonation/tautomer states with approximate populations at a chosen pH; append results as new
+rows or review in the dialog.</p>
+<h3>Predict Permeability</h3>
+<p>Predicts Caco-2 and MDCK permeability / efflux-style endpoints when the optional Chemprop model stack is
+installed. Requires parseable structures in scope; progress appears in the status line and <b>Processes</b>.</p>
 """,
     "tools_filter": """
-<h2>Tools — filters and search</h2>
-<p><b>Tools → Filter</b> — <b>Add Substructure</b> (SMARTS), numeric <b>Slider</b>, <b>Text</b>, and <b>Category</b> cards.
-Use <b>Toggle Panel</b> or <b>Ctrl+Shift+L</b> to show or hide the filter sidebar.</p>
-<p><b>Search</b> (<b>Ctrl+F</b>) — in-table search on one or more columns (<b>Add</b> for another row;
-<b>AND</b>/<b>OR</b> between rows). Within a row, combine terms with <code>&amp;</code> (AND),
-<code>|</code> or comma (OR), e.g. <code>&gt;10 &amp; &lt;500</code> or <code>"eth*"|"prop*"</code>.
-Put string text in double or single quotes (e.g. <code>"sodium chloride"</code>) so commas and
-<code>&amp;</code>/<code>|</code> inside the text are not treated as operators. Unquoted terms are for
-numeric comparisons (<code>&gt;5</code>), <code>empty</code> / <code>not empty</code>, and similar operators.
-Use <code>NOT "text"</code>, <code>= "exact"</code>, and wildcards inside quotes (<code>"eth*"</code>).
-Substructure mode matches SMILES/SMARTS (<code>NOT</code> excludes a pattern; use parentheses if a
-SMARTS pattern contains <code>|</code>).</p>
+<h2>Filters and in-table search</h2>
+<h3>Filter cards (Tools → Filter)</h3>
+<ul>
+<li><b>Add Substructure</b> — SMARTS filter on a structure-capable column.</li>
+<li><b>Add Slider</b> — numeric range on a column.</li>
+<li><b>Add Text</b> — contains / equals style match.</li>
+<li><b>Add Category</b> — multi-select discrete values.</li>
+</ul>
+<p>Toggle the sidebar with <b>Toggle Panel</b> or <b>Ctrl+Shift+L</b>.</p>
+<h3>Search (Tools → Search, Ctrl+F)</h3>
+<p>Search one or more columns; <b>Add</b> builds another criterion row; choose <b>AND</b>/<b>OR</b> between rows.
+Within a row:</p>
+<ul>
+<li>Combine terms with <code>&amp;</code> (AND) or <code>|</code> / comma (OR), e.g. <code>&gt;10 &amp; &lt;500</code>.</li>
+<li>Quote strings: <code>"sodium chloride"</code> so commas and operators inside text are literal.</li>
+<li>Numeric comparisons (<code>&gt;5</code>), <code>empty</code> / <code>not empty</code>, <code>NOT "text"</code>,
+<code>= "exact"</code>, wildcards in quotes (<code>"eth*"</code>).</li>
+<li><b>Substructure</b> mode matches SMILES/SMARTS; use parentheses if SMARTS contains <code>|</code>.</li>
+</ul>
 """,
     "tools_viz": """
-<h2>Tools — plot, calculator, sketcher</h2>
-<p><b>Plotter</b> — pick a <b>Plot type</b> at the top (default <b>Scatter/Histogram</b>: histogram when only X is set, 2D/3D scatter from axes).
-Other types include line, heatmap, box, and violin.
-Choose numeric columns on X, Y, and Z; leave Y or Z as <b>None</b> when unused. Plots use visible (filtered) rows.</p>
-<p><b>Data → Radar Plot</b> — compare compounds on 2–6 numeric properties using spoke dropdowns.
-Use <b>Entry 1–6</b> row ID fields (OID or table row number) to plot specific compounds, or leave them empty to plot all rows in scope.
-Values are min–max normalized across the scope before drawing.
-Click a trace to select that row.</p>
-<p><b>Calculator</b> — keypad-style expression editor to build a new numeric column from existing columns (operators,
-sqrt, log10, exp, and <code>[ColumnName]</code> references). Can be disabled via environment/config
-(<code>MOLMANAGER_DISABLE_CUSTOM_CALC</code>).</p>
-<p><b>Sketcher</b> — draw or edit a structure modelessly; export to the table or to a file. Wildcard atom element sets
-are configurable from the sketcher tools.</p>
+<h2>Plotter, radar, calculator, and sketcher</h2>
+<h3>Plotter (Data → Plotter)</h3>
+<p>Open a modeless plot window or dock the panel beside the table (<b>Toggle Panel</b>, <b>Ctrl+Shift+P</b>).
+Choose <b>Plot type</b> (scatter/histogram by default, plus line, heatmap, box, violin). Map numeric columns to
+X, Y, Z; leave axes as <b>None</b> when unused. Uses <b>visible (filtered) rows</b>. Lasso/box selection in the
+plot can drive table row selection when sync is enabled.</p>
+<h3>Radar Plot (Data → Radar Plot)</h3>
+<p>Compare 2–6 numeric properties as a spider chart. Fill <b>Entry 1–6</b> with OIDs or row numbers, or leave
+empty to plot all rows in scope. Values are min–max normalized across scope; click a trace to select that row.</p>
+<h3>Calculator</h3>
+<p>Build a new numeric column from expressions referencing <code>[ColumnName]</code>, with sqrt, log10, exp, and
+standard operators. Can be disabled via <code>MOLMANAGER_DISABLE_CUSTOM_CALC</code>.</p>
+<h3>Sketcher</h3>
+<p>Draw or edit structures modelessly; send results to the table or export to a file. Wildcard element sets are
+configurable in the sketcher tools.</p>
 """,
     "data": """
-<h2>Data — analyze table and cluster</h2>
-<p><b>Analyze Table</b> — statistical summaries for numeric columns and overviews of categorical/text columns
-for the rows currently passing filters (optionally <b>only selected rows</b>). Includes correlation matrices, percentiles,
-<b>outlier detection</b> (IQR/Tukey, Z-score, or modified Z; then <b>Select in Table</b> to match the main selection), polynomial and simple non-linear curve fits,
-and common <b>statistical tests</b> (SciPy).</p>
-<p><b>Cluster</b> — cluster compounds by fingerprint (several algorithms and parameters). <b>Exploratory mode</b> samples
-many parameter combinations; review metrics, then apply a trial to add a cluster assignment column. Large tables:
-prefer K-means for very large <i>n</i>; Butina / Jarvis-Patrick paths scale quadratically in the number of compounds.</p>
+<h2>Analyze Table and clustering</h2>
+<h3>Analyze Table (Data → Analyze Table)</h3>
+<p>Statistical summaries for numeric columns and overviews of categorical/text columns for rows passing
+filters (optional <b>only selected rows</b>). Includes correlation matrices, percentiles, <b>outlier detection</b>
+(IQR, Z-score, modified Z) with <b>Select in Table</b>, curve fits, and common <b>statistical tests</b> when
+SciPy is available.</p>
+<h3>Cluster (Data → Cluster)</h3>
+<p>Cluster by fingerprint with several algorithms. <b>Exploratory mode</b> tries many parameter sets; review
+metrics, then apply a trial to add a cluster ID column. For very large tables prefer K-means; Butina /
+Jarvis–Patrick scale more steeply with compound count.</p>
+""",
+    "data_viz": """
+<h2>Embeddings and medchem property space</h2>
+<p>These plots use <b>visible (filtered) rows</b> unless the dialog limits scope to a selection. Click or lasso
+points to select matching rows in the table when plot sync is active.</p>
+<h3>Dimensionality reduction</h3>
+<ul>
+<li><b>Principal Component Analysis</b> — linear projection; choose descriptor columns and optional color-by column.</li>
+<li><b>t-SNE Visualization</b> — nonlinear 2D embedding (slower on large sets; subsampling may apply).</li>
+<li><b>UMAP Visualization</b> — alternative nonlinear embedding with tunable neighborhood parameters.</li>
+</ul>
+<h3>Medicinal chemistry plots</h3>
+<ul>
+<li><b>BOILED-Egg plot</b> — TPSA vs LogP with GIA (white) and BBB (yellow) regions for oral absorption / BBB context.</li>
+<li><b>Golden triangle plot</b> — molecular weight vs LogP with the drug-likeness triangle overlay.</li>
+</ul>
+<p>Color points by a numeric column to highlight property gradients across the set.</p>
 """,
     "processes": """
-<h2>Background jobs — Processes window</h2>
-<p>Open <b>Processes</b> from the top-right of the menu bar. The table lists:</p>
+<h2>Processes — background jobs</h2>
+<p>Open <b>Processes</b> from the top-right of the menu bar. The table lists active and queued work:</p>
 <ul>
-<li>The <b>process queue</b> job currently running (with cancel when the worker supports it) and any <b>queued</b> jobs.</li>
-<li><b>Render 2D</b> while a structure batch is drawing.</li>
-<li><b>Boltz-2</b> while <code>boltz predict</code> is running from <b>Tools → Boltz-2 prediction</b>.</li>
-<li><b>Dock (Vina)</b> while <code>vina</code> is running from <b>Tools → Dock (Vina)</b>.</li>
+<li><b>Process queue</b> — one running job (descriptor batches, clustering, import/export helpers, etc.) with
+<b>Cancel</b> when the worker supports cooperative cancellation; plus <b>queued</b> jobs waiting to start.</li>
+<li><b>Render 2D</b> — while a structure depiction batch is in progress.</li>
+<li><b>Dock (Smina)</b> — while <code>smina</code> is running from <b>Tools → Dock (Smina)</b>.</li>
 </ul>
-<p><b>Cancel</b> applies to the selected row (cooperative cancel for queue workers, stop Render 2D, kill Boltz-2 or Vina, or remove
-a queued job). <b>Clear queue</b> removes all waiting jobs without stopping the one currently running.</p>
+<p><b>Cancel</b> on a selected row stops that job type. <b>Clear queue</b> removes all waiting queue jobs without
+stopping the one currently executing. Closing the main window cancels queue work and terminates external
+tools where possible.</p>
 """,
     "sql": """
-<h2>External — load SQL data</h2>
-<p>Connect with a SQLAlchemy URL (SQLite, PostgreSQL, MySQL, SQL Server templates are provided).
-Choose either a <b>SQL query</b> or a <b>table name</b>, set row limits if needed, then load.</p>
-<p>Rows are easiest to map when the result includes a SMILES column; the app will try to detect
-structures from common column names.</p>
+<h2>External — SQL database</h2>
+<p>Connect with a <b>SQLAlchemy</b> URL (templates for SQLite, PostgreSQL, MySQL, and SQL Server are provided).
+Either run a <b>SQL query</b> or read a whole <b>table name</b>; set row limits for large sources.</p>
+<p>Imported rows map best when the result includes a <b>SMILES</b> (or similarly named) column; the app tries
+common column names to build structures automatically.</p>
 """,
     "pubchem": """
 <h2>External — PubChem</h2>
-<p><b>Identity</b> looks up each SMILES (or selected table rows) in PubChem via PubChemPy.</p>
-<p><b>Similarity (2D Tanimoto)</b> uses PubChem's fast 2D similarity search (one query SMILES, minimum
-Tanimoto, max hits). Hits below your minimum are dropped using the app's Morgan Tanimoto vs your query in
-<b>Tanimoto Similarity</b> (PubChem's server threshold can be looser than the value you set).</p>
-<p>Under <b>Retrieve fields</b>, checkboxes start unchecked—pick what you need, or use <b>Retrieve all fields</b>
-for the previous "everything on" behavior (slower / heavier requests).</p>
-<p>Use <b>Add unique structures only</b> to skip duplicates vs the table (canonical SMILES).</p>
+<h3>Identity</h3>
+<p>Look up each SMILES (or selected table rows) via PubChemPy and add returned fields as columns.</p>
+<h3>Similarity (2D)</h3>
+<p>One query SMILES, minimum Tanimoto, and max hits. Hits below your threshold may still be filtered using
+the app’s Morgan Tanimoto in <b>Tanimoto Similarity</b> (PubChem’s server cutoff can be looser than yours).</p>
+<h3>Options</h3>
+<p>Under <b>Retrieve fields</b>, enable only what you need—or <b>Retrieve all fields</b> for the heaviest
+request. <b>Add unique structures only</b> skips rows that match existing canonical SMILES in the table.</p>
 """,
     "chembl": """
 <h2>External — ChEMBL</h2>
-<p><b>Identity</b> resolves molecules by canonical SMILES through the ChEMBL web resource client.</p>
-<p><b>Similarity</b> uses ChEMBL's cartridge search (threshold 70–100 on their scale; values below 0.70
-are raised). Hits are ordered by <b>decreasing similarity</b>. Each hit can include <b>Tanimoto Similarity</b> from ChEMBL's similarity score.</p>
-<p>Optional activities and targets are off by default; enable them when needed (large similarity batches can be slow—
-reduce limits if needed). Under <b>Retrieve fields</b>, use <b>Retrieve all fields</b> to enable identity, structures,
-every molecule property, activities, targets, and the pChEMBL-only filter at once.</p>
-<p><b>Add unique structures only</b> avoids duplicate rows.</p>
+<h3>Identity</h3>
+<p>Resolve canonical SMILES through the ChEMBL web resource client and pull molecule properties.</p>
+<h3>Similarity</h3>
+<p>Cartridge search with threshold 70–100 on ChEMBL’s scale (values below 0.70 are raised). Hits sort by
+decreasing similarity; <b>Tanimoto Similarity</b> is stored when returned.</p>
+<h3>Activities and targets</h3>
+<p>Optional bioactivity and target fields are off by default—enable for smaller batches. <b>Retrieve all fields</b>
+turns on the full field set at once. <b>Add unique structures only</b> avoids duplicate rows.</p>
 """,
     "patents": """
 <h2>External — Query Patents (SureChEMBL)</h2>
-<p>Similarity search against <b>SureChEMBL</b> (EMBL-EBI): chemistry linked to patents and documents.
-Uses their server-side Tanimoto on RDKit Morgan fingerprints (see SureChEMBL documentation).</p>
-<p>Each hit includes <b>Tanimoto Similarity</b> from the service. Use <b>Add unique structures only</b> to
-avoid duplicates.</p>
+<p>Similarity search against <b>SureChEMBL</b> (EMBL-EBI): chemistry linked to patents and documents. Uses
+server-side Tanimoto on RDKit Morgan fingerprints.</p>
+<p>Each hit can include <b>Tanimoto Similarity</b>. Use <b>Add unique structures only</b> to skip structures
+already in the table.</p>
 """,
-    "boltz2": """
-<h2>Tools — Boltz-2 prediction</h2>
-<p>Runs the <code>boltz predict</code> command (install: <code>pip install boltz</code>; see upstream
-docs for GPU). Two modes:</p>
+    "smina_dock": """
+<h2>Tools — Dock (Smina)</h2>
+<p><b>Smina</b> performs rigid receptor–ligand docking in a user-defined box (Vina-compatible CLI flags).
+Install Smina and put <code>smina</code> on <code>PATH</code>, or set the executable path in the dialog
+(bundled binaries may live under <code>resources/bin/&lt;platform&gt;/</code> when shipped).</p>
+<h3>Inputs</h3>
 <ul>
-<li><b>YAML file</b> — input/output paths; MSA server, override, potentials, accelerator/devices; a scrollable
-<b>Predict tuning</b> section (recycling/sampling/diffusion steps, parallelism, model, MSA limits, affinity diffusion,
-optional checkpoints/cache, seeds, and diagnostic flags); plus optional extra CLI tokens appended as on the shell
-(use <code>boltz predict --help</code> for the full list).</li>
-<li><b>Quick cofold</b> — minimal protein sequence + ligand SMILES (sequence can be pasted or loaded from a
-<b>protein FASTA</b> file; first sequence is used if the file has several); optional affinity block; writes a
-temporary YAML and runs predict using the same tuning options from the YAML tab.</li>
+<li><b>Receptor</b> and <b>ligand</b> — PDBQT (e.g. from MGLTools <code>prepare_receptor4.py</code> /
+<code>prepare_ligand4.py</code> or Open Babel).</li>
+<li><b>Search box</b> — center (Å) and side lengths aligned with the receptor coordinate frame.</li>
+<li><b>Output</b> — PDBQT path for docked poses.</li>
 </ul>
-<p>While a job runs, the <b>command log</b> timestamps each stdout/stderr line, sets <code>PYTHONUNBUFFERED=1</code> for the child process,
-and shows a short <b>progress</b> line above the log. The <b>main window status line</b> still shows debounced snippets from Boltz output
-so you can see progress without keeping the Boltz-2 window focused. The same run appears in <b>Processes</b>
-as <b>(boltz2)</b>; you can stop it from there or with <b>Stop</b> in the Boltz-2 window. When the job ends, the status line
-reports the exit code.</p>
-<p>Official format and options: <a href="https://github.com/jwohlwend/boltz">github.com/jwohlwend/boltz</a></p>
-""",
-    "vina_dock": """
-<h2>Tools — Dock (AutoDock Vina)</h2>
-<p>Runs the <code>vina</code> command-line program for <b>rigid</b> receptor–ligand docking in a rectangular search box.
-Install Vina from the <a href="https://vina.scripps.edu">Scripps Vina</a> site (or your package manager) and ensure the binary is on <code>PATH</code>,
-or set the full path in the dialog.</p>
-<p>Provide <b>receptor</b> and <b>ligand</b> as PDBQT files (typically prepared with MGLTools / Open Babel). Set the box <b>center</b> and <b>size</b> (Å),
-output PDBQT path, and optional exhaustiveness, number of modes, energy range, and CPU count. <b>Run Vina</b> streams stdout/stderr into the log;
-<b>Stop</b> terminates the subprocess. The same run appears in <b>Processes</b> as <b>(vina)</b> while active.</p>
+<h3>Run and monitor</h3>
+<p>Optional exhaustiveness, number of modes, energy range, CPU threads, working directory, and extra CLI args.
+<b>Run Smina</b> streams stdout/stderr to the log; <b>Stop</b> kills the subprocess. The run appears in
+<b>Processes</b> as <b>(smina)</b>; cancel from there or from the dialog.</p>
 """,
 }
 
@@ -251,25 +479,53 @@ def guide_html(guide_id: str) -> str:
     return f"<html><body style='font-size:13px'>{body}</body></html>"
 
 
+def _populate_guide_list(lst: QListWidget, *, select_guide_id: str | None = None) -> None:
+    """Fill the sidebar with section headers and selectable topics."""
+    lst.clear()
+    select_row = 0
+    row = 0
+    header_font = QFont(lst.font())
+    header_font.setBold(True)
+
+    for section in GUIDE_SECTIONS:
+        header = QListWidgetItem(section.title)
+        header.setFlags(Qt.NoItemFlags)
+        header.setFont(header_font)
+        header.setForeground(lst.palette().mid())
+        lst.addItem(header)
+        row += 1
+
+        for entry in section.entries:
+            it = QListWidgetItem(entry.list_label)
+            it.setData(Qt.UserRole, entry.guide_id)
+            it.setToolTip(entry.blurb)
+            lst.addItem(it)
+            if select_guide_id and entry.guide_id == select_guide_id:
+                select_row = row
+            row += 1
+
+    lst.setCurrentRow(select_row)
+
+
 def open_user_guide_dialog(parent: QWidget | None, guide_id: str = "overview") -> None:
-    """Modal window with a topic list and HTML body."""
+    """Modal window with grouped topics in the sidebar and HTML body."""
     dlg = QDialog(parent)
-    dlg.setWindowTitle("MolManager — user guides")
-    dlg.resize(760, 520)
+    dlg.setWindowTitle("MolManager — Help")
+    dlg.resize(820, 560)
     outer = QVBoxLayout(dlg)
 
     content = QHBoxLayout()
     lst = QListWidget()
-    lst.setMinimumWidth(220)
-    for gid, title in GUIDE_MENU:
-        it = QListWidgetItem(title)
-        it.setData(Qt.UserRole, gid)
-        lst.addItem(it)
-    content.addWidget(lst)
+    lst.setMinimumWidth(260)
+    _populate_guide_list(lst, select_guide_id=guide_id)
 
     browser = QTextBrowser()
     browser.setOpenExternalLinks(True)
+    entry = guide_entry(guide_id)
     browser.setHtml(guide_html(guide_id))
+    if entry is not None:
+        dlg.setWindowTitle(f"MolManager — Help: {entry.menu_label}")
+    content.addWidget(lst)
     content.addWidget(browser, 1)
     outer.addLayout(content)
 
@@ -277,17 +533,14 @@ def open_user_guide_dialog(parent: QWidget | None, guide_id: str = "overview") -
         if current is None:
             return
         gid = current.data(Qt.UserRole)
-        if isinstance(gid, str):
-            browser.setHtml(guide_html(gid))
+        if not isinstance(gid, str):
+            return
+        browser.setHtml(guide_html(gid))
+        ent = guide_entry(gid)
+        if ent is not None:
+            dlg.setWindowTitle(f"MolManager — Help: {ent.menu_label}")
 
     lst.currentItemChanged.connect(on_pick)
-    for i in range(lst.count()):
-        it = lst.item(i)
-        if it is not None and it.data(Qt.UserRole) == guide_id:
-            lst.setCurrentItem(it)
-            break
-    else:
-        lst.setCurrentRow(0)
 
     close_btn = QPushButton("Close")
     close_btn.clicked.connect(dlg.accept)
@@ -297,8 +550,15 @@ def open_user_guide_dialog(parent: QWidget | None, guide_id: str = "overview") -
 
 
 def add_user_guide_menu_entries(menu: QMenu, parent: QWidget) -> None:
-    """Append one menu action per guide topic (opens the browser on that page)."""
-    for gid, title in GUIDE_MENU:
-        menu.addAction(
-            QAction(title, parent, triggered=lambda checked=False, g=gid: open_user_guide_dialog(parent, g))
-        )
+    """Append grouped submenus (one action per topic, with tooltips)."""
+    menu.setToolTipsVisible(True)
+    for section in GUIDE_SECTIONS:
+        sub = menu.addMenu(section.title)
+        sub.setToolTipsVisible(True)
+        for entry in section.entries:
+            act = QAction(entry.menu_label, parent)
+            act.setToolTip(entry.blurb)
+            act.triggered.connect(
+                lambda checked=False, g=entry.guide_id: open_user_guide_dialog(parent, g)
+            )
+            sub.addAction(act)

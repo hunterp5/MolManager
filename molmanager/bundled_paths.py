@@ -10,8 +10,7 @@ _PACKAGE_ROOT = Path(__file__).resolve().parent
 
 # Basenames searched under ``resources/bin/<platform>/`` (first match wins).
 _TOOL_BINARIES: dict[str, tuple[str, ...]] = {
-    "vina": ("vina.exe", "vina"),
-    "boltz": ("boltz.exe", "boltz"),
+    "smina": ("smina.exe", "smina"),
 }
 
 

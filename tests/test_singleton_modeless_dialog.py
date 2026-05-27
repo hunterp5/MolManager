@@ -1,4 +1,4 @@
-"""Modeless singleton helper (Boltz-2 / Processes tracking depends on correct reuse)."""
+"""Modeless singleton helper (Tools dialogs depend on correct reuse)."""
 
 from __future__ import annotations
 

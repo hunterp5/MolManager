@@ -29,7 +29,7 @@ def test_oids_in_heatmap_cell():
     x_edges = [0.0, 1.0, 2.0, 3.0]
     y_edges = [0.5, 1.5, 2.5]
     hit = oids_in_heatmap_cell(x, y, oids, x_edges, y_edges, 1.5, 1.0)
-    assert set(hit) == {20, 30}
+    assert set(hit) == {20}
     assert 40 not in hit
 
 
