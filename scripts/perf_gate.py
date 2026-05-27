@@ -12,6 +12,7 @@ from PyQt5.QtWidgets import QApplication
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from molmanager.ui.compound_table_model import CompoundTableModel
+from molmanager.ui.filter_proxy_model import FilterProxyModel
 
 
 def _build_rows(n_rows: int) -> list[tuple[int, dict[str, str]]]:
@@ -46,7 +47,20 @@ def _run_once(n_rows: int) -> dict[str, float]:
     t0 = time.perf_counter()
     model.sort(5)
     sort_ms = (time.perf_counter() - t0) * 1000.0
-    return {"ingest_ms": ingest_ms, "bounds_ms": bounds_ms, "sort_ms": sort_ms}
+
+    proxy = FilterProxyModel()
+    proxy.setSourceModel(model)
+    visible = frozenset(i for i in range(n_rows) if i % 2 == 0)
+    t0 = time.perf_counter()
+    proxy.set_visible_oids(visible)
+    filter_ms = (time.perf_counter() - t0) * 1000.0
+
+    return {
+        "ingest_ms": ingest_ms,
+        "bounds_ms": bounds_ms,
+        "sort_ms": sort_ms,
+        "filter_ms": filter_ms,
+    }
 
 
 def main() -> int:
@@ -54,18 +68,24 @@ def main() -> int:
     scale = 100_000
     runs = 2
     samples = [_run_once(scale) for _ in range(runs)]
+    keys = ("ingest_ms", "bounds_ms", "sort_ms", "filter_ms")
     p95 = {
         key: sorted(s[key] for s in samples)[min(runs - 1, int(round((runs - 1) * 0.95)))]
-        for key in ("ingest_ms", "bounds_ms", "sort_ms")
+        for key in keys
     }
-    avg = {key: statistics.fmean(s[key] for s in samples) for key in ("ingest_ms", "bounds_ms", "sort_ms")}
+    avg = {key: statistics.fmean(s[key] for s in samples) for key in keys}
     print(
         "perf_gate 100k "
-        + " ".join(f"{k}:avg={avg[k]:.1f}ms,p95={p95[k]:.1f}ms" for k in ("ingest_ms", "bounds_ms", "sort_ms"))
+        + " ".join(f"{k}:avg={avg[k]:.1f}ms,p95={p95[k]:.1f}ms" for k in keys)
     )
 
     # Generous CI thresholds to catch major regressions while avoiding runner flakiness.
-    limits = {"ingest_ms": 8000.0, "bounds_ms": 8000.0, "sort_ms": 4000.0}
+    limits = {
+        "ingest_ms": 8000.0,
+        "bounds_ms": 8000.0,
+        "sort_ms": 4000.0,
+        "filter_ms": 15000.0,
+    }
     failed = [k for k, lim in limits.items() if p95[k] > lim]
     if failed:
         print(
@@ -79,4 +99,3 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-

@@ -160,6 +160,22 @@ class ChemistryMixin:
             return
         timer.start(40)
 
+    def _replot_active_plots(self) -> None:
+        """Refresh plot data after filters or table edits change visible rows."""
+        for view in self._iter_active_plot_selection_views():
+            schedule = getattr(view, "_schedule_plot", None)
+            if callable(schedule):
+                try:
+                    schedule()
+                except RuntimeError:
+                    pass
+
+    def _schedule_active_plots_replot(self, *, delay_ms: int = 80) -> None:
+        timer = getattr(self, "_plot_replot_timer", None)
+        if timer is None:
+            return
+        timer.start(max(0, int(delay_ms)))
+
     def _prune_plot_dialogs(self) -> None:
         alive: list = []
         for dlg in getattr(self, "_plot_dialogs", []):
@@ -520,11 +536,25 @@ class ChemistryMixin:
         self._sqlite_rebuild_pending_path = Path(db_path)
         n = len(entries)
         self.status_label.setText(f"Indexing table… ({n} rows)")
+        from ..background_jobs import register_background_job
+
+        job_id = f"sqlite-rebuild-{gen}"
+        self._sqlite_rebuild_bg_job_id = job_id
+        register_background_job(self, job_id, f"Indexing table ({n:,} rows)")
         pool.start(
             SqliteRebuildWorker(gen, list(self.headers), entries, db_path, sigs),
         )
 
+    def _unregister_sqlite_rebuild_background_job(self, job_gen: int) -> None:
+        from ..background_jobs import unregister_background_job
+
+        job_id = getattr(self, "_sqlite_rebuild_bg_job_id", None)
+        if job_id == f"sqlite-rebuild-{job_gen}":
+            unregister_background_job(self, job_id)
+            self._sqlite_rebuild_bg_job_id = None
+
     def _on_sqlite_rebuild_finished(self, job_gen: int, db_path: str) -> None:
+        self._unregister_sqlite_rebuild_background_job(job_gen)
         if job_gen != getattr(self, "_sqlite_rebuild_gen", -1):
             return
         try:
@@ -555,6 +585,7 @@ class ChemistryMixin:
             self.status_label.setText(loaded_session_status(n_rows))
 
     def _on_sqlite_rebuild_failed(self, job_gen: int, msg: str) -> None:
+        self._unregister_sqlite_rebuild_background_job(job_gen)
         if job_gen != getattr(self, "_sqlite_rebuild_gen", -1):
             return
         logger.warning("SQLite rebuild failed: %s", msg)

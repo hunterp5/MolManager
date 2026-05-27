@@ -468,8 +468,20 @@ class MedChemPlotPanel(QWidget):
             "progress_state": self.parent_app._tool_progress_state,
             "progress_label": self._window_title,
         }
+        from ..background_jobs import register_background_job
+
+        self._bg_job_id = f"medchem-{id(self)}"
+        register_background_job(self.parent_app, self._bg_job_id, self._window_title)
         worker = MedChemSpaceWorker(params, self._medchem_signals)
         self.parent_app.threadpool.start(worker)
+
+    def _clear_medchem_background_job(self) -> None:
+        job_id = getattr(self, "_bg_job_id", None)
+        if job_id and self.parent_app is not None:
+            from ..background_jobs import unregister_background_job
+
+            unregister_background_job(self.parent_app, job_id)
+        self._bg_job_id = None
 
     def _start_refresh_job(self) -> None:
         self._on_refresh()
@@ -481,6 +493,7 @@ class MedChemPlotPanel(QWidget):
         self._begin_snapshot_collect()
 
     def _on_build_finished(self, result: object) -> None:
+        self._clear_medchem_background_job()
         self._set_refresh_ui_busy(False)
         if self.parent_app is not None:
             self.parent_app._finish_tool_progress(self._window_title)
@@ -519,6 +532,7 @@ class MedChemPlotPanel(QWidget):
             )
 
     def _on_build_failed(self, message: str) -> None:
+        self._clear_medchem_background_job()
         self._set_refresh_ui_busy(False)
         if self.parent_app is not None:
             self.parent_app._finish_tool_progress()
