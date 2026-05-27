@@ -267,8 +267,13 @@ class ChemicalTableApp(
             return
         self._on_tool_progress(message, done, total)
 
-    def _finish_tool_progress(self, message: str | None = None) -> None:
-        """Show 100% once, then stop polling."""
+    def _finish_tool_progress(
+        self,
+        message: str | None = None,
+        *,
+        status_message: str | None = "Ready.",
+    ) -> None:
+        """Show 100% once, then stop polling and optionally reset the status line."""
         msg, _done, total, active = self._tool_progress_state.snapshot()
         if active:
             stored = getattr(self, "_tool_progress_active_label", "") or ""
@@ -277,6 +282,8 @@ class ChemicalTableApp(
         self._tool_progress_state.end()
         self._tool_progress_active_label = ""
         self._tool_progress_poll_timer.stop()
+        if status_message is not None:
+            self.status_label.setText(status_message)
 
     def render2d_batch_active(self) -> bool:
         """True while Tools → Render 2D batch is running (sorting frozen, etc.)."""
@@ -1031,8 +1038,8 @@ class ChemicalTableApp(
 
     def _on_export_finished_message(self, message: str) -> None:
         self._export_busy = False
+        self._clear_tool_progress(status_message=None)
         self.status_label.setText(message)
-        self._clear_tool_progress()
 
     def _on_tool_progress(self, message: str, done: int, total: int) -> None:
         if total >= 0 and message:
@@ -1058,10 +1065,14 @@ class ChemicalTableApp(
         self._partial_results_notice = None
         return note
 
-    def _clear_tool_progress(self) -> None:
+    def _clear_tool_progress(self, *, status_message: str | None = "Ready.") -> None:
+        """Stop polled tool progress; reset status line unless ``status_message`` is ``None``."""
         self._tool_progress_state.end()
+        self._tool_progress_active_label = ""
         if self._tool_progress_poll_timer.isActive():
             self._tool_progress_poll_timer.stop()
+        if status_message is not None:
+            self.status_label.setText(status_message)
 
     def _on_table_double_clicked(self, index) -> None:
         if index.isValid():

@@ -230,14 +230,18 @@ class TableUIMixin(TableSearchMixin, FilterPanelMixin):
         self._table_model.set_highlighted_oids(override)
         self._repaint_table_selection_viewport()
 
+    def _schedule_plot_sync_after_programmatic_selection(self) -> None:
+        """Sync plot highlights after search / analysis / other programmatic table selection."""
+        schedule = getattr(self, "_schedule_sync_active_plots_from_table_selection", None)
+        if callable(schedule):
+            schedule()
+
     def _on_user_table_selection_changed(self, *_args) -> None:
         if getattr(self, "_in_programmatic_table_selection", False):
             return
         self._selected_oids_override = None
         self._sync_table_selection_highlight()
-        schedule = getattr(self, "_schedule_sync_active_plots_from_table_selection", None)
-        if callable(schedule):
-            schedule()
+        self._schedule_plot_sync_after_programmatic_selection()
 
     def select_table_rows(
         self,
@@ -335,6 +339,7 @@ class TableUIMixin(TableSearchMixin, FilterPanelMixin):
         self.table.setSelectionBehavior(prev_behavior)
         self._sync_table_selection_highlight()
         self._refresh_table_selection_visual(source_rows)
+        self._schedule_plot_sync_after_programmatic_selection()
         return len(source_rows)
 
     def _finish_oid_override_selection(
@@ -360,6 +365,7 @@ class TableUIMixin(TableSearchMixin, FilterPanelMixin):
         self._refresh_table_selection_visual(anchor)
         n = len(oids)
         self._report_table_selection_status(n, extra=extra_status, pump=True)
+        self._schedule_plot_sync_after_programmatic_selection()
         return n
 
     def _start_chunked_oid_selection(
@@ -511,6 +517,7 @@ class TableUIMixin(TableSearchMixin, FilterPanelMixin):
         self._sync_table_selection_highlight()
         self._refresh_table_selection_visual(source_rows)
         self._report_table_selection_status(len(source_rows), pump=True)
+        self._schedule_plot_sync_after_programmatic_selection()
 
     def _apply_table_row_selection(
         self,
