@@ -271,8 +271,21 @@ class CompoundTableModel(QAbstractTableModel):
 
     def export_rows_for_sqlite(self, data_headers: list[str]) -> list[tuple[int, dict[str, str]]]:
         """Bulk export text columns for the SQLite mirror (avoids per-cell lookup)."""
+        return self.export_rows_for_sqlite_slice(data_headers, 0, len(self._rows))
+
+    def export_rows_for_sqlite_slice(
+        self,
+        data_headers: list[str],
+        start_row: int,
+        end_row: int,
+    ) -> list[tuple[int, dict[str, str]]]:
+        """Export a row slice ``[start_row, end_row)`` for chunked SQLite indexing."""
+        n = len(self._rows)
+        lo = max(0, int(start_row))
+        hi = min(n, int(end_row))
         out: list[tuple[int, dict[str, str]]] = []
-        for row in self._rows:
+        for r in range(lo, hi):
+            row = self._rows[r]
             cells = {h: str(row.values.get(h, "") or "") for h in data_headers}
             out.append((int(row.oid), cells))
         return out

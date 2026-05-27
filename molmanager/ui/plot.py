@@ -85,6 +85,18 @@ from ..plot_color import (
 from ..medchem_space import snapshot_scope_row_indices
 from ..plot_heatmap import build_heatmap_figure, oids_in_heatmap_cell, summarize_heatmap
 from .plot_color_range_controls import PlotColorRangeControls
+from .plot_table_sync import (
+    apply_table_selection_for_source_rows,
+    clear_table_selection_from_plot,
+    point_indices_for_oids,
+    source_rows_for_point_indices,
+)
+from .plot_table_sync import (
+    apply_table_selection_for_source_rows,
+    clear_table_selection_from_plot,
+    point_indices_for_oids,
+    source_rows_for_point_indices,
+)
 from ..utils import safe_float
 from .qt_widget_utils import apply_monospace_to_text_edit, make_window_minimizable
 
@@ -485,6 +497,7 @@ class PlotWidget(QWidget):
             model = parent_app._table_model
             model.rowsRemoved.connect(self._on_table_rows_changed)
             model.rowsInserted.connect(self._on_table_rows_changed)
+            model.dataChanged.connect(self._on_table_data_changed)
             model.modelReset.connect(self._on_table_model_reset)
             model.columnsInserted.connect(self._on_table_columns_changed)
             model.columnsRemoved.connect(self._on_table_columns_changed)
@@ -494,6 +507,10 @@ class PlotWidget(QWidget):
         """Refresh plot when rows are added or removed."""
         if self._selected_point_indices:
             self._clear_plot_table_selection(update_plot=False)
+        self._schedule_plot()
+
+    def _on_table_data_changed(self, *_args) -> None:
+        """Refresh plot when cell values change (filters, descriptors, edits)."""
         self._schedule_plot()
 
     def _on_table_model_reset(self, *_args) -> None:
@@ -1219,9 +1236,7 @@ class PlotWidget(QWidget):
         if not self._supports_scatter_selection():
             return
         selected = self.parent_app._selected_oids_set()
-        self._selected_point_indices = {
-            i for i, oid in enumerate(self._plotted_oids) if int(oid) in selected
-        }
+        self._selected_point_indices = point_indices_for_oids(self._plotted_oids, selected)
         self._arm_ignore_plot_clear()
         self._sync_plot_selection_visual()
 
@@ -1235,9 +1250,7 @@ class PlotWidget(QWidget):
     def _clear_plot_table_selection(self, *, update_plot: bool = True) -> None:
         self._selected_point_indices = set()
         self._ignore_plot_clear_until = 0.0
-        table = self.parent_app.table
-        table.clearSelection()
-        table.viewport().update()
+        clear_table_selection_from_plot(self.parent_app)
         if update_plot:
             self._sync_plot_selection_visual()
 
@@ -1712,62 +1725,11 @@ class PlotWidget(QWidget):
         self._select_rows_for_source_rows(source_rows)
 
     def _select_rows_for_point_indices(self, point_indices: list[int]) -> None:
-        oids: list[int] = []
-        for idx in point_indices:
-            if 0 <= idx < len(self._plotted_oids):
-                oids.append(int(self._plotted_oids[idx]))
-        if not oids:
-            return
-        self._select_rows_for_oids(oids)
+        source_rows = source_rows_for_point_indices(self.parent_app, self._plotted_oids, point_indices)
+        apply_table_selection_for_source_rows(self.parent_app, source_rows)
 
     def _select_rows_for_source_rows(self, source_rows: list[int]) -> None:
-        if not source_rows:
-            return
-        source_model = self.parent_app._table_model
-        sm = self.parent_app.table.selectionModel()
-        if sm is None:
-            return
-        view_model = self.parent_app.table.model()
-        proxy = getattr(self.parent_app, "_filter_proxy_model", None)
-        use_proxy = proxy is not None and view_model is proxy
-        col_last = max(view_model.columnCount() - 1, 0)
-        view_rows: list[int] = []
-        if use_proxy:
-            for src_r in source_rows:
-                pidx = proxy.mapFromSource(source_model.index(src_r, 0))
-                if pidx.isValid():
-                    view_rows.append(pidx.row())
-        else:
-            view_rows = source_rows
-        if not view_rows:
-            return
-        view_rows = sorted(set(view_rows))
-        selection = QItemSelection()
-        i = 0
-        while i < len(view_rows):
-            lo = hi = view_rows[i]
-            while i + 1 < len(view_rows) and view_rows[i + 1] == hi + 1:
-                i += 1
-                hi = view_rows[i]
-            selection.select(view_model.index(lo, 0), view_model.index(hi, col_last))
-            i += 1
-        self.parent_app.table.setUpdatesEnabled(False)
-        try:
-            sm.select(selection, QItemSelectionModel.ClearAndSelect | QItemSelectionModel.Rows)
-        finally:
-            self.parent_app.table.setUpdatesEnabled(True)
-        anchor_col = 1 if col_last > 1 else 0
-        idx = view_model.index(view_rows[0], anchor_col)
-        sm.setCurrentIndex(idx, QItemSelectionModel.NoUpdate)
-        self.parent_app.table.scrollTo(idx, QAbstractItemView.PositionAtCenter)
-        QTimer.singleShot(
-            0,
-            lambda: (
-                self.parent_app.activateWindow(),
-                self.parent_app.table.setFocus(Qt.OtherFocusReason),
-                self.parent_app.table.viewport().update(),
-            ),
-        )
+        apply_table_selection_for_source_rows(self.parent_app, source_rows)
 
     def _on_plot_point_clicked(self, point_index: int) -> None:
         if point_index < 0:

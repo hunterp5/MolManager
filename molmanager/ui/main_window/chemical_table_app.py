@@ -250,6 +250,7 @@ class ChemicalTableApp(
         self._sqlite_rebuild_signals.finished.connect(self._on_sqlite_rebuild_finished, _qc)
         self._sqlite_rebuild_signals.failed.connect(self._on_sqlite_rebuild_failed, _qc)
         self._wire_sqlite_store_dirty_tracking()
+        self._wire_table_plot_refresh()
         self._tool_progress_state = ToolProgressState()
         self._tool_progress_poll_timer = QTimer(self)
         self._tool_progress_poll_timer.setInterval(cfg.tool_progress_poll_ms)
@@ -932,6 +933,13 @@ class ChemicalTableApp(
         self._processes_dialog = w
         w.destroyed.connect(self._on_processes_dialog_destroyed)
         w.show()
+
+    def _wire_table_plot_refresh(self) -> None:
+        """Replot open Plotly views when table cell data changes."""
+        model = getattr(self, "_table_model", None)
+        if model is None:
+            return
+        model.dataChanged.connect(lambda *_args: self._schedule_active_plots_replot())
 
     def _wire_sqlite_store_dirty_tracking(self) -> None:
         model = getattr(self, "_table_model", None)

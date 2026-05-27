@@ -9,9 +9,9 @@ import webbrowser
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from PyQt5.QtCore import QObject, QItemSelection, QItemSelectionModel, Qt, QTimer, QUrl, pyqtSlot
+from PyQt5.QtCore import QObject, Qt, QTimer, QUrl, pyqtSlot
 from PyQt5.QtWebChannel import QWebChannel
-from PyQt5.QtWidgets import QAbstractItemView, QSizePolicy, QVBoxLayout, QWidget
+from PyQt5.QtWidgets import QSizePolicy, QVBoxLayout, QWidget
 from plotly import graph_objects as go
 from plotly.offline import get_plotlyjs
 
@@ -75,7 +75,13 @@ class PlotlyInteractiveView(QWidget):
         self._selected_point_indices = {
             i for i in self._selected_point_indices if 0 <= i < len(self.plotted_oids)
         }
-        from .plotly_html import figure_payload_json
+        from .plot_table_sync import (
+    apply_table_selection_for_source_rows,
+    clear_table_selection_from_plot,
+    point_indices_for_oids as _point_indices_for_oids,
+    source_rows_for_point_indices,
+)
+from .plotly_html import figure_payload_json
 
         self._pending_payload_json = figure_payload_json(fig)
         self._last_browser_opened_path = None
@@ -85,9 +91,7 @@ class PlotlyInteractiveView(QWidget):
 
     def point_indices_for_oids(self, oids: set[int] | frozenset[int]) -> set[int]:
         """Map table OIDs to scatter point indices in the current figure."""
-        if not self.plotted_oids or not oids:
-            return set()
-        return {i for i, oid in enumerate(self.plotted_oids) if int(oid) in oids}
+        return _point_indices_for_oids(self.plotted_oids, oids)
 
     def select_oids(self, oids: set[int] | frozenset[int] | list[int]) -> int:
         """Select table rows (and plot points) for the given OIDs. Returns rows selected."""
@@ -106,7 +110,7 @@ class PlotlyInteractiveView(QWidget):
         if not self.plotted_oids or self.parent_app is None:
             return
         selected = self.parent_app._selected_oids_set()
-        self._selected_point_indices = self.point_indices_for_oids(selected)
+        self._selected_point_indices = _point_indices_for_oids(self.plotted_oids, selected)
         self._arm_ignore_plot_clear()
         self.sync_selection_visual()
 
@@ -120,11 +124,8 @@ class PlotlyInteractiveView(QWidget):
     def clear_table_selection(self, *, update_plot: bool = True) -> None:
         self._selected_point_indices = set()
         self._ignore_plot_clear_until = 0.0
-        if self.parent_app is None:
-            return
-        table = self.parent_app.table
-        table.clearSelection()
-        table.viewport().update()
+        if self.parent_app is not None:
+            clear_table_selection_from_plot(self.parent_app)
         if update_plot:
             self.sync_selection_visual()
 
@@ -348,63 +349,8 @@ class PlotlyInteractiveView(QWidget):
     def _select_rows_for_point_indices(self, point_indices: list[int]) -> None:
         if self.parent_app is None:
             return
-        source_rows: list[int] = []
-        for idx in point_indices:
-            if idx < 0 or idx >= len(self.plotted_oids):
-                continue
-            oid = int(self.plotted_oids[idx])
-            row = self.parent_app.get_row_by_id(oid)
-            if row >= 0:
-                source_rows.append(int(row))
-        if not source_rows:
-            return
-        source_rows = sorted(set(source_rows))
-        source_model = self.parent_app._table_model
-        sm = self.parent_app.table.selectionModel()
-        if sm is None:
-            return
-        view_model = self.parent_app.table.model()
-        proxy = getattr(self.parent_app, "_filter_proxy_model", None)
-        use_proxy = proxy is not None and view_model is proxy
-        col_last = max(view_model.columnCount() - 1, 0)
-        view_rows: list[int] = []
-        if use_proxy:
-            for src_r in source_rows:
-                pidx = proxy.mapFromSource(source_model.index(src_r, 0))
-                if pidx.isValid():
-                    view_rows.append(pidx.row())
-        else:
-            view_rows = source_rows
-        if not view_rows:
-            return
-        view_rows = sorted(set(view_rows))
-        selection = QItemSelection()
-        i = 0
-        while i < len(view_rows):
-            lo = hi = view_rows[i]
-            while i + 1 < len(view_rows) and view_rows[i + 1] == hi + 1:
-                i += 1
-                hi = view_rows[i]
-            selection.select(view_model.index(lo, 0), view_model.index(hi, col_last))
-            i += 1
-        table = self.parent_app.table
-        table.setUpdatesEnabled(False)
-        try:
-            sm.select(selection, QItemSelectionModel.ClearAndSelect | QItemSelectionModel.Rows)
-        finally:
-            table.setUpdatesEnabled(True)
-        anchor_col = 1 if col_last > 1 else 0
-        idx = view_model.index(view_rows[0], anchor_col)
-        sm.setCurrentIndex(idx, QItemSelectionModel.NoUpdate)
-        table.scrollTo(idx, QAbstractItemView.PositionAtCenter)
-        QTimer.singleShot(
-            0,
-            lambda: (
-                self.parent_app.activateWindow(),
-                table.setFocus(Qt.OtherFocusReason),
-                table.viewport().update(),
-            ),
-        )
+        source_rows = source_rows_for_point_indices(self.parent_app, self.plotted_oids, point_indices)
+        apply_table_selection_for_source_rows(self.parent_app, source_rows)
 
     def _on_plot_point_clicked(self, point_index: int) -> None:
         if point_index < 0 or self.parent_app is None:
