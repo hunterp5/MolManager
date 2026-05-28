@@ -54,11 +54,18 @@ class BackgroundActivityHub(QObject):
                     "kind": "pq_running",
                     "job_id": r.get("job_id", ""),
                     "cancellable": bool(r.get("cancellable")),
+                    "started_at": r.get("started_at"),
                 }
             )
         for q in snap.get("queued") or []:
             rows.append((q.get("status", "Queued"), q.get("job_id", ""), q.get("title", "")))
-            metas.append({"kind": "pq_queued", "job_id": q.get("job_id", "")})
+            metas.append(
+                {
+                    "kind": "pq_queued",
+                    "job_id": q.get("job_id", ""),
+                    "enqueued_at": q.get("enqueued_at"),
+                }
+            )
         for fr in snap.get("fast_running") or []:
             rows.append((fr.get("status", "Running"), fr.get("job_id", ""), fr.get("title", "Interactive job")))
             metas.append(
@@ -66,6 +73,7 @@ class BackgroundActivityHub(QObject):
                     "kind": "pq_fast_running",
                     "job_id": fr.get("job_id", ""),
                     "cancellable": bool(fr.get("cancellable", True)),
+                    "started_at": fr.get("started_at"),
                 }
             )
 

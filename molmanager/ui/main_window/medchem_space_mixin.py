@@ -18,7 +18,7 @@ class MedChemSpaceMixin:
     def open_golden_triangle_plot(self) -> None:
         self._open_medchem_space_dialog(
             plot_kind="golden_triangle",
-            title="Golden triangle plot",
+            title="Golden Triangle plot",
             attr="_golden_triangle_dialog",
             destroyed=self._on_golden_triangle_dialog_destroyed,
         )

@@ -872,7 +872,7 @@ class ChemicalTableApp(
             QAction("BOILED-Egg plot…", self, triggered=self.open_boiled_egg_plot)
         )
         data_menu.addAction(
-            QAction("Golden triangle plot…", self, triggered=self.open_golden_triangle_plot)
+            QAction("Golden Triangle plot…", self, triggered=self.open_golden_triangle_plot)
         )
         act_radar = QAction("Radar Plot…", self, triggered=self.open_radar_plot)
         act_radar.setToolTip(

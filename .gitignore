@@ -40,8 +40,10 @@ htmlcov/
 # IDE (machine-local; keep .cursor/rules if you version team rules)
 .idea/
 
-# Cursor (machine-local)
-.cursor/
+# Cursor (machine-local; keep project rules in version control)
+.cursor/*
+!.cursor/rules/
+!.cursor/rules/**
 
 # Optional CLI binaries placed under resources/bin (keep README + .gitkeep)
 molmanager/resources/bin/**/*
