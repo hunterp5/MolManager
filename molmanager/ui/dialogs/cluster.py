@@ -101,13 +101,16 @@ class ClusterDialog(QDialog):
         self._ex_dbscan.setChecked(True)
         self._ex_butina = QCheckBox("Butina (Tanimoto)")
         self._ex_butina.setChecked(True)
-        self._ex_jp = QCheckBox("Jarvisâ€“Patrick")
+        self._ex_sphere = QCheckBox("Sphere exclusion (Leader)")
+        self._ex_sphere.setChecked(True)
+        self._ex_jp = QCheckBox("Jarvis-Patrick")
         self._ex_jp.setChecked(True)
         gg.addWidget(self._ex_kmeans, 0, 0)
         gg.addWidget(self._ex_agglomerative, 0, 1)
         gg.addWidget(self._ex_dbscan, 1, 0)
         gg.addWidget(self._ex_butina, 1, 1)
-        gg.addWidget(self._ex_jp, 2, 0, 1, 2)
+        gg.addWidget(self._ex_sphere, 2, 0)
+        gg.addWidget(self._ex_jp, 2, 1)
         ex_outer.addWidget(grp)
         root.addWidget(self._explore_panel)
         self._explore_panel.setVisible(False)
@@ -127,7 +130,8 @@ class ClusterDialog(QDialog):
                 "Agglomerative",
                 "DBSCAN (cosine)",
                 "Butina (Tanimoto distance)",
-                "Jarvisâ€“Patrick",
+                "Sphere exclusion (RDKit Leader)",
+                "Jarvis-Patrick",
             ]
         )
         self.method_combo.currentIndexChanged.connect(self._on_method_changed)
@@ -188,6 +192,20 @@ class ClusterDialog(QDialog):
         bu_lyt.addRow(self.butina_reorder_cb)
         self._opt_stack.addWidget(bu)
 
+        se = QWidget()
+        se_lyt = QFormLayout(se)
+        self.sphere_cutoff = QDoubleSpinBox()
+        self.sphere_cutoff.setRange(0.01, 0.95)
+        self.sphere_cutoff.setDecimals(3)
+        self.sphere_cutoff.setSingleStep(0.02)
+        self.sphere_cutoff.setValue(0.35)
+        self.sphere_cutoff.setToolTip(
+            "Minimum Tanimoto distance between cluster centroids (RDKit LeaderPicker). "
+            "Each compound is assigned to its nearest centroid."
+        )
+        se_lyt.addRow("Distance cutoff:", self.sphere_cutoff)
+        self._opt_stack.addWidget(se)
+
         jp = QWidget()
         jp_lyt = QFormLayout(jp)
         self.jp_nn = QSpinBox()
@@ -209,7 +227,8 @@ class ClusterDialog(QDialog):
 
         self.hint = QLabel(
             "Large tables: agglomerative clustering uses substantial memory. Prefer K-Means for thousands of rows. "
-            "Butina / Jarvisâ€“Patrick build O(nÂ²) Tanimoto summaries â€” exploratory mode caps total trials."
+            "Butina builds O(n²) distance data; sphere exclusion (Leader) is faster on large sets. "
+            "Exploratory mode caps total trials."
         )
         self.hint.setWordWrap(True)
         self.hint.setStyleSheet("color: palette(mid); font-size: 11px;")
@@ -298,7 +317,8 @@ class ClusterDialog(QDialog):
                 "agglomerative": "Agglomerative",
                 "dbscan": "DBSCAN",
                 "butina": "Butina",
-                "jarvis_patrick": "Jarvisâ€“Patrick",
+                "sphere_exclusion": "Sphere exclusion",
+                "jarvis_patrick": "Jarvis-Patrick",
             }.get(str(method), str(method))
             key_item = QTableWidgetItem(method_label)
             key_item.setData(Qt.UserRole, {"method": method, "params": params})
@@ -424,6 +444,7 @@ class ClusterDialog(QDialog):
                 "agglomerative": self._ex_agglomerative.isChecked(),
                 "dbscan": self._ex_dbscan.isChecked(),
                 "butina": self._ex_butina.isChecked(),
+                "sphere_exclusion": self._ex_sphere.isChecked(),
                 "jarvis_patrick": self._ex_jp.isChecked(),
             }
             if not any(include.values()):
@@ -464,6 +485,9 @@ class ClusterDialog(QDialog):
                 "cutoff": float(self.butina_cutoff.value()),
                 "reordering": bool(self.butina_reorder_cb.isChecked()),
             }
+        elif idx == 4:
+            method = "sphere_exclusion"
+            params = {"cutoff": float(self.sphere_cutoff.value())}
         else:
             j_nn = int(self.jp_nn.value())
             p_c = int(self.jp_common.value())
@@ -471,7 +495,7 @@ class ClusterDialog(QDialog):
                 QMessageBox.warning(
                     self,
                     "Cluster",
-                    "Jarvisâ€“Patrick requires shared neighbors (P) strictly less than nearest neighbors (J).",
+                    "Jarvis-Patrick requires shared neighbors (P) strictly less than nearest neighbors (J).",
                 )
                 return
             method = "jarvis_patrick"

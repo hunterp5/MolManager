@@ -293,6 +293,18 @@ def fingerprint_is_gil_heavy(label: str) -> bool:
     return spec is not None and spec.kind == FpKind.PHARM2D_GOBBI
 
 
+def fingerprint_internal_key_is_gil_bound(internal_key: str) -> bool:
+    """True when descriptor fingerprint columns should use the process pool (RDKit holds the GIL)."""
+    spec = spec_for_internal_key(internal_key)
+    if spec is None:
+        return False
+    return spec.kind != FpKind.MACCS
+
+
+def int_fns_include_fingerprints(int_fns) -> bool:
+    return any(isinstance(f, str) and f.startswith("FP_") for f in int_fns)
+
+
 def fingerprint_for_label(mol: Chem.Mol, label: str) -> Any | None:
     spec = spec_for_label(label)
     if spec is None:
@@ -322,3 +334,27 @@ def fingerprint_onbits_for_internal_key(internal_key: str) -> Callable[[Chem.Mol
 def descriptor_fingerprint_categories() -> dict[str, str]:
     """Display name → internal key for Calculate Descriptors → Fingerprints tab."""
     return {f"{spec.label} on-bits": spec.internal_key for spec in FINGERPRINT_SPECS}
+
+
+def descriptor_onbits_column_name(fp_label: str) -> str:
+    """Table column header for fingerprint on-bit counts from Calculate Descriptors."""
+    return f"{resolve_fingerprint_label(fp_label)} on-bits"
+
+
+def fingerprint_onbits_for_descriptor(
+    internal_key: str,
+    oid: int | None,
+) -> Callable[[Chem.Mol], int | str]:
+    """Like :func:`fingerprint_onbits_for_internal_key` but caches the bit vector for reuse."""
+    base = fingerprint_onbits_for_internal_key(internal_key)
+
+    def _calc(mol: Chem.Mol) -> int | str:
+        if oid is not None and mol is not None:
+            from .fingerprint_cache import store_from_mol
+
+            fp = store_from_mol(int(oid), internal_key, mol)
+            if fp is not None:
+                return _fingerprint_onbits(fp)
+        return base(mol)
+
+    return _calc

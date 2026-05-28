@@ -1,4 +1,4 @@
-"""Cluster table rows by molecular fingerprint (scikit-learn + RDKit Butina)."""
+"""Cluster table rows by molecular fingerprint (scikit-learn + RDKit Butina / Leader sphere exclusion)."""
 
 from __future__ import annotations
 
@@ -11,6 +11,7 @@ from PyQt5.QtCore import QRunnable
 from rdkit import Chem
 from rdkit import DataStructs
 from rdkit.ML.Cluster import Butina
+from rdkit.SimDivFilters.rdSimDivPickers import LeaderPicker
 
 from .fingerprint_similarity import fingerprint_bitvect_for_ui_choice
 from .signals import emit_partial_results_if_cancelled
@@ -76,6 +77,91 @@ def cluster_butina(
         reordering=bool(reordering),
     )
     return _labels_from_butina_clusters(clusters, n)
+
+
+def _leader_sphere_centroids(
+    fps: Sequence,
+    threshold: float,
+    *,
+    cancel_event: threading.Event | None = None,
+) -> list[int] | None:
+    """RDKit :class:`LeaderPicker` centroids (minimum Tanimoto distance ``threshold`` between leaders)."""
+    n = len(fps)
+    if n < 1:
+        return []
+    if cancel_event is not None and cancel_event.is_set():
+        return None
+    lp = LeaderPicker()
+    try:
+        return [int(i) for i in lp.LazyBitVectorPick(fps, n, float(threshold))]
+    except Exception:
+        logger.debug("LazyBitVectorPick failed; falling back to LazyPick", exc_info=True)
+
+    def dist(i: int, j: int) -> float:
+        if cancel_event is not None and cancel_event.is_set():
+            raise _ClusterCancelled()
+        if i == j:
+            return 0.0
+        return _tanimoto_distance(fps[i], fps[j])
+
+    try:
+        return [int(i) for i in lp.LazyPick(distFunc=dist, poolSize=n, threshold=float(threshold))]
+    except _ClusterCancelled:
+        return None
+
+
+class _ClusterCancelled(Exception):
+    pass
+
+
+def _tanimoto_distance(fp_i, fp_j) -> float:
+    s = float(DataStructs.TanimotoSimilarity(fp_i, fp_j))
+    d = 1.0 - s
+    if d < 0.0:
+        return 0.0
+    if d > 1.0:
+        return 1.0
+    return d
+
+
+def cluster_sphere_exclusion(
+    fps: Sequence,
+    dist_cutoff: float,
+    *,
+    cancel_event: threading.Event | None = None,
+) -> np.ndarray | None:
+    """
+    Sphere exclusion clustering (RDKit Leader / Sayle): pick cluster centroids with
+    :meth:`LeaderPicker.LazyBitVectorPick`, then assign each compound to its nearest centroid.
+    """
+    n = len(fps)
+    if n < 2:
+        return None
+    if cancel_event is not None and cancel_event.is_set():
+        return None
+    try:
+        centroid_idxs = _leader_sphere_centroids(
+            fps, float(dist_cutoff), cancel_event=cancel_event
+        )
+    except _ClusterCancelled:
+        return None
+    if centroid_idxs is None:
+        return None
+    if not centroid_idxs:
+        return np.zeros((n,), dtype=np.int32)
+
+    cid_map = {int(idx): int(cid) for cid, idx in enumerate(centroid_idxs)}
+    cent_fps = [fps[int(i)] for i in centroid_idxs]
+    labels = np.zeros((n,), dtype=np.int32)
+    for i in range(n):
+        if cancel_event is not None and cancel_event.is_set():
+            return None
+        if i in cid_map:
+            labels[i] = cid_map[i]
+            continue
+        sims = DataStructs.BulkTanimotoSimilarity(fps[i], cent_fps)
+        labels[i] = int(np.argmax(sims))
+    return labels
 
 
 class _DSU:
@@ -196,6 +282,12 @@ def _run_clustering(
             reordering=bool(params.get("reordering", False)),
             cancel_event=cancel_event,
         )
+    if method == "sphere_exclusion":
+        return cluster_sphere_exclusion(
+            fps,
+            float(params.get("cutoff", 0.35)),
+            cancel_event=cancel_event,
+        )
     if method == "jarvis_patrick":
         return cluster_jarvis_patrick(
             fps,
@@ -293,6 +385,10 @@ def generate_explore_trials(
             trials.append(("butina", {"cutoff": float(c), "reordering": False}))
         trials.append(("butina", {"cutoff": 0.25, "reordering": True}))
 
+    if include.get("sphere_exclusion", True):
+        for c in np.linspace(0.15, 0.65, num=8):
+            trials.append(("sphere_exclusion", {"cutoff": float(c)}))
+
     if include.get("jarvis_patrick", True):
         for j_nn, p_common in ((10, 4), (12, 5), (14, 6), (16, 8), (20, 10), (24, 12)):
             if p_common < j_nn < n:
@@ -320,6 +416,8 @@ def _format_params(method: str, params: dict) -> str:
     if method == "butina":
         r = ", reorder" if params.get("reordering") else ""
         return f"cutoff={float(params.get('cutoff', 0.2)):.3f}{r}"
+    if method == "sphere_exclusion":
+        return f"cutoff={float(params.get('cutoff', 0.35)):.3f}"
     if method == "jarvis_patrick":
         return f"NN={int(params['nn_count'])}, common≥{int(params['common_neighbors'])}"
     return repr(params)

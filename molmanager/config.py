@@ -68,6 +68,8 @@ class MolManagerConfig:
     conformer_threads: int | None
     descriptor_threads: int | None
     descriptor_process_pool_min_rows: int
+    descriptor_fp_process_pool_min_rows: int
+    descriptor_process_pool_batch_size: int
     background_job_poll_ms: int
     bulk_update_defer_color_cache_rows: int
     protomer_process_workers: int | None
@@ -79,7 +81,9 @@ class MolManagerConfig:
     filter_debounce_default_rows: int
     filter_debounce_default_ms: int
     ingest_gui_chunk_size: int
+    ingest_gui_time_budget_ms: int
     ingest_worker_batch_size: int
+    structure_render_lazy_after_ingest_min_rows: int
     perf_metrics_enabled: bool
     perf_log_every: int
     sqlite_backend_page_size: int
@@ -124,6 +128,12 @@ def load_config() -> MolManagerConfig:
         descriptor_process_pool_min_rows=_env_int(
             "MOLMANAGER_DESCRIPTOR_PROCESS_POOL_MIN_ROWS", 1500, lo=0, hi=10_000_000
         ),
+        descriptor_fp_process_pool_min_rows=_env_int(
+            "MOLMANAGER_DESCRIPTOR_FP_PROCESS_POOL_MIN_ROWS", 64, lo=2, hi=10_000_000
+        ),
+        descriptor_process_pool_batch_size=_env_int(
+            "MOLMANAGER_DESCRIPTOR_PROCESS_POOL_BATCH_SIZE", 32, lo=1, hi=512
+        ),
         background_job_poll_ms=_env_int(
             "MOLMANAGER_BACKGROUND_JOB_POLL_MS", 500, lo=100, hi=5000
         ),
@@ -147,7 +157,11 @@ def load_config() -> MolManagerConfig:
             "MOLMANAGER_FILTER_DEBOUNCE_DEFAULT_MS", 80, lo=0, hi=60_000
         ),
         ingest_gui_chunk_size=_env_int("MOLMANAGER_INGEST_GUI_CHUNK", 256, lo=16, hi=10_000),
+        ingest_gui_time_budget_ms=_env_int("MOLMANAGER_INGEST_GUI_TIME_MS", 25, lo=5, hi=200),
         ingest_worker_batch_size=_env_int("MOLMANAGER_INGEST_WORKER_BATCH", 800, lo=64, hi=20_000),
+        structure_render_lazy_after_ingest_min_rows=_env_int(
+            "MOLMANAGER_STRUCTURE_RENDER_LAZY_AFTER_INGEST", 200, lo=0, hi=10_000_000
+        ),
         perf_metrics_enabled=_env_truthy("MOLMANAGER_PERF_METRICS"),
         perf_log_every=_env_int("MOLMANAGER_PERF_LOG_EVERY", 25, lo=1, hi=10_000),
         sqlite_backend_page_size=_env_int("MOLMANAGER_SQLITE_BACKEND_PAGE_SIZE", 5000, lo=100, hi=200_000),

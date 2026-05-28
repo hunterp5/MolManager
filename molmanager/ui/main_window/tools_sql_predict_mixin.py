@@ -6,10 +6,8 @@ import logging
 import re
 from contextlib import nullcontext
 
-from PyQt5.QtCore import QTimer, Qt
-from PyQt5.QtWidgets import (
-    QMessageBox,
-)
+from PyQt5.QtCore import QEventLoop, Qt, QTimer
+from PyQt5.QtWidgets import QApplication, QMessageBox
 
 from rdkit import Chem
 
@@ -487,10 +485,13 @@ class ToolsSqlPredictMixin:
                             if mol is not None:
                                 self.mols[oid] = mol
                     if batch:
-                        self._table_model.append_rows_batch(batch)
+                        self._table_model.append_rows_batch(batch, defer_color_cache=True)
                         nrows += len(batch)
                         if apply_limit and limit_eff and nrows >= limit_eff:
                             rows_hit_limit = True
+                    app = QApplication.instance()
+                    if app is not None:
+                        app.processEvents(QEventLoop.ExcludeUserInputEvents)
                 rs.close()
                 try:
                     self.table.setUpdatesEnabled(True)
@@ -512,14 +513,19 @@ class ToolsSqlPredictMixin:
             # Rebuild lazily on demand (filter/search) to keep ingest fast and memory flatter.
             self._sqlite_store_dirty = True
 
-        self.schedule_calculate_global_bounds()
         self.table.setSortingEnabled(False)
         smiles_loaded = "SMILES" in self.headers
+        QTimer.singleShot(0, lambda: self._deferred_sql_post_load_follow_up(nrows, smiles_loaded))
+
+    def _deferred_sql_post_load_follow_up(self, nrows: int, smiles_loaded: bool) -> None:
+        """Defer bounds scan and 2D batch so the SQL load dialog can close and the table can paint."""
+        self._table_model.rebuild_column_color_caches_after_bulk_load()
+        self.schedule_calculate_global_bounds(delay_ms=500)
         if smiles_loaded and self._try_auto_render_all_structures_after_ingest():
-            self.status_label.setText(f"Loaded {nrows} row(s) from SQL — drawing 2D structures…")
+            self.status_label.setText(f"Loaded {nrows:,} row(s) from SQL — drawing 2D structures…")
         else:
             self.status_label.setText(
-                loaded_sql_status(nrows) if smiles_loaded else f"Loaded {nrows} row(s) from SQL (no SMILES column)."
+                loaded_sql_status(nrows) if smiles_loaded else f"Loaded {nrows:,} row(s) from SQL (no SMILES column)."
             )
 
     def open_fp_similarity(self):
@@ -532,6 +538,82 @@ class ToolsSqlPredictMixin:
         dlg.show()
         dlg.raise_()
         dlg.activateWindow()
+
+    def open_diverse_subset(self) -> None:
+        if not self.headers:
+            return
+        from ..dialogs import DiverseSubsetDialog
+
+        dlg = DiverseSubsetDialog(self)
+        self._prepare_tool_dialog(dlg)
+        dlg.show()
+        dlg.raise_()
+        dlg.activateWindow()
+
+    def _ensure_diverse_subset_signals(self):
+        """Signals on the main window so diverse subset jobs survive dialog close."""
+        sig = getattr(self, "_diverse_subset_signals", None)
+        if sig is not None:
+            return sig
+        from ...workers import DiverseSubsetSignals
+
+        sig = DiverseSubsetSignals(self)
+        sig.finished.connect(self._on_diverse_subset_finished)
+        sig.failed.connect(self._on_diverse_subset_failed)
+        self._diverse_subset_signals = sig
+        return sig
+
+    def _on_diverse_subset_finished(
+        self, picked_oids: list, column_rows: list, n_cached: int, n_computed: int
+    ) -> None:
+        from PyQt5.QtCore import QTimer
+
+        self._finish_tool_progress("Diverse subset")
+        ctx = getattr(self, "_diverse_subset_run_ctx", None) or {}
+        picked = [int(o) for o in (picked_oids or [])]
+
+        def _apply_results() -> None:
+            if ctx.get("select_subset") and picked:
+                self.select_table_oids(picked, extra_status="")
+            col_name = (ctx.get("pending_column_name") or "").strip()
+            if col_name and column_rows:
+                scope_oids = ctx.get("scope_oids") or set()
+                oid_map = {int(oid): rank for oid, rank in column_rows}
+                full_map = {oid: oid_map.get(oid, "") for oid in scope_oids}
+                m = self._table_model
+                nc = m.columnCount()
+                self.headers.append(col_name)
+                m.insert_column_at(nc, col_name, None)
+                try:
+                    self.table.setUpdatesEnabled(False)
+                except Exception:
+                    pass
+                try:
+                    m.fill_column_from_oid_map(col_name, full_map, default="")
+                    self._sync_global_bounds_for_headers([col_name], refresh_filters=True)
+                finally:
+                    try:
+                        self.table.setUpdatesEnabled(True)
+                    except Exception:
+                        pass
+            cache_note = ""
+            if n_cached or n_computed:
+                cache_note = f" ({n_cached} cached fingerprint(s), {n_computed} computed)"
+            col_note = f" Column '{col_name}' added." if col_name else ""
+            self.status_label.setText(
+                f"Diverse subset: picked {len(picked)} compound(s).{cache_note}{col_note}"
+            )
+
+        QTimer.singleShot(0, _apply_results)
+
+    def _on_diverse_subset_failed(self, msg: str) -> None:
+        self._finish_tool_progress("Diverse subset")
+        if msg == "Cancelled.":
+            self.status_label.setText("Cancelled.")
+        else:
+            self.status_label.setText(
+                f"Diverse subset failed: {msg or 'Computation failed.'}"
+            )
 
     def _ensure_pka_predictor_signals(self):
         """Signals live on the main window so pKa jobs survive dialog close."""

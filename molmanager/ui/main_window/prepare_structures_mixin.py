@@ -30,6 +30,139 @@ from ..compound_table_model import (
 logger = logging.getLogger(__name__)
 
 class PrepareStructuresMixin:
+    def run_protonate(self) -> None:
+        """Generate dominant protomer into a new column and optionally render it."""
+        if not self.headers or self._table_model.rowCount() == 0:
+            return
+        from ..dialogs import ProtonateDialog
+
+        candidates = self.chemistry_tool_structure_sources()
+        n_sel = len(self._selected_logical_rows())
+        dlg = ProtonateDialog(candidates, n_sel, self)
+        self._prepare_tool_dialog(dlg)
+        dlg.setAttribute(Qt.WA_DeleteOnClose, True)
+        dlg.accepted.connect(lambda *_, d=dlg: self._on_protonate_dialog_accepted(d))
+        dlg.show()
+
+    def _ensure_protonate_signals(self):
+        sig = getattr(self, "_protonate_signals", None)
+        if sig is not None:
+            return sig
+        from ...workers.protonate_worker import ProtonateSignals
+
+        sig = ProtonateSignals(self)
+        sig.finished.connect(self._on_protonate_finished, Qt.QueuedConnection)
+        sig.failed.connect(self._on_protonate_failed, Qt.QueuedConnection)
+        self._protonate_signals = sig
+        return sig
+
+    def _on_protonate_dialog_accepted(self, dlg) -> None:
+        src, ph, out_col, only_selected, render_2d = dlg.config()
+        allowed = self._selected_oids_set() if only_selected else None
+        if self._abort_if_only_selected_but_empty(only_selected, allowed, "Protonate"):
+            return
+
+        # Ensure output column exists.
+        if out_col not in self.headers:
+            nc = self._table_model.columnCount()
+            self.headers.append(out_col)
+            self._table_model.insert_column_at(nc, out_col, None)
+        pct_col = "% Protomer"
+        if pct_col not in self.headers:
+            nc = self._table_model.columnCount()
+            self.headers.append(pct_col)
+            self._table_model.insert_column_at(nc, pct_col, None)
+
+        data: list[tuple[int, Chem.Mol | None]] = []
+        oids_walk = self._all_oids_in_table_order()
+        if allowed is not None:
+            oids_walk = [o for o in oids_walk if o in allowed]
+        for oid in oids_walk:
+            mol = self._mol_for_structure_tool_oid(oid, src)
+            data.append((int(oid), mol))
+
+        data = [(oid, mol) for oid, mol in data if mol is not None]
+        if not data:
+            QMessageBox.information(
+                self,
+                "Protonate",
+                "No rows match the current scope and structure field.",
+            )
+            self.status_label.setText("Ready.")
+            return
+
+        self._protonate_run_ctx = {
+            "out_col": out_col,
+            "render_2d": bool(render_2d),
+            "allowed_oids": set(oid for oid, _ in data),
+        }
+
+        sig = self._ensure_protonate_signals()
+        n = len(data)
+        prog = self._tool_progress_state
+        self._begin_tool_progress("Protonate", n)
+        from ...workers.protonate_worker import ProtonateWorker
+
+        self.process_queue.enqueue(
+            f"Protonate ({n} molecules)",
+            lambda ev, r=data, ph=ph, s=sig, st=prog, ws=self.signals: ProtonateWorker(
+                r,
+                ph,
+                signals=s,
+                cancel_event=ev,
+                progress_state=st,
+                worker_signals=ws,
+                progress_message="Protonate",
+            ),
+        )
+
+    def _on_protonate_finished(self, rows: list) -> None:
+        ctx = getattr(self, "_protonate_run_ctx", {}) or {}
+        out_col = str(ctx.get("out_col") or "Protonated")
+        pct_col = "% Protomer"
+        render_2d = bool(ctx.get("render_2d"))
+        allowed = ctx.get("allowed_oids") or None
+        self._protonate_run_ctx = None
+
+        if not rows:
+            self._finish_tool_progress("Protonate")
+            self.status_label.setText("Protonate: no results.")
+            return
+
+        # Write column values.
+        res = [
+            (int(oid), {out_col: str(smi), pct_col: f"{float(pct):.2f}"})
+            for oid, smi, pct in rows
+        ]
+        self.on_calc_finished(res, [out_col, pct_col], progress_label="Protonate")
+
+        if not render_2d:
+            return
+
+        # Render into the output column, but keep text visible (cell pixmaps, not pixmap-only column).
+        try:
+            base_w, base_h = STRUCTURE_DEPICT_WIDTH, STRUCTURE_DEPICT_HEIGHT
+            renders, row_by_oid = self._build_render2d_tasks_in_table_order(
+                out_col, base_w, base_h, allowed
+            )
+            if renders:
+                self._start_render_2d_batch(
+                    renders,
+                    row_by_oid,
+                    out_col,
+                    column_pixmap_mode=False,
+                    queue_title_prefix="Protonate: ",
+                )
+        except Exception:
+            logger.exception("Protonate: render 2D scheduling failed")
+
+    def _on_protonate_failed(self, msg: str) -> None:
+        self._finish_tool_progress("Protonate")
+        if msg == "Cancelled.":
+            self.status_label.setText(self._consume_partial_results_notice() or "Cancelled.")
+        else:
+            self.status_label.setText(f"Protonate failed: {msg or 'Computation failed.'}")
+
     def run_fast_prepare(self) -> None:
         if not self.headers or not self.mols:
             return
@@ -332,6 +465,32 @@ class PrepareStructuresMixin:
                 return
         self.status_label.setText(self._consume_partial_results_notice() or "Done.")
 
+    def _build_render2d_tasks_from_mols(
+        self,
+        base_w: int,
+        base_h: int,
+        allowed_oids: set[int] | None = None,
+    ) -> tuple[list, dict[int, int]]:
+        """Build render tasks from ``self.mols`` (O(n) with O(1) row lookup; used after file/SQL ingest)."""
+        renders: list = []
+        row_by_oid: dict[int, int] = {}
+        for oid, mol in self.mols.items():
+            if allowed_oids is not None and int(oid) not in allowed_oids:
+                continue
+            if mol is None:
+                continue
+            row = self._table_model.logical_row_for_oid(int(oid))
+            if row < 0:
+                continue
+            rw, rh = (
+                (STRUCTURE_DEPICT_WIDTH * 2, STRUCTURE_DEPICT_HEIGHT * 2)
+                if int(oid) in self.zoomed_ids
+                else (base_w, base_h)
+            )
+            renders.append((int(oid), mol, rw, rh))
+            row_by_oid[int(oid)] = row
+        return renders, row_by_oid
+
     def _build_render2d_tasks_in_table_order(
         self,
         src: str,
@@ -396,9 +555,10 @@ class PrepareStructuresMixin:
             )
             return False
         base_w, base_h = STRUCTURE_DEPICT_WIDTH, STRUCTURE_DEPICT_HEIGHT
-        renders, row_by_oid = self._build_render2d_tasks_in_table_order("Structure", base_w, base_h, None)
+        renders, row_by_oid = self._build_render2d_tasks_from_mols(base_w, base_h, None)
         if not renders:
             return False
+        self._render2d_after_ingest = True
         self._start_render_2d_batch(renders, row_by_oid, "Structure")
         return True
 
@@ -408,6 +568,9 @@ class PrepareStructuresMixin:
         self._render2d_pending = {}
         self._render2d_batch_oids_ordered = []
         self._render2d_snapshot = None
+        self._render2d_eager_flush_queue = None
+        self._render2d_eager_flush_idx = 0
+        self._render2d_eager_uniform_height = False
         self._render2d_row_by_oid = None
         pix_target = getattr(self, "_render2d_pixmap_target", None)
         self._render2d_pixmap_target = None
@@ -446,6 +609,9 @@ class PrepareStructuresMixin:
         self._render2d_accept_session = None
         self._render2d_pending.clear()
         self._render2d_batch_oids_ordered.clear()
+        self._render2d_eager_flush_queue = None
+        self._render2d_eager_flush_idx = 0
+        self._render2d_eager_uniform_height = False
         if getattr(self, "_render2d_lazy_flush", False) and not getattr(self, "_render2d_pixmap_target", None):
             self._table_model.clear_structure_png_store()
         snap = getattr(self, "_render2d_snapshot", None)
@@ -464,6 +630,9 @@ class PrepareStructuresMixin:
                     self._table_model.set_structure_pixmap(oid, pm)
         self._render2d_snapshot = None
         self._render2d_lazy_flush = False
+        self._render2d_eager_flush_queue = None
+        self._render2d_eager_flush_idx = 0
+        self._render2d_eager_uniform_height = False
         self._import_progress_active = False
         self._clear_tool_progress()
         self._restore_render2d_batch_environment()
@@ -554,8 +723,15 @@ class PrepareStructuresMixin:
         self._render2d_batch_oids_ordered = oids
         self._render2d_pending = {}
         structure_column = self._render2d_pixmap_target is None
-        lazy_structure = self._render2d_use_lazy_structure_flush(len(oids), structure_column=structure_column)
+        after_ingest = bool(getattr(self, "_render2d_after_ingest", False))
+        self._render2d_after_ingest = False
+        cfg = load_config()
+        if after_ingest and structure_column:
+            lazy_structure = len(oids) >= int(cfg.structure_render_lazy_after_ingest_min_rows)
+        else:
+            lazy_structure = self._render2d_use_lazy_structure_flush(len(oids), structure_column=structure_column)
         self._render2d_lazy_flush = lazy_structure
+        skip_snapshot = after_ingest or lazy_structure
         tgt = self._render2d_pixmap_target
         if tgt:
             if self._render2d_column_pixmap_mode:
@@ -571,13 +747,17 @@ class PrepareStructuresMixin:
         elif lazy_structure:
             self._render2d_snapshot = {}
             self._table_model.clear_structure_png_store()
-            self._table_model.clear_structure_pixmaps_for_oids(oids, emit=True)
+            self._table_model.clear_structure_pixmaps_for_oids(oids, emit=False)
         else:
-            if len(oids) <= load_config().structure_render_lazy_min_rows:
+            if skip_snapshot:
+                self._render2d_snapshot = {}
+            elif len(oids) <= cfg.structure_render_lazy_min_rows:
                 self._render2d_snapshot = self._table_model.snapshot_structure_pixmaps(oids)
             else:
                 self._render2d_snapshot = {}
-            self._table_model.clear_structure_pixmaps_for_oids(oids, emit=True)
+            self._table_model.clear_structure_pixmaps_for_oids(oids, emit=False)
+        if structure_column and not lazy_structure:
+            self._table_model.notify_structure_column_changed()
         self._render2d_progress_last_emit = 0.0
         self._render2d_progress_last_done = 0
         self._import_progress_active = True

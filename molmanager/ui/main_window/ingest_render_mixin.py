@@ -6,9 +6,10 @@ import logging
 import time
 from contextlib import nullcontext
 
-from PyQt5.QtCore import QTimer
+from PyQt5.QtCore import QEventLoop, QTimer
 from PyQt5.QtGui import QImage, QPixmap
 from PyQt5.QtWidgets import (
+    QApplication,
     QMessageBox,
 )
 
@@ -99,69 +100,93 @@ class IngestRenderMixin:
         self._maybe_start_ingest_processing()
 
     def _process_next_chunk(self, chunk_size: int | None = None):
+        cfg = load_config()
         if chunk_size is None:
-            chunk_size = int(load_config().ingest_gui_chunk_size)
-        # Process up to chunk_size molecules, then reschedule to keep UI responsive
+            chunk_size = int(cfg.ingest_gui_chunk_size)
+        budget_s = max(0.005, int(cfg.ingest_gui_time_budget_ms) / 1000.0)
+        deadline = time.monotonic() + budget_s
         processed = 0
         perf = getattr(self, "_perf", None)
         scope = perf.track if perf is not None else (lambda *_args, **_kwargs: nullcontext())
-        with scope("ingest.process_chunk"):
-            while self._pending_batches and processed < chunk_size:
-                mols_list, is_last = self._pending_batches.pop(0)
-                remain = max(0, int(chunk_size - processed))
-                take = mols_list[:remain]
-                if take:
-                    new_rows: list[tuple[int, dict[str, str]]] = []
-                    for m in take:
-                        m = self._apply_structure_field_override(m)
-                        oid = self.next_oid
-                        self.next_oid += 1
-                        self.mols[oid] = m
-                        new_rows.append((oid, self._row_cells_from_mol(m)))
-                    self._table_model.append_rows_batch(new_rows)
-                    processed += len(new_rows)
-                    n = len(self.mols)
-                    self.status_label.setText(f"Loaded {n} molecules — preparing table…")
-                    if self._table_stack.currentIndex() == 0:
-                        self._loading_detail.setText(f"Building table…\n{n} molecule(s); 2D structures draw when ready")
-                    if getattr(self, "_ingest_loading", False):
-                        if not self._import_building_progress_shown:
-                            self._import_building_progress_shown = True
-                            self._on_tool_progress("Building table…", -1, -1)
-                    del mols_list[: len(take)]
-                # if there are remaining molecules in this batch, put them back to front
-                if mols_list:
-                    self._pending_batches.insert(0, (mols_list, is_last))
-                    break
-                # if this batch signaled last, mark last_batch_received
-                if is_last:
-                    self._last_batch_received = True
+        try:
+            self.table.setUpdatesEnabled(False)
+        except Exception:
+            pass
+        try:
+            with scope("ingest.process_chunk"):
+                while self._pending_batches and processed < chunk_size and time.monotonic() < deadline:
+                    mols_list, is_last = self._pending_batches.pop(0)
+                    remain = max(0, int(chunk_size - processed))
+                    take = mols_list[:remain]
+                    if take:
+                        new_rows: list[tuple[int, dict[str, str]]] = []
+                        for m in take:
+                            m = self._apply_structure_field_override(m)
+                            oid = self.next_oid
+                            self.next_oid += 1
+                            self.mols[oid] = m
+                            new_rows.append((oid, self._row_cells_from_mol(m)))
+                        self._table_model.append_rows_batch(new_rows, defer_color_cache=True)
+                        processed += len(new_rows)
+                        n = len(self.mols)
+                        self.status_label.setText(f"Loaded {n} molecules — preparing table…")
+                        if self._table_stack.currentIndex() == 0:
+                            self._loading_detail.setText(
+                                f"Building table…\n{n} molecule(s); 2D structures draw when ready"
+                            )
+                        if getattr(self, "_ingest_loading", False):
+                            if not self._import_building_progress_shown:
+                                self._import_building_progress_shown = True
+                                self._on_tool_progress("Building table…", -1, -1)
+                        del mols_list[: len(take)]
+                    if mols_list:
+                        self._pending_batches.insert(0, (mols_list, is_last))
+                        break
+                    if is_last:
+                        self._last_batch_received = True
+        finally:
+            try:
+                self.table.setUpdatesEnabled(True)
+            except Exception:
+                pass
 
-        if self._pending_batches and processed >= chunk_size:
-            # schedule next chunk to continue processing
+        if self._pending_batches:
             QTimer.singleShot(0, lambda: self._process_next_chunk(chunk_size))
+        elif self._last_batch_received:
+            QTimer.singleShot(0, self._finalize_ingest_on_gui_thread)
         else:
-            # finished current pending items; finalize if we have received last batch
-            if not self._pending_batches and self._last_batch_received:
-                self.schedule_calculate_global_bounds()
-                if getattr(self, "_sqlite_store", None) is not None:
-                    self._sqlite_store_dirty = True
-                else:
-                    self._rebuild_sqlite_store_from_model()
-                self.table.setSortingEnabled(False)
-                self._ingest_loading = False
-                self._structures_queued = 0
-                self._table_stack.setCurrentIndex(1)
-                self._import_progress_active = False
-                self._clear_tool_progress(status_message=None)
-                self._ingest_append_mode = False
-                started_render = self._try_auto_render_all_structures_after_ingest()
-                if not started_render:
-                    self.status_label.setText(STATUS_READY_RENDER_2D)
-                self._last_batch_received = False
-                if "confs" in self.headers or "superpose" in self.headers:
-                    QTimer.singleShot(0, self._migrate_legacy_confs_cells_to_sidecar)
             self._processing_batches = False
+
+    def _finalize_ingest_on_gui_thread(self) -> None:
+        """Show the table, then defer heavy follow-up (bounds, 2D batch) so the window stays responsive."""
+        if getattr(self, "_sqlite_store", None) is not None:
+            self._sqlite_store_dirty = True
+        else:
+            self._rebuild_sqlite_store_from_model()
+        self.table.setSortingEnabled(False)
+        self._ingest_loading = False
+        self._structures_queued = 0
+        self._table_stack.setCurrentIndex(1)
+        self._import_progress_active = False
+        self._clear_tool_progress(status_message=None)
+        self._ingest_append_mode = False
+        self._last_batch_received = False
+        self._processing_batches = False
+        app = QApplication.instance()
+        if app is not None:
+            app.processEvents(QEventLoop.ExcludeUserInputEvents)
+        if "confs" in self.headers or "superpose" in self.headers:
+            QTimer.singleShot(0, self._migrate_legacy_confs_cells_to_sidecar)
+        QTimer.singleShot(0, self._deferred_post_ingest_follow_up)
+
+    def _deferred_post_ingest_follow_up(self) -> None:
+        """Runs after the table is visible: bounds, column colors, then optional auto 2D render."""
+        self._table_model.rebuild_column_color_caches_after_bulk_load()
+        self.schedule_calculate_global_bounds(delay_ms=500)
+        started_render = self._try_auto_render_all_structures_after_ingest()
+        if not started_render:
+            n = self._table_model.rowCount()
+            self.status_label.setText(STATUS_READY_RENDER_2D if n else "Ready.")
 
     def _rebuild_sqlite_store_from_model(self) -> None:
         """Synchronous rebuild (clear table, tests). Large tables use ``_schedule_sqlite_rebuild``."""
@@ -462,27 +487,25 @@ class IngestRenderMixin:
         m.notify_structure_column_changed(r0, r1)
 
     def _flush_render2d_batch_results(self) -> None:
-        """Apply buffered PNGs in one pass (table stayed on placeholders until workers finished)."""
+        """Apply buffered PNGs in slices so the GUI thread stays responsive."""
         if not getattr(self, "_render2d_batch_active", False):
             return
-        self._render2d_accept_session = None
-        ordered = list(getattr(self, "_render2d_batch_oids_ordered", []) or [])
-        pending = getattr(self, "_render2d_pending", None) or {}
         pix_target = getattr(self, "_render2d_pixmap_target", None)
         column_pixmap_mode = getattr(self, "_render2d_column_pixmap_mode", True)
         lazy_structure = bool(getattr(self, "_render2d_lazy_flush", False)) and not pix_target
-        if pix_target and column_pixmap_mode:
-            self._table_model.register_pixmap_column(pix_target)
-        set_pixmap = (
-            self._table_model.set_column_pixmap
-            if column_pixmap_mode
-            else self._table_model.set_cell_pixmap
-        )
-        try:
-            self.table.setUpdatesEnabled(False)
-        except Exception:
-            pass
-        try:
+
+        queue = getattr(self, "_render2d_eager_flush_queue", None)
+        if queue is None:
+            self._render2d_accept_session = None
+            ordered = list(getattr(self, "_render2d_batch_oids_ordered", []) or [])
+            pending = getattr(self, "_render2d_pending", None) or {}
+            if pix_target and column_pixmap_mode:
+                self._table_model.register_pixmap_column(pix_target)
+            set_pixmap = (
+                self._table_model.set_column_pixmap
+                if column_pixmap_mode
+                else self._table_model.set_cell_pixmap
+            )
             if lazy_structure:
                 cfg = load_config()
                 store = StructureRenderStore(max_decoded_pixmaps=cfg.structure_render_pixmap_lru)
@@ -498,11 +521,13 @@ class IngestRenderMixin:
                     store.ingest_batch(png_items)
                 self._table_model.set_structure_png_store(store)
                 self._ensure_structure_lazy_scroll_hook()
-                self._refresh_visible_structure_cells()
+                self._render2d_eager_flush_queue = []
+                self._render2d_eager_flush_idx = 0
+                self._render2d_eager_uniform_height = False
             else:
                 eager: list[tuple[int, QPixmap | None]] = []
-                default_rh = STRUCTURE_ROW_DEFAULT_HEIGHT
-                set_uniform_height = len(ordered) >= load_config().structure_render_lazy_min_rows
+                cfg = load_config()
+                set_uniform_height = len(ordered) >= cfg.structure_render_lazy_min_rows
                 for oid in ordered:
                     row = self._resolve_structure_row_for_oid(int(oid))
                     rec = pending.get(oid)
@@ -526,28 +551,53 @@ class IngestRenderMixin:
                         eager.append((int(oid), pm))
                     if row >= 0 and not set_uniform_height and self.table.rowHeight(row) != rh:
                         self.table.setRowHeight(row, rh)
-                if eager and not pix_target:
-                    self._table_model.apply_structure_pixmaps_batch(eager, emit=True)
-                elif eager and pix_target:
-                    pass
-                if set_uniform_height and not pix_target:
-                    vh = self.table.verticalHeader()
-                    try:
-                        vh.setSectionResizeMode(vh.Fixed)
-                    except Exception:
-                        pass
-                    for row in range(self._table_model.rowCount()):
-                        if self.table.rowHeight(row) != default_rh:
-                            self.table.setRowHeight(row, default_rh)
-        finally:
+                self._render2d_eager_flush_queue = eager if not pix_target else []
+                self._render2d_eager_flush_idx = 0
+                self._render2d_eager_uniform_height = bool(set_uniform_height and not pix_target)
+
+        queue = getattr(self, "_render2d_eager_flush_queue", None) or []
+        idx = int(getattr(self, "_render2d_eager_flush_idx", 0))
+        if queue and idx < len(queue):
+            chunk = 120
             try:
-                self.table.setUpdatesEnabled(True)
+                self.table.setUpdatesEnabled(False)
             except Exception:
                 pass
+            try:
+                slice_items = queue[idx : idx + chunk]
+                self._table_model.apply_structure_pixmaps_batch(slice_items, emit=False)
+            finally:
+                try:
+                    self.table.setUpdatesEnabled(True)
+                except Exception:
+                    pass
+            self._render2d_eager_flush_idx = idx + len(slice_items)
+            QTimer.singleShot(0, self._flush_render2d_batch_results)
+            app = QApplication.instance()
+            if app is not None:
+                app.processEvents(QEventLoop.ExcludeUserInputEvents)
+            return
+
+        if queue and not pix_target:
+            self._table_model.notify_structure_column_changed()
+        if getattr(self, "_render2d_eager_uniform_height", False):
+            default_rh = STRUCTURE_ROW_DEFAULT_HEIGHT
+            vh = self.table.verticalHeader()
+            try:
+                vh.setSectionResizeMode(vh.Fixed)
+                vh.setDefaultSectionSize(default_rh)
+            except Exception:
+                pass
+        if lazy_structure:
+            self._refresh_visible_structure_cells()
+
         self._render2d_pending = {}
         self._render2d_batch_oids_ordered = []
         self._render2d_snapshot = None
         self._render2d_lazy_flush = False
+        self._render2d_eager_flush_queue = None
+        self._render2d_eager_flush_idx = 0
+        self._render2d_eager_uniform_height = False
 
     def on_cell_double_click(self, r, c):
         if c != 1:

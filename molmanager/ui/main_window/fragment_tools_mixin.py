@@ -23,6 +23,7 @@ from ...workers import (
     FragmentRecompositionWorker,
     RGroupDecompositionWorker,
 )
+from ..compound_table_model import STRUCTURE_DEPICT_HEIGHT, STRUCTURE_DEPICT_WIDTH
 
 logger = logging.getLogger(__name__)
 
@@ -184,6 +185,7 @@ class FragmentToolsMixin:
             return
         prefix = p.column_prefix or ("BRICS" if p.method == "brics" else "RECAP")
         method = "brics" if p.method == "brics" else "recap"
+        self._fragment_decomp_render_2d_after = bool(getattr(p, "render_2d", False))
         ps = self._tool_progress_state
         self._begin_tool_progress(p.tool_title, len(data))
         self.process_queue.enqueue(
@@ -202,9 +204,33 @@ class FragmentToolsMixin:
     def on_fragment_decomp_finished(self, res, col_headers: list, tool_title: str) -> None:
         self._finish_tool_progress(tool_title)
         self.on_calc_finished(res, col_headers, finish_progress=False)
+        do_render = bool(getattr(self, "_fragment_decomp_render_2d_after", False))
+        self._fragment_decomp_render_2d_after = False
+        # Optionally render new fragment SMILES columns so the user can see the pieces immediately.
+        # Uses pixmap-only columns (hide SMILES text) and queues the renders so the GUI stays responsive.
+        if do_render and tool_title in (TOOL_BRICS_DECOMP, TOOL_RECAP_DECOMP) and col_headers:
+            try:
+                base_w, base_h = STRUCTURE_DEPICT_WIDTH, STRUCTURE_DEPICT_HEIGHT
+                for h in col_headers:
+                    if h not in self.headers:
+                        continue
+                    renders, row_by_oid = self._build_render2d_tasks_in_table_order(
+                        h, base_w, base_h, None
+                    )
+                    if renders:
+                        self._start_render_2d_batch(
+                            renders,
+                            row_by_oid,
+                            h,
+                            column_pixmap_mode=True,
+                            queue_title_prefix=f"{tool_title}: ",
+                        )
+            except Exception:
+                logger.exception("Fragment decomposition: auto 2D render failed")
 
     def on_fragment_decomp_failed(self, message: str, tool_title: str) -> None:
         self._clear_tool_progress()
+        self._fragment_decomp_render_2d_after = False
         self.status_label.setText("Ready.")
         QMessageBox.warning(self, tool_title, message or "Fragment decomposition failed.")
 
