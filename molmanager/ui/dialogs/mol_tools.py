@@ -516,6 +516,7 @@ class FragmentDecompDialogParams:
     column_prefix: str
     method: str  # "brics" | "recap"
     tool_title: str
+    render_2d: bool
 
 
 class FragmentDecompositionDialog(QDialog):
@@ -570,6 +571,13 @@ class FragmentDecompositionDialog(QDialog):
         scope_lyt.addWidget(self.only_selected_cb)
         root.addWidget(scope_box)
 
+        self.render_2d_cb = QCheckBox("Render 2D after decomposition")
+        self.render_2d_cb.setChecked(False)
+        self.render_2d_cb.setToolTip(
+            "Render the new fragment columns as 2D depictions (pixmap-only) after decomposition finishes."
+        )
+        root.addWidget(self.render_2d_cb)
+
         box = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
         box.accepted.connect(self.accept)
         box.rejected.connect(self.reject)
@@ -585,6 +593,7 @@ class FragmentDecompositionDialog(QDialog):
             column_prefix=(self.prefix_edit.text() or "").strip(),
             method=self._method,
             tool_title=self._tool_title,
+            render_2d=bool(self.render_2d_cb.isChecked()),
         )
 
 

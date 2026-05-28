@@ -385,7 +385,8 @@ filters (optional <b>only selected rows</b>). Includes correlation matrices, per
 SciPy is available.</p>
 <h3>Cluster (Data → Cluster)</h3>
 <p>Cluster by fingerprint with several algorithms. <b>Exploratory mode</b> tries many parameter sets; review
-metrics, then apply a trial to add a cluster ID column. For very large tables prefer K-means; Butina /
+metrics, then apply a trial to add a cluster ID column. For very large tables prefer K-means or
+<b>Sphere exclusion (RDKit Leader)</b>; Butina /
 Jarvis–Patrick scale more steeply with compound count.</p>
 """,
     "data_viz": """

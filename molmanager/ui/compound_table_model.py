@@ -166,7 +166,12 @@ class CompoundTableModel(QAbstractTableModel):
             if k in bh:
                 self._mark_numeric_bounds_dirty({k})
 
-    def append_rows_batch(self, entries: list[tuple[int, dict[str, str]]]) -> None:
+    def append_rows_batch(
+        self,
+        entries: list[tuple[int, dict[str, str]]],
+        *,
+        defer_color_cache: bool = False,
+    ) -> None:
         """Append many rows with a single insert-range notification."""
         if not entries:
             return
@@ -176,19 +181,27 @@ class CompoundTableModel(QAbstractTableModel):
         bh = self._bounds_data_headers()
         dirty_cols: set[str] = set()
         row_idx = start
+        refresh_color = bool(self._column_color_rules) and not defer_color_cache
         for oid, cells in entries:
             row_cells = dict(cells)
             row_obj = _Row(oid=int(oid), values=row_cells)
             self._rows.append(row_obj)
             self._oid_to_row[int(oid)] = row_idx
             row_idx += 1
-            if self._column_color_rules:
+            if refresh_color:
                 self._refresh_color_cache_for_row(row_obj, row_cells)
             if bh:
                 dirty_cols |= {k for k in row_cells if k in bh}
         self.endInsertRows()
         if dirty_cols:
             self._mark_numeric_bounds_dirty(dirty_cols)
+
+    def rebuild_column_color_caches_after_bulk_load(self) -> None:
+        """Refresh conditional-format caches after a large append (skipped per row during ingest)."""
+        if not self._column_color_rules:
+            return
+        for header_name in list(self._column_color_rules.keys()):
+            self._rebuild_column_color_cache(header_name)
 
     def insert_row_at(self, logical_index: int, oid: int, cells: dict[str, str]) -> None:
         n = len(self._rows)

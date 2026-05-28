@@ -56,7 +56,12 @@ from ..pkasolver_descriptor_support import int_fns_need_pkasolver, microstates_f
 from .pkasolver_parallel import build_microstates_cache_for_rows
 from ..safe_calc import eval_custom_calc_expression
 from ..utils import mol_to_canonical_smiles, parse_molecule_from_cell_text
-from ..rdkit_fingerprints import spec_for_internal_key, fingerprint_onbits_for_internal_key
+from ..rdkit_fingerprints import (
+    fingerprint_onbits_for_descriptor,
+    fingerprint_onbits_for_internal_key,
+    int_fns_include_fingerprints,
+    spec_for_internal_key,
+)
 from .signals import WorkerSignals, emit_partial_results_if_cancelled
 
 logger = logging.getLogger(__name__)
@@ -89,9 +94,50 @@ def _descriptor_int_fns_include_pharm2d(int_fns) -> bool:
     return any(isinstance(f, str) and f.startswith("FP_Pharm2D") for f in int_fns)
 
 
+def _descriptor_process_pool_min_rows(cfg, int_fns) -> int:
+    """Row-count threshold for child-process descriptor calculation."""
+    if _descriptor_int_fns_include_pharm2d(int_fns):
+        return 2
+    if int_fns_include_fingerprints(int_fns):
+        return int(cfg.descriptor_fp_process_pool_min_rows)
+    return int(cfg.descriptor_process_pool_min_rows)
+
+
+def _calc_descriptor_row_values(
+    idx: int,
+    mol: Chem.Mol | None,
+    disp_headers: list,
+    int_fns: tuple,
+    smarts_cache: dict,
+    *,
+    pka_states,
+    pka_cache_used: bool,
+) -> tuple[int, dict[str, str]]:
+    row_ctx: dict = {"oid": int(idx)}
+    if mol is not None and int_fns_need_pkasolver(int_fns):
+        if pka_cache_used:
+            row_ctx["pkasolver_states"] = pka_states
+        else:
+            row_ctx["pkasolver_states"] = microstates_for_mol(mol)
+    callables = [descriptor_callable_for_int_fn(i_f, smarts_cache, row_ctx) for i_f in int_fns]
+    row_data: dict[str, str] = {}
+    if mol:
+        for d_n, fn in zip(disp_headers, callables):
+            try:
+                v = fn(mol)
+                row_data[d_n] = f"{v:.3f}" if isinstance(v, float) else str(v)
+            except Exception:
+                row_data[d_n] = "N/A"
+    else:
+        for d_n in disp_headers:
+            row_data[d_n] = "N/A"
+    return int(idx), row_data
+
+
 def descriptor_callable_for_int_fn(i_f, smarts_cache, row_ctx=None):
     """Return ``callable(mol)`` for one internal descriptor id (shared by thread and process workers)."""
     ctx = row_ctx if row_ctx is not None else {}
+    row_oid = ctx.get("oid")
     if i_f == "SMILES":
         return lambda m: mol_to_canonical_smiles(m) if m is not None else ""
     if i_f == "INCHIKEY":
@@ -132,6 +178,8 @@ def descriptor_callable_for_int_fn(i_f, smarts_cache, row_ctx=None):
         return lambda m, f=func: f(m)
     if isinstance(i_f, str) and i_f.startswith("FP_"):
         if spec_for_internal_key(i_f) is not None:
+            if row_oid is not None:
+                return fingerprint_onbits_for_descriptor(i_f, int(row_oid))
             return fingerprint_onbits_for_internal_key(i_f)
     return lambda m: "N/A"
 
@@ -139,32 +187,49 @@ def descriptor_callable_for_int_fn(i_f, smarts_cache, row_ctx=None):
 def _mp_calc_descriptor_row(args: tuple):
     """One row in a child process — avoids GIL contention with the Qt GUI thread."""
     idx, mol_bytes, disp_headers, int_fns, pka_states, pka_cache_used = args
-    smarts_cache = {}
-    row_ctx: dict = {}
     mol = None
     if mol_bytes:
         try:
             mol = Chem.Mol(mol_bytes)
         except Exception:
             mol = None
-    if mol is not None and int_fns_need_pkasolver(int_fns):
-        if pka_cache_used:
-            row_ctx["pkasolver_states"] = pka_states
-        else:
-            row_ctx["pkasolver_states"] = microstates_for_mol(mol)
-    callables = [descriptor_callable_for_int_fn(i_f, smarts_cache, row_ctx) for i_f in int_fns]
-    row_data: dict[str, str] = {}
-    if mol:
-        for d_n, fn in zip(disp_headers, callables):
+    return _calc_descriptor_row_values(
+        idx,
+        mol,
+        list(disp_headers),
+        tuple(int_fns),
+        {},
+        pka_states=pka_states,
+        pka_cache_used=bool(pka_cache_used),
+    )
+
+
+def _mp_calc_descriptor_batch(args: tuple) -> list[tuple[int, dict[str, str]]]:
+    """Several rows per child process — less IPC overhead on large fingerprint jobs."""
+    items, disp_headers, int_fns, pka_cache_used = args
+    smarts_cache: dict = {}
+    out: list[tuple[int, dict[str, str]]] = []
+    headers = list(disp_headers)
+    fns = tuple(int_fns)
+    for idx, mol_bytes, pka_states in items:
+        mol = None
+        if mol_bytes:
             try:
-                v = fn(mol)
-                row_data[d_n] = f"{v:.3f}" if isinstance(v, float) else str(v)
+                mol = Chem.Mol(mol_bytes)
             except Exception:
-                row_data[d_n] = "N/A"
-    else:
-        for d_n in disp_headers:
-            row_data[d_n] = "N/A"
-    return (idx, row_data)
+                mol = None
+        out.append(
+            _calc_descriptor_row_values(
+                idx,
+                mol,
+                headers,
+                fns,
+                smarts_cache,
+                pka_states=pka_states,
+                pka_cache_used=bool(pka_cache_used),
+            )
+        )
+    return out
 
 
 def _descriptor_progress_emit_step(total: int) -> int:
@@ -185,6 +250,7 @@ def _run_descriptor_process_pool(
     pka_by_idx: dict,
     pka_cache_used: bool,
     max_workers: int,
+    batch_size: int,
     cancel_event: threading.Event | None,
     emit_progress,
 ) -> tuple[list, bool]:
@@ -193,19 +259,16 @@ def _run_descriptor_process_pool(
 
     Returns ``(results, cancelled)``.
     """
-    mp_tasks = []
+    row_items: list[tuple[int, bytes, object]] = []
     for i, mol in prepared:
         blob = mol.ToBinary() if mol is not None else b""
-        mp_tasks.append(
-            (
-                i,
-                blob,
-                tuple(disp_headers),
-                tuple(int_fns),
-                pka_by_idx.get(i) if pka_cache_used else None,
-                pka_cache_used,
-            )
-        )
+        pka = pka_by_idx.get(i) if pka_cache_used else None
+        row_items.append((i, blob, pka))
+    batch_size = max(1, int(batch_size))
+    batch_args: list[tuple] = []
+    for start in range(0, len(row_items), batch_size):
+        chunk = row_items[start : start + batch_size]
+        batch_args.append((chunk, tuple(disp_headers), tuple(int_fns), bool(pka_cache_used)))
     proc_workers = min(max_workers, max(2, (os.cpu_count() or 4) - 1), 8)
     emit_progress(0, force=True)
     mp_results_dict: dict = {}
@@ -214,18 +277,18 @@ def _run_descriptor_process_pool(
     last_pulse = 0.0
     ex = register_process_pool(ProcessPoolExecutor(max_workers=proc_workers))
     try:
-        pending = {ex.submit(_mp_calc_descriptor_row, t) for t in mp_tasks}
+        pending = {ex.submit(_mp_calc_descriptor_batch, args) for args in batch_args}
         while pending:
             if should_terminate_process_pool(cancel_event):
                 cancelled = True
                 for f in list(pending):
                     if f.done() and not f.cancelled():
                         try:
-                            idx, row_d = f.result()
-                            mp_results_dict[int(idx)] = row_d
-                            done_count += 1
+                            for idx, row_d in f.result():
+                                mp_results_dict[int(idx)] = row_d
+                                done_count += 1
                         except Exception:
-                            logger.exception("Process-pool descriptor row failed")
+                            logger.exception("Process-pool descriptor batch failed")
                     else:
                         f.cancel()
                 break
@@ -239,12 +302,12 @@ def _run_descriptor_process_pool(
                 if f.cancelled():
                     continue
                 try:
-                    idx, row_d = f.result()
-                    mp_results_dict[int(idx)] = row_d
-                    done_count += 1
+                    for idx, row_d in f.result():
+                        mp_results_dict[int(idx)] = row_d
+                        done_count += 1
                     emit_progress(done_count)
                 except Exception:
-                    logger.exception("Process-pool descriptor row failed")
+                    logger.exception("Process-pool descriptor batch failed")
     finally:
         shutdown_process_pool_executor(
             ex, kill_workers=should_terminate_process_pool(cancel_event)
@@ -262,25 +325,15 @@ def _calc_descriptor_row_task(args):
             mol = Chem.Mol(mol)
         except Exception:
             mol = None
-    row_ctx: dict = {}
-    if mol is not None and int_fns_need_pkasolver(int_fns):
-        if pka_cache_used:
-            row_ctx["pkasolver_states"] = pka_states
-        else:
-            row_ctx["pkasolver_states"] = microstates_for_mol(mol)
-    callables = [descriptor_callable_for_int_fn(i_f, smarts_cache, row_ctx) for i_f in int_fns]
-    row_data: dict[str, str] = {}
-    if mol:
-        for d_n, fn in zip(disp_headers, callables):
-            try:
-                v = fn(mol)
-                row_data[d_n] = f"{v:.3f}" if isinstance(v, float) else str(v)
-            except Exception:
-                row_data[d_n] = "N/A"
-    else:
-        for d_n in disp_headers:
-            row_data[d_n] = "N/A"
-    return (idx, row_data)
+    return _calc_descriptor_row_values(
+        idx,
+        mol,
+        list(disp_headers),
+        tuple(int_fns),
+        smarts_cache,
+        pka_states=pka_states,
+        pka_cache_used=bool(pka_cache_used),
+    )
 
 
 # --- Conformer generation (Tools → Generate Conformations) -----------------
@@ -1031,7 +1084,6 @@ class CalcWorker(QRunnable):
                 return
         # ThreadPoolExecutor row tasks so RDKit never runs on the Qt GUI thread and small jobs
         # still use a worker thread instead of the process-queue thread doing every row inline.
-        heavy_pharm2d = _descriptor_int_fns_include_pharm2d(self.int_fns)
         cancel_ev = self.cancel_event
         cancelled = False
 
@@ -1064,13 +1116,9 @@ class CalcWorker(QRunnable):
                 force_signal=force,
             )
 
-        # RDKit descriptor work holds the GIL; large tables use child processes so Qt stays responsive.
-        mp_min = int(cfg.descriptor_process_pool_min_rows)
-        use_process_pool = (
-            (heavy_pharm2d or nrows >= mp_min)
-            and nrows >= 2
-            and max_workers > 1
-        )
+        # RDKit descriptor / fingerprint work holds the GIL; child processes keep Qt responsive.
+        mp_min = _descriptor_process_pool_min_rows(cfg, self.int_fns)
+        use_process_pool = nrows >= mp_min and nrows >= 2 and max_workers > 1
         mp_used = False
         if use_process_pool:
             try:
@@ -1081,6 +1129,7 @@ class CalcWorker(QRunnable):
                     pka_by_idx=pka_by_idx,
                     pka_cache_used=pka_cache_used,
                     max_workers=max_workers,
+                    batch_size=int(cfg.descriptor_process_pool_batch_size),
                     cancel_event=cancel_ev,
                     emit_progress=_emit_progress,
                 )

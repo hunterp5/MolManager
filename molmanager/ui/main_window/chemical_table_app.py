@@ -635,6 +635,12 @@ class ChemicalTableApp(
                 None,
             ),
             (
+                None,
+                None,
+                None,
+                None,
+            ),
+            (
                 "Disconnect Largest Fragments…",
                 self.run_disconnect_fragments,
                 "Split disconnected structure fragments into separate rows, keeping the heaviest fragment.",
@@ -647,12 +653,21 @@ class ChemicalTableApp(
                 None,
             ),
             (
+                "Protonate…",
+                self.run_protonate,
+                "Generate the dominant protomer (pkasolver) into a new column and render it.",
+                None,
+            ),
+            (
                 "Render 2D…",
                 self.run_render_2d_structures,
                 "Regenerate 2D structure drawings for selected rows as a background batch (see Processes).",
                 "tools.render_2d",
             ),
         ):
+            if title is None:
+                prepare_menu.addSeparator()
+                continue
             act = QAction(title, self, triggered=slot)
             if hk_id:
                 self._bind_hotkey(hk_id, act)
@@ -693,13 +708,30 @@ class ChemicalTableApp(
             act.setToolTip(tip)
             conformations_menu.addAction(act)
 
+        fp_menu = tools.addMenu("&Fingerprints")
+        fp_menu.setToolTipsVisible(True)
+
+        act_fp_sim = self._bind_hotkey(
+            "tools.fingerprint_similarity",
+            QAction("Fingerprint Similarity...", self, triggered=self.open_fp_similarity),
+        )
+        act_fp_sim.setToolTip("Search the table by 2D fingerprint similarity to a query structure.")
+        fp_menu.addAction(act_fp_sim)
+
+        act_diverse = QAction("Diverse Subset…", self, triggered=self.open_diverse_subset)
+        act_diverse.setToolTip(
+            "Pick a maximally diverse subset of compounds (MaxMin on fingerprint Tanimoto distance)."
+        )
+        fp_menu.addAction(act_diverse)
+
+        act_cluster = self._bind_hotkey(
+            "data.cluster",
+            QAction("Cluster…", self, triggered=self.open_cluster_dialog),
+        )
+        act_cluster.setToolTip("Cluster compounds by fingerprint (K-Means, Butina, sphere exclusion, etc.).")
+        fp_menu.addAction(act_cluster)
+
         for title, slot, tip, hk_id in (
-            (
-                "Fingerprint Similarity...",
-                self.open_fp_similarity,
-                "Search the table by 2D fingerprint similarity to a query structure.",
-                "tools.fingerprint_similarity",
-            ),
             (
                 "pKa Predictor…",
                 self.open_pka_predictor,
@@ -823,12 +855,6 @@ class ChemicalTableApp(
             self._bind_hotkey(
                 "data.analyze_table",
                 QAction("Analyze Table…", self, triggered=self.open_data_analysis),
-            )
-        )
-        data_menu.addAction(
-            self._bind_hotkey(
-                "data.cluster",
-                QAction("&Cluster…", self, triggered=self.open_cluster_dialog),
             )
         )
         data_menu.addSeparator()

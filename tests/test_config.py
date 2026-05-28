@@ -64,3 +64,11 @@ def test_structure_render_limits_env(monkeypatch):
 def test_tool_progress_poll_ms_env(monkeypatch):
     monkeypatch.setenv("MOLMANAGER_TOOL_PROGRESS_POLL_MS", "350")
     assert load_config().tool_progress_poll_ms == 350
+
+
+def test_descriptor_fp_process_pool_env(monkeypatch):
+    monkeypatch.setenv("MOLMANAGER_DESCRIPTOR_FP_PROCESS_POOL_MIN_ROWS", "128")
+    monkeypatch.setenv("MOLMANAGER_DESCRIPTOR_PROCESS_POOL_BATCH_SIZE", "16")
+    cfg = load_config()
+    assert cfg.descriptor_fp_process_pool_min_rows == 128
+    assert cfg.descriptor_process_pool_batch_size == 16

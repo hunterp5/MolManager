@@ -65,6 +65,21 @@ class FPSimilaritySignals(QObject):
     failed = pyqtSignal(str)
 
 
+class DiverseSubsetSignals(QObject):
+    """Completion signals for :class:`DiverseSubsetWorker` (owned by the dialog)."""
+
+    # picked oids; column_rows; cached fp count; newly computed fp count
+    finished = pyqtSignal(list, list, int, int)
+    failed = pyqtSignal(str)
+
+
+class BulkSimilaritySignals(QObject):
+    """Completion signals for :class:`BulkSimilarityWorker` (owned by the dialog)."""
+
+    finished = pyqtSignal(object)  # BulkSimilarityResult
+    failed = pyqtSignal(str)
+
+
 class SubstructureFilterSignals(QObject):
     """Completion signals for :class:`SubstructureFilterWorker` (owned by the main window)."""
 
