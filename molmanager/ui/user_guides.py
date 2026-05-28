@@ -402,7 +402,7 @@ points to select matching rows in the table when plot sync is active.</p>
 <h3>Medicinal chemistry plots</h3>
 <ul>
 <li><b>BOILED-Egg plot</b> — TPSA vs LogP with GIA (white) and BBB (yellow) regions for oral absorption / BBB context.</li>
-<li><b>Golden triangle plot</b> — molecular weight vs LogP with the drug-likeness triangle overlay.</li>
+<li><b>Golden Triangle plot</b> — molecular weight vs LogP with the drug-likeness triangle overlay.</li>
 </ul>
 <p>Color points by a numeric column to highlight property gradients across the set.</p>
 """,

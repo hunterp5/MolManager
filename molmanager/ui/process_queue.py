@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import threading
+import time
 import uuid
 from collections import deque
 from collections.abc import Callable
@@ -20,6 +21,7 @@ class _QueuedJob:
     job_id: str
     title: str
     factory: Callable[[threading.Event], QRunnable]
+    enqueued_at: float
 
 
 class ProcessQueueManager(QObject):
@@ -42,6 +44,7 @@ class ProcessQueueManager(QObject):
         self._busy = False
         self._current_job_id: str | None = None
         self._current_title: str | None = None
+        self._current_started_at: float | None = None
         self._running_cancel: threading.Event | None = None
         self.thread_finished.connect(self._on_job_thread_finished, Qt.QueuedConnection)
         self.fast_thread_finished.connect(self._on_fast_job_thread_finished, Qt.QueuedConnection)
@@ -77,7 +80,14 @@ class ProcessQueueManager(QObject):
     def enqueue(self, title: str, factory: Callable[[threading.Event], QRunnable]) -> str:
         """Queue a job; returns job id. ``factory`` receives a fresh cancel event for this run."""
         job_id = str(uuid.uuid4())[:8]
-        self._queue.append(_QueuedJob(job_id=job_id, title=title.strip() or "Job", factory=factory))
+        self._queue.append(
+            _QueuedJob(
+                job_id=job_id,
+                title=title.strip() or "Job",
+                factory=factory,
+                enqueued_at=time.monotonic(),
+            )
+        )
         self.snapshot_changed.emit()
         self._maybe_start_next()
         return job_id
@@ -93,7 +103,11 @@ class ProcessQueueManager(QObject):
         except Exception:
             logger.exception("Fast job factory failed (job_id=%s)", job_id)
             return job_id
-        self._fast_running[job_id] = {"title": title.strip() or "Interactive job", "cancel": cancel_ev}
+        self._fast_running[job_id] = {
+            "title": title.strip() or "Interactive job",
+            "cancel": cancel_ev,
+            "started_at": time.monotonic(),
+        }
         self.snapshot_changed.emit()
         self._fast_threadpool().start(_FastQueueJobRunner(self, job_id, inner))
         return job_id
@@ -170,7 +184,15 @@ class ProcessQueueManager(QObject):
 
     def snapshot(self) -> dict[str, Any]:
         """Serializable view for the Processes dialog."""
-        queued = [{"job_id": j.job_id, "title": j.title, "status": "Queued"} for j in self._queue]
+        queued = [
+            {
+                "job_id": j.job_id,
+                "title": j.title,
+                "status": "Queued",
+                "enqueued_at": j.enqueued_at,
+            }
+            for j in self._queue
+        ]
         running = None
         if self._busy and self._current_job_id:
             running = {
@@ -178,6 +200,7 @@ class ProcessQueueManager(QObject):
                 "title": self._current_title or "",
                 "status": "Running",
                 "cancellable": self._running_cancel is not None and not self._running_cancel.is_set(),
+                "started_at": self._current_started_at,
             }
         fast_running = []
         for jid, info in self._fast_running.items():
@@ -189,6 +212,7 @@ class ProcessQueueManager(QObject):
                         "title": str(info.get("title") or "Interactive job"),
                         "status": "Running",
                         "cancellable": True,
+                        "started_at": info.get("started_at"),
                     }
                 )
         return {"running": running, "queued": queued, "fast_running": fast_running}
@@ -200,6 +224,7 @@ class ProcessQueueManager(QObject):
         self._busy = False
         self._current_job_id = None
         self._current_title = None
+        self._current_started_at = None
         self._running_cancel = None
         self.snapshot_changed.emit()
         self._maybe_start_next()
@@ -214,6 +239,7 @@ class ProcessQueueManager(QObject):
         self._busy = True
         self._current_job_id = job.job_id
         self._current_title = job.title
+        self._current_started_at = time.monotonic()
         self._running_cancel = cancel_ev
         try:
             inner = job.factory(cancel_ev)
@@ -222,6 +248,7 @@ class ProcessQueueManager(QObject):
             self._busy = False
             self._current_job_id = None
             self._current_title = None
+            self._current_started_at = None
             self._running_cancel = None
             self.snapshot_changed.emit()
             self._maybe_start_next()

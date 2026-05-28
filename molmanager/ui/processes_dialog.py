@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
+import time
 from typing import TYPE_CHECKING, Any
 
-from PyQt5.QtCore import Qt
+from PyQt5.QtCore import Qt, QTimer
 from PyQt5.QtWidgets import (
     QAbstractItemView,
     QDialog,
@@ -34,11 +35,12 @@ class ProcessesDialog(QDialog):
 
         root = QVBoxLayout(self)
 
-        self._table = QTableWidget(0, 3)
-        self._table.setHorizontalHeaderLabels(["Status", "Job ID", "Title"])
+        self._table = QTableWidget(0, 4)
+        self._table.setHorizontalHeaderLabels(["Status", "Elapsed", "Job ID", "Title"])
         self._table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeToContents)
         self._table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeToContents)
-        self._table.horizontalHeader().setSectionResizeMode(2, QHeaderView.Stretch)
+        self._table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeToContents)
+        self._table.horizontalHeader().setSectionResizeMode(3, QHeaderView.Stretch)
         self._table.setSelectionBehavior(QAbstractItemView.SelectRows)
         self._table.setSelectionMode(QAbstractItemView.SingleSelection)
         self._table.setEditTriggers(QAbstractItemView.NoEditTriggers)
@@ -67,6 +69,11 @@ class ProcessesDialog(QDialog):
         hub = getattr(self._app, "background_activity", None)
         if hub is not None:
             hub.changed.connect(self._reload)
+
+        self._timer = QTimer(self)
+        self._timer.setInterval(1000)
+        self._timer.timeout.connect(self._reload)
+        self._timer.start()
 
         self._reload()
         make_window_minimizable(self)
@@ -114,8 +121,9 @@ class ProcessesDialog(QDialog):
             it0 = QTableWidgetItem(st)
             it0.setData(Qt.UserRole, meta)
             self._table.setItem(i, 0, it0)
-            self._table.setItem(i, 1, QTableWidgetItem(jid))
-            self._table.setItem(i, 2, QTableWidgetItem(title))
+            self._table.setItem(i, 1, QTableWidgetItem(self._format_elapsed(meta)))
+            self._table.setItem(i, 2, QTableWidgetItem(jid))
+            self._table.setItem(i, 3, QTableWidgetItem(title))
 
         if prev:
             for i in range(self._table.rowCount()):
@@ -136,6 +144,21 @@ class ProcessesDialog(QDialog):
         if prev.get("kind") == "smina":
             return True
         return prev.get("job_id") == cur.get("job_id")
+
+    @staticmethod
+    def _format_elapsed(meta: dict) -> str:
+        started_at = meta.get("started_at")
+        enqueued_at = meta.get("enqueued_at")
+        base = started_at if isinstance(started_at, (int, float)) else enqueued_at
+        if not isinstance(base, (int, float)):
+            return ""
+        s = max(0, int(time.monotonic() - float(base)))
+        h = s // 3600
+        m = (s % 3600) // 60
+        sec = s % 60
+        if h:
+            return f"{h}:{m:02d}:{sec:02d}"
+        return f"{m}:{sec:02d}"
 
     def _on_cancel(self) -> None:
         m = self._selection_meta()
