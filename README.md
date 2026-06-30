@@ -4,17 +4,24 @@ Small desktop chemistry manager built with **PyQt5** + **RDKit**.
 
 ### Install (Windows)
 
-Create/activate a virtualenv, then either **core only** or **full stack** (pKa + Boltz Python packages):
+Create/activate a virtualenv (**Python 3.10–3.12**, 3.11 recommended), then from the **repo root**:
+
+```bash
+pip install -U pip
+pip install -e .
+# optional full Python stack (pKa needs CPU PyTorch 2.5.1 — use the install script, not a second venv):
+scripts\install_pytorch_pka.ps1
+pip install -e ".[boltz]"
+```
+
+Or install dependencies only, then register the app package:
 
 ```bash
 pip install -r requirements.txt
-# optional full Python stack (pKa needs CPU PyTorch 2.5.1 — use the install script, not a second venv):
-pip install -r requirements.txt
-scripts\install_pytorch_pka.ps1
-pip install -r requirements-boltz.txt
+pip install -e .
 ```
 
-Or editable install: `pip install -e ".[dev]"` (see `pyproject.toml` for extras `pka`, `boltz`, `permeability`).
+**Do not** pass `requirements.txt` to conda/mamba as a solver spec; use **pip** inside a venv (see install notes).
 
 **pKa / PyTorch:** use **one** Python environment. Run `scripts\install_pytorch_pka.ps1` (Windows) or `bash scripts/install_pytorch_pka.sh` (macOS/Linux) to install CPU **torch 2.5.1** plus `torch-scatter` / `torch-sparse` and **pkasolver**. The script also uninstalls **admet-ai** (it pins torch ≥2.8 and breaks pkasolver). Do not use separate `.venvs/pka` or `.venvs/admet-ai` folders.
 
@@ -30,12 +37,12 @@ Requires **Python 3.10+** (3.11 recommended). From the repo root:
 python3 -m venv .venv
 source .venv/bin/activate
 pip install -U pip
-pip install -r requirements.txt
+pip install -e .
 # optional full stack (pKa / Boltz — see requirements-pka.txt for PyTorch on Apple Silicon):
-# pip install -r requirements-all.txt
+# pip install -e ".[pka,boltz]"
 ```
 
-Or editable install: `pip install -e ".[dev]"` (see `pyproject.toml` for extras `pka`, `boltz`, `permeability`).
+Editable extras: `pip install -e ".[dev]"` (see `pyproject.toml` for `pka`, `boltz`, `permeability`).
 
 **Optional CLI tools:** copy macOS binaries into `molmanager/resources/bin/mac/` (`vina`, `boltz`) or run
 `scripts/bootstrap_optional_tools.sh` for guided setup. Boltz is often available on `PATH` after
@@ -47,7 +54,7 @@ If **RDKit** or **PyQtWebEngine** fail via pip, use **conda-forge** for those pa
 conda create -n molmanager python=3.11
 conda activate molmanager
 conda install -c conda-forge rdkit pyqt
-pip install -r requirements.txt
+pip install -e .
 ```
 
 **Apple Silicon:** core MolManager runs natively. For **pKa**, run `bash scripts/install_pytorch_pka.sh`
@@ -57,15 +64,20 @@ then `pip install -r requirements-pka.txt`).
 
 ### Install notes (all platforms)
 
-- **RDKit** can be finicky via pip on some setups. If `rdkit-pypi` fails, use **conda** instead:
+- **RDKit** on PyPI is the **`rdkit`** package (`rdkit-pypi` is deprecated and no longer receives new wheels). If pip fails, use **conda-forge** instead:
   - `conda install -c conda-forge rdkit`
-- **NumPy 2.x** is not compatible with current `rdkit-pypi` wheels (you may see `_ARRAY_API` / import errors). This project pins **`numpy<2`** in `requirements.txt`; reinstall deps after pulling updates (`pip install -r requirements.txt`).
+- **NumPy 2.x** can still cause `_ARRAY_API` / import errors with some RDKit builds. This project pins **`numpy<2`** in `requirements.txt`.
+- **`python -m molmanager` requires the app package to be installed** (`pip install -e .` from the repo root). Installing only `requirements.txt` pulls dependencies but not the `molmanager` module itself.
 - **Linux:** same venv flow as macOS; optional tools go in `molmanager/resources/bin/linux/`; use `scripts/bootstrap_optional_tools.sh`.
 
 ### Run
 
+From the repo root (after `pip install -e .`), or from any directory once the venv is active:
+
 ```bash
 python -m molmanager
+# or, after editable install:
+molmanager
 ```
 
 Optional environment variables:
@@ -99,7 +111,7 @@ Optional environment variables:
 ### Running tests (development)
 
 ```bash
-pip install -r requirements.txt -r requirements-dev.txt
+pip install -e ".[dev]"
 set QT_QPA_PLATFORM=offscreen
 python -m pytest tests/ -v
 ```

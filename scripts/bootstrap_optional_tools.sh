@@ -5,7 +5,7 @@ cd "$ROOT"
 
 echo "Installing core Python packages..."
 python -m pip install -U pip
-python -m pip install -r requirements.txt
+python -m pip install -e .
 
 if [[ -f scripts/install_pytorch_pka.sh ]]; then
   echo ""
@@ -39,4 +39,4 @@ echo "Optional executables (copy into): $BINDIR"
 echo "  vina   - https://vina.scripps.edu"
 echo "  boltz  - from your venv bin after: pip install boltz"
 echo ""
-echo "Or set MOLMANAGER_BUNDLE_DIR. Run: python -m molmanager"
+echo "Or set MOLMANAGER_BUNDLE_DIR. Run: python -m molmanager   (or: molmanager)"

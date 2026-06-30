@@ -1,16 +1,18 @@
+# Core runtime dependencies for molmanager (also declared in pyproject.toml).
+# Prefer: pip install -e .   (installs the app package + these deps)
 PyQt5>=5.15
 # Embedded 3D structure viewer (View in 3D); optional — without it, the app opens the browser instead.
 PyQtWebEngine>=5.15
 # Keep Plotly in the v5 line for broader Qt WebEngine compatibility.
 plotly>=5.0,<6
-# RDKit wheels (rdkit-pypi) are built against NumPy 1.x; NumPy 2.x causes _ARRAY_API / import failures.
+# RDKit wheels are built against NumPy 1.x; NumPy 2.x can cause _ARRAY_API / import failures.
 numpy>=1.24,<2
 pandas>=2.0
 scipy>=1.10
 sqlalchemy>=2.0
 pubchempy>=1.0.4
 chembl_webresource_client>=0.10.9
-rdkit-pypi>=2022.9.5
+rdkit>=2023.3.1
 scikit-learn>=1.3
 umap-learn>=0.5.5
 

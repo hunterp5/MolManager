@@ -7,7 +7,7 @@ This document supports building an installer (PyInstaller, Inno Setup, MSI, etc.
 | Component | How it ships |
 |-----------|----------------|
 | molmanager app (`molmanager` package) | PyInstaller one-folder/one-file, or `pip install -e .` |
-| Python dependencies | `requirements.txt` + optional `requirements-pka.txt` + `boltz` extra |
+| Python dependencies | `pip install -e .` (or `requirements.txt` + `pip install -e .`) |
 | 3Dmol.js | Already in `molmanager/ui/static/` |
 | AutoDock Vina | **Optional** binary in `molmanager/resources/bin/<platform>/` (not redistributed in git) |
 | Boltz-2 CLI | **`pip install boltz`** (or bundled copy in `resources/bin/`) |
@@ -19,7 +19,7 @@ python -m venv .venv
 # Windows:  .venv\Scripts\activate
 # macOS/Linux:  source .venv/bin/activate
 pip install -U pip
-pip install -r requirements-all.txt
+pip install -e .
 ```
 
 Optional pKa stack: install into the **same** venv as MolManager (no `.venvs/pka`):
@@ -29,6 +29,7 @@ Optional pKa stack: install into the **same** venv as MolManager (no `.venvs/pka
 scripts\install_pytorch_pka.ps1
 # macOS / Linux
 bash scripts/install_pytorch_pka.sh
+pip install -e ".[pka,boltz]"
 ```
 
 Editable install with extras (install PyTorch via the script above before `[pka]`):
