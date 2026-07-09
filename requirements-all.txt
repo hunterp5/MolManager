@@ -1,5 +1,4 @@
-# Full Python stack for molmanager (core + optional pKa + Boltz CLI package).
+# Full Python stack for molmanager (core + optional pKa).
 # Windows pKa: install CPU PyTorch first — see requirements-pka.txt header comments.
 -r requirements.txt
 -r requirements-pka.txt
--r requirements-boltz.txt

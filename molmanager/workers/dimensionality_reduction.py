@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import threading
 from dataclasses import asdict
 
 import numpy as np
@@ -24,14 +25,29 @@ class DimensionReductionSignals(QObject):
 
 
 class DimensionReductionWorker(QRunnable):
-    def __init__(self, params: dict, signals: DimensionReductionSignals):
+    def __init__(
+        self,
+        params: dict,
+        signals: DimensionReductionSignals,
+        cancel_event: threading.Event | None = None,
+    ):
         super().__init__()
         self.params = dict(params)
         self.signals = signals
+        self.cancel_event = cancel_event
+
+    def _cancelled(self) -> bool:
+        return self.cancel_event is not None and self.cancel_event.is_set()
 
     def run(self) -> None:
+        if self._cancelled():
+            self.signals.failed.emit("Cancelled.")
+            return
         try:
             result = _compute(self.params)
+            if self._cancelled():
+                self.signals.failed.emit("Cancelled.")
+                return
             self.signals.finished.emit(result)
         except Exception as exc:
             self.signals.failed.emit(str(exc) or exc.__class__.__name__)

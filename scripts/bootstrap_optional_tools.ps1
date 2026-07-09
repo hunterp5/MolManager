@@ -5,7 +5,7 @@ Set-Location $Root
 
 Write-Host "Installing core + optional Python packages..."
 python -m pip install -U pip
-python -m pip install -e .
+python -m pip install -r requirements.txt
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
 if (Test-Path "scripts\install_pytorch_pka.ps1") {
@@ -40,4 +40,4 @@ Write-Host "    vina.exe   - from https://vina.scripps.edu"
 Write-Host "    boltz.exe  - from your Python Scripts after: pip install boltz"
 Write-Host ""
 Write-Host "Or set MOLMANAGER_BUNDLE_DIR to a folder containing those binaries."
-Write-Host "Run: python -m molmanager   (or: molmanager)"
+Write-Host "Run: python -m molmanager"
