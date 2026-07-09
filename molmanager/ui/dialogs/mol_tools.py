@@ -8,24 +8,100 @@ from PyQt5.QtWidgets import (
     QDialog,
     QDialogButtonBox,
     QDoubleSpinBox,
+    QFileDialog,
     QFormLayout,
     QGroupBox,
     QHBoxLayout,
     QLineEdit,
     QMessageBox,
+    QPushButton,
     QRadioButton,
     QSpinBox,
     QVBoxLayout,
+    QWidget,
 )
 
 from ...workers import ConformerGenParams, SuperposeParams
 from ..qt_widget_utils import make_window_minimizable
-from ..strings import TOOL_CORE_DECOMP, TOOL_SINGLE_CONFORMATION
+from ..strings import TOOL_ADD_EXPLICIT_HYDROGENS, TOOL_CORE_DECOMP, TOOL_SINGLE_CONFORMATION
 from ...fragment_decomposition import detect_fragment_column_prefixes
 from .scope import selection_scope_checked
 
 
 _RESERVED_DISCONNECT_COLUMNS = frozenset({"ID_HIDDEN"})
+
+
+@dataclass(frozen=True)
+class ConformerOutputOptions:
+    """Optional destinations for generated conformers beyond the ``confs`` column."""
+
+    add_to_table: bool = False
+    save_to_file: bool = False
+    save_path: str | None = None
+
+
+class ConformerOutputOptionsPanel(QWidget):
+    """Checkboxes and path picker for table append / SDF export."""
+
+    def __init__(self, parent: QWidget | None = None):
+        super().__init__(parent)
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(4)
+
+        self.add_to_table_cb = QCheckBox("Add Conformations to Table")
+        self.add_to_table_cb.setToolTip(
+            "Append each generated conformer as a new table row (Parent OID and Conformer columns)."
+        )
+        layout.addWidget(self.add_to_table_cb)
+
+        self.save_to_file_cb = QCheckBox("Save Conformations to File")
+        self.save_to_file_cb.setToolTip("Write all generated conformers to an SDF file.")
+        self.save_to_file_cb.toggled.connect(self._sync_save_path_enabled)
+        layout.addWidget(self.save_to_file_cb)
+
+        path_row = QHBoxLayout()
+        self.save_path_edit = QLineEdit()
+        self.save_path_edit.setPlaceholderText("conformers.sdf")
+        self.save_path_edit.setEnabled(False)
+        path_row.addWidget(self.save_path_edit, 1)
+        self.save_browse_btn = QPushButton("Browse…")
+        self.save_browse_btn.setEnabled(False)
+        self.save_browse_btn.clicked.connect(self._browse_save_path)
+        path_row.addWidget(self.save_browse_btn)
+        layout.addLayout(path_row)
+
+    def _sync_save_path_enabled(self, enabled: bool) -> None:
+        self.save_path_edit.setEnabled(bool(enabled))
+        self.save_browse_btn.setEnabled(bool(enabled))
+
+    def _browse_save_path(self) -> None:
+        path, _ = QFileDialog.getSaveFileName(
+            self,
+            "Save conformations",
+            self.save_path_edit.text() or "conformers.sdf",
+            "SDF (*.sdf);;All files (*.*)",
+        )
+        if path:
+            if not path.lower().endswith(".sdf"):
+                path = f"{path}.sdf"
+            self.save_path_edit.setText(path)
+
+    def options(self) -> ConformerOutputOptions:
+        save = bool(self.save_to_file_cb.isChecked())
+        path = (self.save_path_edit.text() or "").strip() or None
+        return ConformerOutputOptions(
+            add_to_table=bool(self.add_to_table_cb.isChecked()),
+            save_to_file=save,
+            save_path=path if save else None,
+        )
+
+    def validate(self, dialog: QDialog) -> bool:
+        opts = self.options()
+        if opts.save_to_file and not opts.save_path:
+            QMessageBox.warning(dialog, dialog.windowTitle(), "Choose an output SDF file path.")
+            return False
+        return True
 
 
 def _validate_fragment_output_columns(
@@ -291,6 +367,46 @@ class NeutralizeDialog(QDialog):
         )
 
 
+class AddExplicitHydrogensDialog(QDialog):
+    """Add explicit hydrogen atoms to structures in a chosen column."""
+
+    def __init__(self, source_labels: list[str], selected_row_count: int = 0, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle(TOOL_ADD_EXPLICIT_HYDROGENS)
+        self.resize(420, 140)
+        self._have_selection = selected_row_count > 0
+
+        root = QVBoxLayout(self)
+        f = QFormLayout()
+        self.src_combo = QComboBox()
+        self.src_combo.addItems(source_labels)
+        f.addRow("Target column:", self.src_combo)
+        root.addLayout(f)
+        self.only_selected_cb = QCheckBox("Only selected rows")
+        self._only_selected_scope_prefix = "Only selected rows"
+        if self._have_selection:
+            self.only_selected_cb.setText(f"{self._only_selected_scope_prefix} ({selected_row_count} row(s))")
+        else:
+            self.only_selected_cb.setEnabled(False)
+        root.addWidget(self.only_selected_cb)
+        self.no_render_2d_cb = QCheckBox("No Render 2D")
+        self.no_render_2d_cb.setToolTip("Skip redrawing 2D images after adding hydrogens.")
+        root.addWidget(self.no_render_2d_cb)
+        box = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        box.accepted.connect(self.accept)
+        box.rejected.connect(self.reject)
+        root.addWidget(box)
+        make_window_minimizable(self)
+
+    def config(self) -> tuple[str, bool, bool]:
+        """Returns ``(target_column, only_selected_rows, no_render_2d)``."""
+        return (
+            self.src_combo.currentText(),
+            selection_scope_checked(self),
+            self.no_render_2d_cb.isChecked(),
+        )
+
+
 class GenerateSingleConformationDialog(QDialog):
     """Embed one conformer per row, minimize, and store in the ``confs`` column."""
 
@@ -319,25 +435,33 @@ class GenerateSingleConformationDialog(QDialog):
         form.addRow("Max minimizer iterations:", self.max_iters_sb)
         root.addLayout(form)
 
-        scope_box = QGroupBox("Scope")
-        scope_lyt = QVBoxLayout(scope_box)
         self.only_selected_cb = QCheckBox("Only selected rows")
         self._only_selected_scope_prefix = "Only selected rows"
         if self._have_selection:
             self.only_selected_cb.setText(f"{self._only_selected_scope_prefix} ({selected_row_count} row(s))")
         else:
             self.only_selected_cb.setEnabled(False)
-        scope_lyt.addWidget(self.only_selected_cb)
-        root.addWidget(scope_box)
+        root.addWidget(self.only_selected_cb)
+
+        self.output_panel = ConformerOutputOptionsPanel(self)
+        root.addWidget(self.output_panel)
 
         box = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
-        box.accepted.connect(self.accept)
+        box.accepted.connect(self._try_accept)
         box.rejected.connect(self.reject)
         root.addWidget(box)
         make_window_minimizable(self)
 
+    def _try_accept(self) -> None:
+        if not self.output_panel.validate(self):
+            return
+        self.accept()
+
     def only_selected_rows(self) -> bool:
         return selection_scope_checked(self)
+
+    def output_options(self) -> ConformerOutputOptions:
+        return self.output_panel.options()
 
     def params(self) -> ConformerGenParams:
         return ConformerGenParams.single_lowest_energy(
@@ -404,25 +528,33 @@ class GenerateConformationsDialog(QDialog):
 
         root.addLayout(form)
 
-        scope_box = QGroupBox("Scope")
-        scope_lyt = QVBoxLayout(scope_box)
         self.only_selected_cb = QCheckBox("Only selected rows")
         self._only_selected_scope_prefix = "Only selected rows"
         if self._have_selection:
             self.only_selected_cb.setText(f"{self._only_selected_scope_prefix} ({selected_row_count} row(s))")
         else:
             self.only_selected_cb.setEnabled(False)
-        scope_lyt.addWidget(self.only_selected_cb)
-        root.addWidget(scope_box)
+        root.addWidget(self.only_selected_cb)
+
+        self.output_panel = ConformerOutputOptionsPanel(self)
+        root.addWidget(self.output_panel)
 
         box = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
-        box.accepted.connect(self.accept)
+        box.accepted.connect(self._try_accept)
         box.rejected.connect(self.reject)
         root.addWidget(box)
         make_window_minimizable(self)
 
+    def _try_accept(self) -> None:
+        if not self.output_panel.validate(self):
+            return
+        self.accept()
+
     def only_selected_rows(self) -> bool:
         return selection_scope_checked(self)
+
+    def output_options(self) -> ConformerOutputOptions:
+        return self.output_panel.options()
 
     def params(self) -> ConformerGenParams:
         return ConformerGenParams(

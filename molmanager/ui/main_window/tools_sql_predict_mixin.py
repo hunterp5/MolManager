@@ -243,6 +243,30 @@ class ToolsSqlPredictMixin:
         dlg.setAttribute(Qt.WA_DeleteOnClose, True)
         self._prepare_tool_dialog(dlg)
 
+    def open_dock_prepare(self):
+        from ..dialogs.pdbqt_generator import PdbqtGeneratorDialog
+
+        dlg = reuse_or_show_modeless_singleton(
+            self,
+            "_pdbqt_generator_dialog",
+            lambda: PdbqtGeneratorDialog(self),
+            self._on_pdbqt_generator_dialog_destroyed,
+        )
+        dlg.setAttribute(Qt.WA_DeleteOnClose, True)
+        self._prepare_tool_dialog(dlg)
+
+    def open_dock_prepare_pdb(self):
+        from ..dialogs.pdb_fixer import PdbFixerDialog
+
+        dlg = reuse_or_show_modeless_singleton(
+            self,
+            "_pdb_fixer_dialog",
+            lambda: PdbFixerDialog(self),
+            self._on_pdb_fixer_dialog_destroyed,
+        )
+        dlg.setAttribute(Qt.WA_DeleteOnClose, True)
+        self._prepare_tool_dialog(dlg)
+
     def _ensure_columns(self, col_names: list[str]) -> None:
         """Ensure the table has these headers (adds columns to the right if needed)."""
         if not self.headers:

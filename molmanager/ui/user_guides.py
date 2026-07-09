@@ -111,9 +111,9 @@ GUIDE_SECTIONS: tuple[GuideSection, ...] = (
             ),
             GuideEntry(
                 "smina_dock",
-                "Docking (Smina)",
-                "Dock (Smina) — rigid docking",
-                "PDBQT receptor/ligand docking with Smina.",
+                "Dock",
+                "Dock — Prepare PDB, Prepare, and Smina",
+                "PDBFixer receptor cleanup, PDBQT preparation with Meeko, and rigid docking with Smina.",
             ),
         ),
     ),
@@ -365,6 +365,7 @@ do not match. Combine substructure, numeric slider, text, and category filters.<
 <li><b>Fast Prepare</b> — keep largest fragment, neutralize, then batch Render 2D in one job.</li>
 <li><b>Disconnect Largest Fragments</b> — split salts; keep the largest piece.</li>
 <li><b>Neutralize</b> — adjust protonation toward net charge 0.</li>
+<li><b>Add Explicit Hydrogens</b> — expand implicit H atoms to explicit hydrogens (RDKit AddHs).</li>
 <li><b>Render 2D</b> — draw structures into a column; optional “show implicit hydrogens”.</li>
 <li><b>Protonate</b> — dominant protomer at a chosen pH; optional 2D render and <b>% Protomer</b> column.</li>
 </ul>
@@ -373,8 +374,8 @@ do not match. Combine substructure, numeric slider, text, and category filters.<
 Scope can be all visible rows or <b>only selected rows</b>. New columns appear on the right.</p>
 <h3>Tools → Conformations</h3>
 <ul>
-<li><b>Generate Conformations</b> — ensembles stored in a <b>confs</b> column.</li>
-<li><b>Generate Single Conformation</b> — one minimized geometry per row.</li>
+<li><b>Generate Conformations</b> — ensembles stored in a <b>confs</b> column; optionally append rows or export SDF.</li>
+<li><b>Generate Single Conformation</b> — one minimized geometry per row; same optional table/SDF outputs.</li>
 <li><b>Superpose Conformers</b> — align structures in <b>confs</b> to a reference.</li>
 </ul>
 """,
@@ -501,20 +502,33 @@ Tanimoto on the server.</p>
 already in your table.</p>
 """,
     "smina_dock": """
-<h2>Docking with Smina</h2>
-<p><b>Tools → Dock (Smina)</b> runs rigid receptor–ligand docking in a user-defined search box.</p>
-<h3>Before you start</h3>
+<h2>Docking</h2>
+<p><b>Tools → Dock</b> groups receptor PDB cleanup, PDBQT preparation, and rigid receptor–ligand docking.</p>
+<h3>Prepare PDB (PDBFixer)</h3>
+<p><b>Tools → Dock → Prepare PDB</b> cleans a receptor <b>PDB</b> before docking:</p>
+<ul>
+<li>Remove heterogens (ligands, ions, buffers); optionally keep crystallographic waters</li>
+<li>Replace non-standard residues (e.g. selenomethionine → methionine)</li>
+<li>Add missing heavy atoms and hydrogens at a chosen pH (default 7.0)</li>
+</ul>
+<p>Install <b>pdbfixer</b> and <b>OpenMM 8.2.x</b> (<code>pip install pdbfixer 'openmm&gt;=8.2,&lt;8.3'</code>).
+OpenMM 8.3+ can crash during hydrogen placement on Windows. If the Meeko Prepare dialog is open,
+the output path is copied into its receptor PDB field.</p>
+<h3>Prepare (Meeko)</h3>
+<p><b>Tools → Dock → Prepare</b> generates receptor and/or ligand <b>PDBQT</b> files from:</p>
+<ul>
+<li>Receptor <b>PDB</b> input</li>
+<li>Ligand <b>SDF</b>, one-SMILES-per-line text, or <b>selected table rows</b></li>
+</ul>
+<p>If the Smina dialog is already open, generated paths are copied into its receptor/ligand fields.</p>
+<h3>Smina</h3>
+<p><b>Tools → Dock → Smina</b> runs rigid docking in a user-defined search box.</p>
 <ul>
 <li>Install <b>smina</b> and place it on your PATH, or copy the binary into
 <code>molmanager/resources/bin/&lt;platform&gt;/</code>.</li>
-<li>Prepare <b>PDBQT</b> files for receptor and ligand. Use <b>Generate .pdbqt</b> in the docking dialog
-(Meeko) from SDF, SMILES, selected rows, or PDB receptor files.</li>
-</ul>
-<h3>In the dialog</h3>
-<ul>
+<li>Set receptor and ligand PDBQT paths (from Prepare or your own files).</li>
 <li>Set search box center and size (Å) aligned with the receptor.</li>
-<li>Choose output path for docked poses.</li>
-<li>Adjust exhaustiveness, number of modes, and CPU threads as needed.</li>
+<li>Choose output path for docked poses and adjust exhaustiveness, modes, and CPU threads.</li>
 </ul>
 <p>The run appears in <b>Processes</b> as <b>(smina)</b>. Cancel from the dialog or from Processes.</p>
 """,
@@ -563,6 +577,9 @@ def open_user_guide_dialog(parent: QWidget | None, guide_id: str = "overview") -
     if dlg is not None:
         try:
             _show_guide_dialog(dlg, guide_id)
+            dlg.show()
+            dlg.raise_()
+            dlg.activateWindow()
             return
         except RuntimeError:
             if host is not None:

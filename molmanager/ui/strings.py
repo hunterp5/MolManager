@@ -9,6 +9,7 @@ TOOL_BRICS_RECOMP = "BRICS Recomposition"
 TOOL_RECAP_RECOMP = "RECAP Recomposition"
 TOOL_CALCULATOR = "Calculator"
 TOOL_SINGLE_CONFORMATION = "Generate Single Conformation"
+TOOL_ADD_EXPLICIT_HYDROGENS = "Add Explicit Hydrogens"
 
 # Column header when importing similarity hits (PubChem, ChEMBL, SureChEMBL) or adding FP similarity scores.
 COLUMN_TANIMOTO_SIMILARITY = "Tanimoto Similarity"

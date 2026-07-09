@@ -1204,6 +1204,12 @@ class TableUIMixin(TableSearchMixin, FilterPanelMixin):
     def _on_smina_dock_dialog_destroyed(self):
         self._smina_dock_dialog = None
 
+    def _on_pdbqt_generator_dialog_destroyed(self):
+        self._pdbqt_generator_dialog = None
+
+    def _on_pdb_fixer_dialog_destroyed(self):
+        self._pdb_fixer_dialog = None
+
     def get_row_by_id(self, original_idx):
         return self._table_model.logical_row_for_oid(int(original_idx))
 
