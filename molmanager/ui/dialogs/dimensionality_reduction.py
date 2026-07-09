@@ -421,11 +421,19 @@ class DimensionReductionPanel(QWidget):
         self._job_running = True
         self.run_btn.setEnabled(False)
         self.summary_text.setPlainText("Computing…")
+        import threading
+
         from ..background_jobs import register_background_job
 
+        self._bg_cancel_event = threading.Event()
         self._bg_job_id = f"dimred-{id(self)}"
-        register_background_job(self.parent_app, self._bg_job_id, f"{self._window_title}…")
-        worker = DimensionReductionWorker(params, self._signals)
+        register_background_job(
+            self.parent_app,
+            self._bg_job_id,
+            f"{self._window_title}…",
+            cancel=self._bg_cancel_event.set,
+        )
+        worker = DimensionReductionWorker(params, self._signals, cancel_event=self._bg_cancel_event)
         self.parent_app.threadpool.start(worker)
 
     def _clear_dimred_background_job(self) -> None:
@@ -476,6 +484,11 @@ class DimensionReductionPanel(QWidget):
         self._clear_dimred_background_job()
         self._job_running = False
         self.run_btn.setEnabled(True)
+        if message == "Cancelled.":
+            self.summary_text.setPlainText("Cancelled.")
+            if self.parent_app is not None:
+                self.parent_app.status_label.setText(f"{self._window_title}: cancelled.")
+            return
         self.summary_text.setPlainText("")
         QMessageBox.warning(self, self._window_title, message or "Computation failed.")
 

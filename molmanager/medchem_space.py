@@ -19,6 +19,10 @@ from .utils import parse_molecule_from_cell_text
 DEFAULT_MEDCHEM_PLOT_MAX_POINTS = 5000
 
 
+class MedChemSpaceCancelled(Exception):
+    """Raised when a medchem-space build is cancelled cooperatively."""
+
+
 def medchem_plot_max_points() -> int:
     """Maximum scatter points sent to Plotly (full table still used for region select)."""
     raw = (os.environ.get("MOLMANAGER_MEDCHEM_PLOT_MAX_POINTS") or "").strip()
@@ -601,6 +605,7 @@ def build_medchem_space_from_snapshots(
     column_plan: MedChemTableColumnPlan | None = None,
     progress_state: object | None = None,
     progress_label: str = "Medchem plot",
+    cancel_event: object | None = None,
 ) -> tuple[MedChemSpaceDataset, list[tuple[int, dict[str, str]]]]:
     """Build points from UI snapshots; fills gaps from structures when possible."""
     points: list[MedChemSpacePoint] = []
@@ -616,6 +621,8 @@ def build_medchem_space_from_snapshots(
     smiles_by_oid = oid_smiles or {}
     total = len(snapshots)
     for idx, snap in enumerate(snapshots):
+        if cancel_event is not None and cancel_event.is_set():
+            raise MedChemSpaceCancelled()
         if progress_state is not None and (idx == 0 or idx % 200 == 0 or idx == total - 1):
             try:
                 progress_state.update(progress_label, idx, total)
@@ -743,6 +750,7 @@ def build_medchem_space_result(
     oid_smiles: dict[int, str] | None = None,
     progress_state: object | None = None,
     progress_label: str = "Medchem plot",
+    cancel_event: object | None = None,
 ) -> MedChemSpaceBuildResult:
     plan = medchem_table_column_plan(
         plot_kind,
@@ -763,6 +771,7 @@ def build_medchem_space_result(
         column_plan=plan,
         progress_state=progress_state,
         progress_label=progress_label,
+        cancel_event=cancel_event,
     )
     plot = subsample_dataset(full, max_plot_points)
     cols = tuple(dict.fromkeys((plan.tpsa, plan.logp, plan.mw, plan.wlogp)))

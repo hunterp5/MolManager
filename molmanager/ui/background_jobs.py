@@ -1,16 +1,37 @@
-"""Track short-lived threadpool work for the Processes dialog."""
+"""Track short-lived threadpool work for the Processes dialog.
+
+Jobs registered here appear in the Processes window. Passing a ``cancel`` callable
+makes the job cancellable from that window (the callable should set the worker's
+cancel event so it stops cooperatively and its result is discarded).
+"""
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from typing import Any
 
 
-def register_background_job(app: Any, job_id: str, title: str) -> None:
+def register_background_job(
+    app: Any,
+    job_id: str,
+    title: str,
+    *,
+    cancel: Callable[[], None] | None = None,
+) -> None:
+    """Register a background job for the Processes window, optionally cancellable."""
     jobs = getattr(app, "_background_jobs", None)
     if jobs is None:
         jobs = {}
         app._background_jobs = jobs
     jobs[str(job_id)] = str(title or "Background job")
+    cancels = getattr(app, "_background_job_cancels", None)
+    if cancels is None:
+        cancels = {}
+        app._background_job_cancels = cancels
+    if cancel is not None:
+        cancels[str(job_id)] = cancel
+    else:
+        cancels.pop(str(job_id), None)
     hub = getattr(app, "background_activity", None)
     if hub is not None:
         hub.notify_changed()
@@ -18,9 +39,31 @@ def register_background_job(app: Any, job_id: str, title: str) -> None:
 
 def unregister_background_job(app: Any, job_id: str) -> None:
     jobs = getattr(app, "_background_jobs", None)
-    if not jobs:
-        return
-    jobs.pop(str(job_id), None)
+    if jobs:
+        jobs.pop(str(job_id), None)
+    cancels = getattr(app, "_background_job_cancels", None)
+    if cancels:
+        cancels.pop(str(job_id), None)
     hub = getattr(app, "background_activity", None)
     if hub is not None:
         hub.notify_changed()
+
+
+def background_job_is_cancellable(app: Any, job_id: str) -> bool:
+    cancels = getattr(app, "_background_job_cancels", None)
+    return bool(cancels and str(job_id) in cancels)
+
+
+def cancel_background_job(app: Any, job_id: str) -> bool:
+    """Invoke the registered cancel callable for a job. Returns True if one ran."""
+    cancels = getattr(app, "_background_job_cancels", None)
+    if not cancels:
+        return False
+    fn = cancels.get(str(job_id))
+    if fn is None:
+        return False
+    try:
+        fn()
+    except Exception:
+        return False
+    return True
