@@ -1,134 +1,498 @@
-## MolManager
+# MolManager
 
-Small desktop chemistry manager built with **PyQt5** + **RDKit**.
+MolManager is a desktop application for working with chemical structures in a spreadsheet-style table. You can open SDF, SMILES, and CSV files; draw structures; calculate descriptors; cluster compounds; dock ligands; and more. It is built with **Python**, **PyQt5**, and **RDKit**.
 
-### Install (Windows)
+This guide walks you through installation from scratch. It assumes you are new to Python and the command line. Follow the steps in order for your operating system.
 
-Create/activate a virtualenv, then either **core only** or **full stack** (pKa + Boltz Python packages):
+---
+
+## What you will need
+
+| Requirement | Details |
+|-------------|---------|
+| **Computer** | Windows 10 or later, macOS 10.15+, or a recent Linux distribution |
+| **Internet** | Required to download Python, MolManager, and dependencies |
+| **Disk space** | About 1–2 GB for a basic install; more if you add optional machine-learning tools (pKa prediction, permeability models) |
+| **Python** | Version **3.10** or **3.11** (3.11 is recommended). Python 3.12+ may work but is less tested |
+
+You do **not** need to know how to program. You will copy and paste a few commands into a terminal window.
+
+---
+
+## Part 1 — Install Python
+
+Python is the language MolManager is written in. You need it installed before anything else.
+
+### Windows
+
+1. Open your web browser and go to [https://www.python.org/downloads/](https://www.python.org/downloads/).
+2. Click the yellow **Download Python 3.11.x** button (or the latest 3.11 release).
+3. Run the installer.
+4. **Important:** On the first screen, check the box that says **“Add python.exe to PATH”** at the bottom. If you skip this, the steps below will not work.
+5. Click **Install Now** and wait for it to finish.
+
+**Check that Python installed correctly**
+
+1. Press the **Windows key**, type **PowerShell**, and open **Windows PowerShell**.
+2. Type this and press **Enter**:
+
+   ```powershell
+   python --version
+   ```
+
+   You should see something like `Python 3.11.9`. If you see an error, close PowerShell, reinstall Python, and make sure **Add to PATH** was checked.
+
+### macOS
+
+1. Open **Terminal** (search for it in Spotlight).
+2. Check whether Python is already installed:
+
+   ```bash
+   python3 --version
+   ```
+
+3. If you see `Python 3.10` or `3.11`, you can continue. If not, install Python from [python.org/downloads](https://www.python.org/downloads/) or with Homebrew:
+
+   ```bash
+   brew install python@3.11
+   ```
+
+### Linux
+
+Most distributions include Python 3. Install it with your package manager if needed, for example:
 
 ```bash
-pip install -r requirements.txt
-# optional full Python stack (pKa needs CPU PyTorch 2.5.1 — use the install script, not a second venv):
-pip install -r requirements.txt
-scripts\install_pytorch_pka.ps1
-pip install -r requirements-boltz.txt
+# Debian / Ubuntu
+sudo apt update && sudo apt install python3 python3-venv python3-pip
+
+# Fedora
+sudo dnf install python3 python3-pip
 ```
 
-Or editable install: `pip install -e ".[dev]"` (see `pyproject.toml` for extras `pka`, `boltz`, `permeability`).
+Verify:
 
-**pKa / PyTorch:** use **one** Python environment. Run `scripts\install_pytorch_pka.ps1` (Windows) or `bash scripts/install_pytorch_pka.sh` (macOS/Linux) to install CPU **torch 2.5.1** plus `torch-scatter` / `torch-sparse` and **pkasolver**. The script also uninstalls **admet-ai** (it pins torch ≥2.8 and breaks pkasolver). Do not use separate `.venvs/pka` or `.venvs/admet-ai` folders.
+```bash
+python3 --version
+```
 
-**Optional CLI tools** (AutoDock Vina, Boltz predict binary): not stored in git. Copy into
-`molmanager/resources/bin/win/` (`vina.exe`, `boltz.exe`) or run
-`scripts\bootstrap_optional_tools.ps1` for guided setup. See `docs/PACKAGING.md` for installer builds.
+---
 
-### Install (macOS)
+## Part 2 — Download MolManager
 
-Requires **Python 3.10+** (3.11 recommended). From the repo root:
+You need a copy of the MolManager project on your computer.
+
+### Option A — Download as a ZIP (simplest)
+
+1. Go to the MolManager repository on GitHub.
+2. Click the green **Code** button, then **Download ZIP**.
+3. Extract the ZIP to a folder you will remember, for example:
+   - Windows: `C:\Users\YourName\Documents\MolManager`
+   - macOS/Linux: `~/Documents/MolManager`
+
+### Option B — Clone with Git (if you use Git)
+
+```bash
+git clone https://github.com/hunterp5/MolManager.git
+cd MolManager
+```
+
+All remaining steps assume your terminal is **inside the MolManager folder** (the folder that contains `README.md`, `requirements.txt`, and the `molmanager` subfolder).
+
+**Windows — open a terminal in that folder**
+
+1. Open File Explorer and navigate to the MolManager folder.
+2. Click the address bar, type `powershell`, and press **Enter**.
+
+   A PowerShell window opens already pointed at the right folder.
+
+**macOS / Linux**
+
+```bash
+cd ~/Documents/MolManager
+```
+
+(replace the path with wherever you extracted or cloned the project)
+
+---
+
+## Part 3 — What is a virtual environment?
+
+Before installing MolManager, you will create a **Python virtual environment** (often called a **venv**).
+
+Think of it as a private toolbox for this one application:
+
+- All of MolManager’s dependencies are installed **inside** that toolbox.
+- They do not mix with other Python programs on your computer.
+- You can delete the toolbox (the `.venv` folder) without affecting anything else.
+
+You will create the venv once, activate it whenever you work with MolManager, and install packages into it. The folder is named `.venv` and lives inside the MolManager project directory.
+
+---
+
+## Part 4 — Create the virtual environment
+
+Run **one** of the blocks below depending on your system.
+
+### Windows (PowerShell)
+
+```powershell
+python -m venv .venv
+```
+
+If `python` is not found, try:
+
+```powershell
+py -3.11 -m venv .venv
+```
+
+### macOS / Linux
 
 ```bash
 python3 -m venv .venv
-source .venv/bin/activate
-pip install -U pip
-pip install -r requirements.txt
-# optional full stack (pKa / Boltz — see requirements-pka.txt for PyTorch on Apple Silicon):
-# pip install -r requirements-all.txt
 ```
 
-Or editable install: `pip install -e ".[dev]"` (see `pyproject.toml` for extras `pka`, `boltz`, `permeability`).
+This creates a `.venv` folder. It may take a minute. You only need to run this command **once** per project copy.
 
-**Optional CLI tools:** copy macOS binaries into `molmanager/resources/bin/mac/` (`vina`, `boltz`) or run
-`scripts/bootstrap_optional_tools.sh` for guided setup. Boltz is often available on `PATH` after
-`pip install boltz` inside the same venv.
+---
 
-If **RDKit** or **PyQtWebEngine** fail via pip, use **conda-forge** for those packages, then pip-install the rest:
+## Part 5 — Activate the virtual environment
+
+You must **activate** the venv every time you open a **new** terminal window before installing or running MolManager. Activation tells the terminal to use the Python inside `.venv`.
+
+### Windows (PowerShell)
+
+```powershell
+.\.venv\Scripts\Activate.ps1
+```
+
+If you see an error about running scripts being disabled, run this **once** (as Administrator is not required for your user account):
+
+```powershell
+Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope CurrentUser
+```
+
+Then try activating again.
+
+**Success looks like this:** your prompt starts with `(.venv)`, for example:
+
+```text
+(.venv) PS C:\Users\You\Documents\MolManager>
+```
+
+### Windows (Command Prompt)
+
+```cmd
+.venv\Scripts\activate.bat
+```
+
+### macOS / Linux
+
+```bash
+source .venv/bin/activate
+```
+
+Your prompt should show `(.venv)` at the beginning.
+
+> **Remember:** If you close the terminal or open a new one later, run the activate command again before starting MolManager.
+
+---
+
+## Part 6 — Install MolManager and its dependencies
+
+With the virtual environment **active** (`(.venv)` visible in your prompt), run these commands **in order** from the MolManager project folder.
+
+### Step 6a — Upgrade pip
+
+`pip` is Python’s package installer. Upgrading it first avoids many common install errors.
+
+**Windows**
+
+```powershell
+python -m pip install --upgrade pip
+```
+
+**macOS / Linux**
+
+```bash
+python3 -m pip install --upgrade pip
+```
+
+### Step 6b — Install required libraries
+
+This downloads and installs PyQt5, RDKit, and the other packages MolManager needs. It can take **5–15 minutes** depending on your internet speed.
+
+```bash
+pip install -r requirements.txt
+```
+
+### Step 6c — Register the MolManager application
+
+This step installs the MolManager program itself so you can launch it with `python -m molmanager`:
+
+```bash
+pip install -e .
+```
+
+The `-e` means “editable”: if you update the source code later, you do not need to reinstall.
+
+**When everything succeeds**, you should see no red `ERROR` lines at the end. Warnings in yellow are usually fine.
+
+---
+
+## Part 7 — Start MolManager
+
+Make sure the virtual environment is still active (`(.venv)` in your prompt), then run:
+
+```bash
+python -m molmanager
+```
+
+The MolManager window should open. Use **File → Open File** to load an SDF, SMILES, or CSV file.
+
+### Starting MolManager later (after you closed the terminal)
+
+Every time you want to use MolManager:
+
+1. Open PowerShell or Terminal.
+2. Go to the MolManager folder (`cd` to the project directory).
+3. Activate the venv (Part 5).
+4. Run `python -m molmanager`.
+
+---
+
+## Optional — Extra features
+
+These are **not** required for basic use. Install them only if you need the corresponding tools.
+
+### pKa Predictor (Tools → pKa Predictor)
+
+The pKa tool needs **PyTorch** and **pkasolver** in the **same** virtual environment as MolManager. Do **not** create a second venv for pKa.
+
+**Windows** (venv active, from project folder):
+
+```powershell
+.\scripts\install_pytorch_pka.ps1
+```
+
+**macOS / Linux**:
+
+```bash
+bash scripts/install_pytorch_pka.sh
+```
+
+These scripts install CPU PyTorch 2.5.1, the graph libraries pkasolver needs, and pkasolver itself. They also remove **admet-ai** if present, because it conflicts with the required PyTorch version.
+
+Alternatively, after the scripts (or manually following the comments in `requirements-pka.txt`):
+
+```bash
+pip install -r requirements-all.txt
+```
+
+### Docking (Smina)
+
+Docking uses the **smina** program (a fork of AutoDock Vina). It is not included in the Python install. Download a binary from [https://vina.scripps.edu](https://vina.scripps.edu) or your package manager, then either:
+
+- Put `smina.exe` (Windows) or `smina` (macOS/Linux) in:
+  - `molmanager/resources/bin/win/` (Windows)
+  - `molmanager/resources/bin/mac/` (macOS)
+  - `molmanager/resources/bin/linux/` (Linux)
+- Or set the environment variable `MOLMANAGER_BUNDLE_DIR` to a folder that contains the executable.
+
+See **Tools → Docking** in the app after the binary is in place.
+
+### Guided optional setup script
+
+**Windows:**
+
+```powershell
+.\scripts\bootstrap_optional_tools.ps1
+```
+
+**macOS / Linux:**
+
+```bash
+bash scripts/bootstrap_optional_tools.sh
+```
+
+This installs core requirements and prints reminders for optional binaries.
+
+### Permeability prediction and other extras
+
+Advanced optional Python stacks are listed in `pyproject.toml` under optional dependencies (`permeability`, etc.). Install only if you know you need them, typically after the pKa PyTorch script:
+
+```bash
+pip install -e ".[permeability]"
+```
+
+---
+
+## Troubleshooting
+
+### “python is not recognized” (Windows)
+
+Python was not added to PATH. Reinstall Python from python.org and check **Add python.exe to PATH**, or use `py -3.11` instead of `python` in the commands above.
+
+### “cannot be loaded because running scripts is disabled” (Windows PowerShell)
+
+Run once:
+
+```powershell
+Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope CurrentUser
+```
+
+Then activate the venv again.
+
+### RDKit or NumPy errors (`_ARRAY_API`, import failures)
+
+MolManager pins **NumPy 1.x** because current RDKit wheels are not compatible with NumPy 2.x. Reinstall dependencies:
+
+```bash
+pip install -r requirements.txt --force-reinstall
+```
+
+If `rdkit-pypi` still fails on your system, use **conda** for RDKit and pip for the rest:
 
 ```bash
 conda create -n molmanager python=3.11
 conda activate molmanager
 conda install -c conda-forge rdkit pyqt
 pip install -r requirements.txt
+pip install -e .
 ```
 
-**Apple Silicon:** core MolManager runs natively. For **pKa**, run `bash scripts/install_pytorch_pka.sh`
-(or install a CPU/MPS-compatible **torch 2.5.1** build from [pytorch.org](https://pytorch.org), then
-`pip install torch-scatter torch-sparse` from the matching [PyG wheel index](https://data.pyg.org/whl/),
-then `pip install -r requirements-pka.txt`).
+### PyQtWebEngine fails to install
 
-### Install notes (all platforms)
+The app can still run; the **View in 3D** feature may open structures in your web browser instead of an embedded viewer. On Linux you may need system packages (for example `libegl1` on Debian/Ubuntu).
 
-- **RDKit** can be finicky via pip on some setups. If `rdkit-pypi` fails, use **conda** instead:
-  - `conda install -c conda-forge rdkit`
-- **NumPy 2.x** is not compatible with current `rdkit-pypi` wheels (you may see `_ARRAY_API` / import errors). This project pins **`numpy<2`** in `requirements.txt`; reinstall deps after pulling updates (`pip install -r requirements.txt`).
-- **Linux:** same venv flow as macOS; optional tools go in `molmanager/resources/bin/linux/`; use `scripts/bootstrap_optional_tools.sh`.
+### “No module named molmanager”
 
-### Run
+You skipped **Step 6c**. With the venv active, run:
 
 ```bash
+pip install -e .
+```
+
+### pKa / PyTorch conflicts
+
+Use **one** environment only. Run `scripts\install_pytorch_pka.ps1` or `bash scripts/install_pytorch_pka.sh` in the same venv where MolManager is installed. Do not install **admet-ai** in that environment.
+
+### Apple Silicon (M1/M2/M3 Mac)
+
+Core MolManager runs natively. For pKa, use `bash scripts/install_pytorch_pka.sh` or follow the manual order in `requirements-pka.txt` (PyTorch 2.5.1 + matching `torch-scatter` / `torch-sparse` wheels from [pytorch.org](https://pytorch.org) and [data.pyg.org](https://data.pyg.org/whl/)).
+
+---
+
+## Quick reference (experienced users)
+
+```bash
+# One-time setup (from repo root)
+python -m venv .venv
+# Windows:  .\.venv\Scripts\Activate.ps1
+# macOS/Linux:  source .venv/bin/activate
+pip install -U pip
+pip install -r requirements.txt
+pip install -e .
+
+# Run
 python -m molmanager
-```
 
-Optional environment variables:
+# Optional pKa (same venv)
+# Windows:  scripts\install_pytorch_pka.ps1
+# Unix:     bash scripts/install_pytorch_pka.sh
 
-| Variable | Purpose |
-|----------|---------|
-| `MOLMANAGER_LOG_LEVEL` | Console log level: `DEBUG`, `INFO`, `WARNING`, … (default `INFO`). |
-| `MOLMANAGER_MAX_THREADPOOL` | Main `QThreadPool` max threads (`1`–`64`). If unset, scales with CPU count (capped at `16`). |
-| `MOLMANAGER_RENDER_THREADPOOL` | Dedicated 2D render pool max threads (`1`–`32`). If unset, uses `min(main_cap, 8)` with a floor of `2`. |
-| `MOLMANAGER_SUBSTRUCTURE_ASYNC_ROWS` | Row count at which substructure filtering uses a worker thread (default `400`, clamped `64`–`500000`). |
-| `MOLMANAGER_FILTER_DEBOUNCE_SUBSTRUCTURE_ROWS` / `MOLMANAGER_FILTER_DEBOUNCE_SUBSTRUCTURE_MS` | Row threshold and debounce (ms) when a substructure filter is active (defaults `120` / `85`). |
-| `MOLMANAGER_FILTER_DEBOUNCE_DEFAULT_ROWS` / `MOLMANAGER_FILTER_DEBOUNCE_DEFAULT_MS` | Same when no substructure filter (defaults `400` / `55`). |
-| `MOLMANAGER_PERF_METRICS` | Enable runtime perf metric aggregation/logging for load/filter/search/export hot paths. |
-| `MOLMANAGER_PERF_LOG_EVERY` | Log interval for perf metrics (default `25` samples). |
-| `MOLMANAGER_CONFORMER_THREADS` | Parallel workers for conformer generation (`1`–`16`; unset = auto). |
-| `MOLMANAGER_DESCRIPTOR_THREADS` | Parallel workers for descriptor calculation (`1`–`32`; unset = auto). |
-| `MOLMANAGER_PROTOMER_PROCESSES` | Parallel **processes** for Tools → Generate Protomers (`1`–`8`). `1` = always sequential (one shared model). Unset = auto: **dedupe** identical structures, then use a small process pool when there are **≥4 unique** structures (each process loads its own pkasolver model — faster but more RAM). |
-| `MOLMANAGER_SQL_MAX_ROWS_HARD` | Hard ceiling for “Max rows” when loading from SQL (default `2000000`; caps UI spinbox and server `LIMIT`). |
-| `MOLMANAGER_SQL_PRECOUNT_WARN` | If a pre-load `COUNT(*)` is ≥ this value, confirm before fetching (default `100000`). |
-| `MOLMANAGER_SQLITE_TIMEOUT_S` | SQLite `connect_args["timeout"]` seconds (default `30`, clamped when applied). |
-| `MOLMANAGER_PG_CONNECT_TIMEOUT` | Postgres `connect_timeout` seconds (default `30`). |
-| `MOLMANAGER_SQLITE_BACKEND_PAGE_SIZE` | Page size for the local SQLite row cache used by text filters and column search (default `5000`). |
-| `MOLMANAGER_DISABLE_CUSTOM_CALC` | Set to `1`, `true`, `yes`, or `on` to disable Tools → Custom Calculator (policy lockdown). |
-| `MOLMANAGER_CUSTOM_CALC_LEGACY_EVAL` | Set to `1`, `true`, `yes`, or `on` to use legacy restricted `eval` instead of the default AST evaluator. |
-| `MOLMANAGER_BUNDLE_DIR` | Directory containing optional bundled executables (`vina`, `boltz`) when not using `molmanager/resources/bin/<platform>/`. |
-
-**Custom calculator:** by default expressions are evaluated with a restricted **AST** interpreter (`+ - * / // % **`, unary `+`/`-`, parentheses, and `math.*` callables in scope). Treat expressions as **trusted input only** (not a full sandbox). Use `MOLMANAGER_DISABLE_CUSTOM_CALC` where policy requires; use `MOLMANAGER_CUSTOM_CALC_LEGACY_EVAL` only if you hit an expression compatibility edge case.
-
-**SQL URLs in logs:** at `DEBUG`, `load_from_sql` logs the connection URL with credentials redacted via `redact_sqlalchemy_url()` (best-effort).
-
-### Running tests (development)
-
-```bash
-pip install -r requirements.txt -r requirements-dev.txt
-set QT_QPA_PLATFORM=offscreen
+# Development / tests
+pip install -r requirements-dev.txt
+# Windows:  set QT_QPA_PLATFORM=offscreen
+# Unix:     export QT_QPA_PLATFORM=offscreen
 python -m pytest tests/ -v
 ```
 
-On Linux/macOS, use `export QT_QPA_PLATFORM=offscreen`. CI runs the test suite on **Ubuntu and macOS** for pushes and pull requests to `main` and `dev` (see `.github/workflows/ci.yml`).
+Editable install with extras: `pip install -e ".[dev]"`, `pip install -e ".[pka]"`, `pip install -e ".[permeability]"` (see `pyproject.toml`).
 
-Performance baseline benchmark:
+Packaging and installer builds: `docs/PACKAGING.md`.
+
+---
+
+## Configuration (environment variables)
+
+Optional settings for power users and IT deployments:
+
+| Variable | Purpose |
+|----------|---------|
+| `MOLMANAGER_LOG_LEVEL` | Console log level: `DEBUG`, `INFO`, `WARNING`, … (default `INFO`) |
+| `MOLMANAGER_MAX_THREADPOOL` | Main background thread pool size (`1`–`64`; default scales with CPU, cap `16`) |
+| `MOLMANAGER_RENDER_THREADPOOL` | 2D structure render pool (`1`–`32`) |
+| `MOLMANAGER_SUBSTRUCTURE_ASYNC_ROWS` | Row count for async substructure filtering (default `400`) |
+| `MOLMANAGER_FILTER_DEBOUNCE_SUBSTRUCTURE_ROWS` / `MOLMANAGER_FILTER_DEBOUNCE_SUBSTRUCTURE_MS` | Debounce when a substructure filter is active |
+| `MOLMANAGER_FILTER_DEBOUNCE_DEFAULT_ROWS` / `MOLMANAGER_FILTER_DEBOUNCE_DEFAULT_MS` | Debounce for other filters |
+| `MOLMANAGER_PERF_METRICS` | Enable performance metric logging |
+| `MOLMANAGER_PERF_LOG_EVERY` | Perf log interval (default `25` samples) |
+| `MOLMANAGER_CONFORMER_THREADS` | Parallel workers for conformer generation (`1`–`16`) |
+| `MOLMANAGER_DESCRIPTOR_THREADS` | Parallel workers for descriptors (`1`–`32`) |
+| `MOLMANAGER_PROTOMER_PROCESSES` | Parallel processes for protomer generation (`1`–`8`) |
+| `MOLMANAGER_SQL_MAX_ROWS_HARD` | Hard cap for SQL load row count (default `2000000`) |
+| `MOLMANAGER_SQL_PRECOUNT_WARN` | Confirm before loading if `COUNT(*)` ≥ this (default `100000`) |
+| `MOLMANAGER_SQLITE_TIMEOUT_S` | SQLite connection timeout seconds (default `30`) |
+| `MOLMANAGER_PG_CONNECT_TIMEOUT` | PostgreSQL connect timeout seconds (default `30`) |
+| `MOLMANAGER_SQLITE_BACKEND_PAGE_SIZE` | SQLite cache page size for filters (default `5000`) |
+| `MOLMANAGER_DISABLE_CUSTOM_CALC` | Set to `1` / `true` to disable Tools → Custom Calculator |
+| `MOLMANAGER_CUSTOM_CALC_LEGACY_EVAL` | Use legacy restricted `eval` for custom calculator expressions |
+| `MOLMANAGER_BUNDLE_DIR` | Folder containing optional `vina` / `smina` binaries |
+
+**Custom calculator:** expressions use a restricted AST interpreter by default. Treat them as trusted input only.
+
+**SQL URLs in logs:** at `DEBUG`, connection URLs are logged with credentials redacted.
+
+---
+
+## Project layout
+
+| Path | Role |
+|------|------|
+| `molmanager/app.py` | Application entry point |
+| `molmanager/ui/main_window/` | Main window and feature mixins |
+| `molmanager/ui/compound_table_model.py` | Table data model |
+| `molmanager/ui/dialogs/` | Tool dialogs |
+| `molmanager/workers/` | Background jobs (render, export, cluster, pKa, …) |
+| `molmanager/storage/` | SQLite mirror for fast filtering |
+| `docs/ARCHITECTURE.md` | How components fit together |
+| `docs/STEREO_AND_ISOMERISM.md` | Stereochemistry behavior |
+| `docs/VALENCE_BONDS_AND_AROMATICITY.md` | Sketcher bond and valence rules |
+
+---
+
+## Development
+
+**Tests** (with venv active):
+
+```bash
+pip install -r requirements-dev.txt
+```
+
+Windows:
+
+```powershell
+$env:QT_QPA_PLATFORM="offscreen"
+python -m pytest tests/ -v
+```
+
+macOS / Linux:
+
+```bash
+export QT_QPA_PLATFORM=offscreen
+python -m pytest tests/ -v
+```
+
+CI runs tests on Ubuntu and macOS for pushes and pull requests to `main` and `dev` (see `.github/workflows/ci.yml`).
+
+**Performance benchmark:**
 
 ```bash
 python scripts/benchmark_large_table.py --runs 3 --scales 10000,50000,100000
 ```
 
-### Project structure
+---
 
-- `molmanager/app.py` — application entry point
-- `molmanager/ui/main_window/` — `ChemicalTableApp` and mixins (session, table, ingest, chemistry tools)
-- `molmanager/ui/compound_table_model.py` — table data model
-- `molmanager/ui/filter_proxy_model.py` — OID-based row visibility (filters)
-- `molmanager/ui/dialogs/` — tool dialogs
-- `molmanager/ui/plot.py` — Plotter (Plotly)
-- `molmanager/ui/plotly_interactive_view.py` — shared Plotly embed (PCA, dimred, radar)
-- `molmanager/ui/plot_table_sync.py` — table ↔ plot selection helpers
-- `molmanager/workers/` — background workers (render, export, cluster, pKa, …)
-- `molmanager/storage/` — SQLite table mirror for fast filters/search
-- `docs/ARCHITECTURE.md` — how the pieces fit together
+## Stereochemistry and structures
 
-### Stereochemistry and isomerism
-
-MolManager (RDKit + the 2D sketcher) handles **tetrahedral** stereo (wedge/hash → R/S where CIP applies) and **alkene E/Z** inference from 2D layout (see `docs/STEREO_AND_ISOMERISM.md`). It does **not** automatically enumerate tautomers or atropisomers; each row/sketch is one explicit structure. Read that doc before changing stereo-related code.
-
-**Valence, bond order, aromaticity, atom types:** the sketcher stores bond **order** 1–3 (single/double/triple), sums orders for local valence warnings, maps loaded **aromatic** RDKit bonds to order 1, and exports Kekulé-style bonds to RDKit—see `docs/VALENCE_BONDS_AND_AROMATICITY.md`.
-
+MolManager (RDKit + the 2D sketcher) handles **tetrahedral** stereo and **alkene E/Z** from 2D layout. It does not automatically enumerate tautomers or atropisomers. See `docs/STEREO_AND_ISOMERISM.md` and `docs/VALENCE_BONDS_AND_AROMATICITY.md` before changing structure-related code.
