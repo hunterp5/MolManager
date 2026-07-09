@@ -22,6 +22,7 @@ from ..config import load_config
 from ..fingerprint_cache import get as cache_get
 from ..fingerprint_cache import store as cache_store
 from ..rdkit_fingerprints import (
+    fingerprint_bitvect_for_row,
     fingerprint_bitvect_for_ui_choice,
     fingerprint_is_gil_heavy,
     spec_for_label,
@@ -193,12 +194,10 @@ def maxmin_diverse_pick_lazy(
         mol = row.mol
         if mol is None:
             raise ValueError(f"No structure for OID {row.oid}")
-        fp = fingerprint_bitvect_for_ui_choice(mol, fp_choice)
+        fp = fingerprint_bitvect_for_row(row.oid, mol, fp_choice)
         if fp is None:
             raise ValueError(f"Could not compute fingerprint for OID {row.oid}")
         fp_by_index[i] = fp
-        if spec_key:
-            cache_store(row.oid, spec_key, fp)
         if on_fp_computed is not None:
             on_fp_computed()
         return fp
@@ -337,7 +336,7 @@ def materialize_pool_fingerprints(
             if row.mol is None:
                 return i, None
             try:
-                return i, fingerprint_bitvect_for_ui_choice(row.mol, fp_choice)
+                return i, fingerprint_bitvect_for_row(row.oid, row.mol, fp_choice)
             except Exception:
                 return i, None
 

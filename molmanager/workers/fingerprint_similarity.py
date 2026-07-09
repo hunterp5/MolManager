@@ -15,6 +15,7 @@ from rdkit import Chem
 from rdkit import DataStructs
 
 from ..rdkit_fingerprints import (
+    fingerprint_bitvect_for_row,
     fingerprint_bitvect_for_ui_choice,
     fingerprint_is_gil_heavy,
 )
@@ -54,7 +55,9 @@ def _fp_similarity_one(
     metric: str,
 ) -> tuple[int, float, str] | None:
     try:
-        fp = fingerprint_bitvect_for_ui_choice(mol, fp_choice)
+        fp = fingerprint_bitvect_for_row(int(oid), mol, fp_choice)
+        if fp is None:
+            fp = fingerprint_bitvect_for_ui_choice(mol, fp_choice)
         if fp is None:
             return None
         sim = pairwise_fingerprint_similarity(qfp, fp, metric)

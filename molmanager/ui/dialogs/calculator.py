@@ -145,13 +145,6 @@ class CalculatorDialog(QDialog):
         scope_lyt.addWidget(self.only_selected_cb)
         root.addWidget(scope_box)
 
-        hint = QLabel(
-            "Each row: column values are substituted, then the expression is evaluated "
-            "(e.g. sqrt([MolWt]), ([A]+[B])/2)."
-        )
-        hint.setWordWrap(True)
-        root.addWidget(hint)
-
         bb = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
         apply_btn = bb.button(QDialogButtonBox.Ok)
         apply_btn.setText("Apply to Table")

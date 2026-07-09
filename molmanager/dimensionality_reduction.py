@@ -82,6 +82,7 @@ def build_fingerprint_matrix(
     from rdkit import DataStructs
 
     from .workers.fingerprint_similarity import fingerprint_bitvect_for_ui_choice
+    from .rdkit_fingerprints import fingerprint_bitvect_for_row
 
     oids: list[int] = []
     rows: list[np.ndarray] = []
@@ -89,7 +90,9 @@ def build_fingerprint_matrix(
         if mol is None:
             continue
         try:
-            fp = fingerprint_bitvect_for_ui_choice(mol, fp_choice)
+            fp = fingerprint_bitvect_for_row(int(oid), mol, fp_choice)
+            if fp is None:
+                fp = fingerprint_bitvect_for_ui_choice(mol, fp_choice)
         except Exception:
             fp = None
         if fp is None:

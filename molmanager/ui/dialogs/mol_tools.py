@@ -11,7 +11,6 @@ from PyQt5.QtWidgets import (
     QFormLayout,
     QGroupBox,
     QHBoxLayout,
-    QLabel,
     QLineEdit,
     QMessageBox,
     QRadioButton,
@@ -29,44 +28,87 @@ from .scope import selection_scope_checked
 _RESERVED_DISCONNECT_COLUMNS = frozenset({"ID_HIDDEN"})
 
 
+def _validate_fragment_output_columns(
+    dialog: QDialog,
+    *,
+    update_target: bool,
+    target_column: str,
+    largest_name: str,
+    smallest_name: str,
+) -> bool:
+    if not smallest_name:
+        QMessageBox.warning(dialog, dialog.windowTitle(), "Enter a name for the smallest fragment column.")
+        return False
+    if update_target:
+        if smallest_name in _RESERVED_DISCONNECT_COLUMNS:
+            QMessageBox.warning(
+                dialog,
+                dialog.windowTitle(),
+                f"The smallest fragment column name “{smallest_name}” is reserved.",
+            )
+            return False
+        return True
+    if not largest_name:
+        QMessageBox.warning(dialog, dialog.windowTitle(), "Enter a name for the largest fragment column.")
+        return False
+    if largest_name == smallest_name:
+        QMessageBox.warning(
+            dialog,
+            dialog.windowTitle(),
+            "Largest and smallest fragment columns must have different names.",
+        )
+        return False
+    if largest_name == target_column:
+        QMessageBox.warning(
+            dialog,
+            dialog.windowTitle(),
+            "Largest fragment column must differ from the target column when using a new column.",
+        )
+        return False
+    for label, name in (("Largest fragment", largest_name), ("Smallest fragment", smallest_name)):
+        if name in _RESERVED_DISCONNECT_COLUMNS:
+            QMessageBox.warning(
+                dialog,
+                dialog.windowTitle(),
+                f"The {label} column name “{name}” is reserved.",
+            )
+            return False
+    return True
+
+
 class DisconnectFragmentsDialog(QDialog):
     """Pick the target structure field; update it by default or write results to new columns."""
 
     def __init__(self, source_labels: list[str], existing_headers: list[str], selected_row_count: int = 0, parent=None):
         super().__init__(parent)
         self.setWindowTitle("Disconnect Largest Fragments")
-        self.resize(480, 280)
         self._existing = list(existing_headers)
         self._have_selection = selected_row_count > 0
 
         root = QVBoxLayout(self)
+        root.setContentsMargins(10, 8, 10, 8)
+        root.setSpacing(6)
 
-        f = QFormLayout()
+        form = QFormLayout()
+        form.setVerticalSpacing(4)
         self.src_combo = QComboBox()
         self.src_combo.addItems(source_labels)
-        f.addRow("Target column:", self.src_combo)
-        root.addLayout(f)
+        form.addRow("Target column:", self.src_combo)
 
-        out = QGroupBox("Output")
-        og = QVBoxLayout(out)
-        self.radio_update_target = QRadioButton(
-            "Update target column (refresh 2D image when applicable; write largest fragment there)"
-        )
-        self.radio_new_columns = QRadioButton(
-            "New columns only (leave target column unchanged)"
-        )
+        self.radio_update_target = QRadioButton("Update Target Column")
+        self.radio_new_columns = QRadioButton("New Column")
         self.radio_update_target.setChecked(True)
-        og.addWidget(self.radio_update_target)
-        og.addWidget(self.radio_new_columns)
-        ncol = QFormLayout()
+        form.addRow(self.radio_update_target)
+        form.addRow(self.radio_new_columns)
+
         self.largest_edit = QLineEdit("Largest fragment SMILES")
-        ncol.addRow("Largest fragment column:", self.largest_edit)
+        form.addRow("Largest Fragment:", self.largest_edit)
         self.fragments_edit = QLineEdit("Fragments")
-        ncol.addRow("Smaller fragments column:", self.fragments_edit)
-        og.addLayout(ncol)
+        form.addRow("Smallest Fragment:", self.fragments_edit)
+        root.addLayout(form)
+
         self.radio_update_target.toggled.connect(self._sync_output_fields)
         self.radio_new_columns.toggled.connect(self._sync_output_fields)
-        root.addWidget(out)
 
         self.only_selected_cb = QCheckBox("Only selected rows")
         self._only_selected_scope_prefix = "Only selected rows"
@@ -83,52 +125,24 @@ class DisconnectFragmentsDialog(QDialog):
         box.rejected.connect(self.reject)
         root.addWidget(box)
         self._sync_output_fields()
+        self.adjustSize()
         make_window_minimizable(self)
 
     def _sync_output_fields(self) -> None:
         new_only = self.radio_new_columns.isChecked()
         self.largest_edit.setEnabled(new_only)
-        self.fragments_edit.setEnabled(True)
 
     def _try_accept(self) -> None:
-        fragments = (self.fragments_edit.text() or "").strip()
-        if not fragments:
-            QMessageBox.warning(self, self.windowTitle(), "Enter a column name for the smaller fragments.")
-            return
-        if self.radio_new_columns.isChecked():
-            largest = (self.largest_edit.text() or "").strip()
-            if not largest:
-                QMessageBox.warning(self, self.windowTitle(), "Enter a column name for the largest fragment.")
-                return
-            if largest == fragments:
-                QMessageBox.warning(
-                    self,
-                    self.windowTitle(),
-                    "Largest and smaller fragment columns must have different names.",
-                )
-                return
-            target = self.src_combo.currentText()
-            if largest == target:
-                QMessageBox.warning(
-                    self,
-                    self.windowTitle(),
-                    "Largest fragment column must differ from the target column when using new columns only.",
-                )
-                return
-            for label, name in (("Largest fragment", largest), ("Smaller fragments", fragments)):
-                if name in _RESERVED_DISCONNECT_COLUMNS:
-                    QMessageBox.warning(
-                        self,
-                        self.windowTitle(),
-                        f"The {label} column name “{name}” is reserved.",
-                    )
-                    return
-        elif fragments in _RESERVED_DISCONNECT_COLUMNS:
-            QMessageBox.warning(
-                self,
-                self.windowTitle(),
-                f"The smaller fragments column name “{fragments}” is reserved.",
-            )
+        update_target = self.radio_update_target.isChecked()
+        largest = (self.largest_edit.text() or "").strip()
+        smallest = (self.fragments_edit.text() or "").strip()
+        if not _validate_fragment_output_columns(
+            self,
+            update_target=update_target,
+            target_column=self.src_combo.currentText(),
+            largest_name=largest,
+            smallest_name=smallest,
+        ):
             return
         self.accept()
 
@@ -152,28 +166,42 @@ class DisconnectFragmentsDialog(QDialog):
 class FastPrepareDialog(QDialog):
     """Disconnect largest fragment, neutralize, then render 2D in one pipeline."""
 
-    def __init__(self, source_labels: list[str], selected_row_count: int = 0, parent=None):
+    def __init__(
+        self,
+        source_labels: list[str],
+        existing_headers: list[str],
+        selected_row_count: int = 0,
+        parent=None,
+    ):
         super().__init__(parent)
         self.setWindowTitle("Fast Prepare")
-        self.resize(440, 200)
+        self._existing = list(existing_headers)
         self._have_selection = selected_row_count > 0
 
         root = QVBoxLayout(self)
-        hint = QLabel(
-            "Updates the target column with the largest disconnected fragment, neutralizes it, "
-            "then redraws 2D images. Smaller fragments are written to the Fragments column."
-        )
-        hint.setWordWrap(True)
-        hint.setStyleSheet("color: palette(mid);")
-        root.addWidget(hint)
+        root.setContentsMargins(10, 8, 10, 8)
+        root.setSpacing(6)
 
-        f = QFormLayout()
+        form = QFormLayout()
+        form.setVerticalSpacing(4)
         self.src_combo = QComboBox()
         self.src_combo.addItems(source_labels)
-        f.addRow("Target column:", self.src_combo)
+        form.addRow("Target column:", self.src_combo)
+
+        self.radio_update_target = QRadioButton("Update Target Column")
+        self.radio_new_columns = QRadioButton("New Column")
+        self.radio_update_target.setChecked(True)
+        form.addRow(self.radio_update_target)
+        form.addRow(self.radio_new_columns)
+
+        self.largest_edit = QLineEdit("Largest fragment SMILES")
+        form.addRow("Largest Fragment:", self.largest_edit)
         self.fragments_edit = QLineEdit("Fragments")
-        f.addRow("Smaller fragments column:", self.fragments_edit)
-        root.addLayout(f)
+        form.addRow("Smallest Fragment:", self.fragments_edit)
+        root.addLayout(form)
+
+        self.radio_update_target.toggled.connect(self._sync_output_fields)
+        self.radio_new_columns.toggled.connect(self._sync_output_fields)
 
         self.only_selected_cb = QCheckBox("Only selected rows")
         self._only_selected_scope_prefix = "Only selected rows"
@@ -187,26 +215,37 @@ class FastPrepareDialog(QDialog):
         box.accepted.connect(self._try_accept)
         box.rejected.connect(self.reject)
         root.addWidget(box)
+        self._sync_output_fields()
+        self.adjustSize()
         make_window_minimizable(self)
 
+    def _sync_output_fields(self) -> None:
+        self.largest_edit.setEnabled(self.radio_new_columns.isChecked())
+
     def _try_accept(self) -> None:
-        fragments = (self.fragments_edit.text() or "").strip()
-        if not fragments:
-            QMessageBox.warning(self, self.windowTitle(), "Enter a column name for the smaller fragments.")
-            return
-        if fragments in _RESERVED_DISCONNECT_COLUMNS:
-            QMessageBox.warning(
-                self,
-                self.windowTitle(),
-                f"The smaller fragments column name “{fragments}” is reserved.",
-            )
+        update_target = self.radio_update_target.isChecked()
+        largest = (self.largest_edit.text() or "").strip()
+        smallest = (self.fragments_edit.text() or "").strip()
+        if not _validate_fragment_output_columns(
+            self,
+            update_target=update_target,
+            target_column=self.src_combo.currentText(),
+            largest_name=largest,
+            smallest_name=smallest,
+        ):
             return
         self.accept()
 
-    def config(self) -> tuple[str, str, bool]:
-        """Returns ``(target_column, smaller_fragments_column, only_selected_rows)``."""
+    def config(self) -> tuple[str, bool, str | None, str, bool]:
+        """
+        Returns ``(target_column, update_target, largest_column_or_None, smallest_fragments_column,
+        only_selected_rows)``.
+        """
+        update_target = self.radio_update_target.isChecked()
         return (
             self.src_combo.currentText(),
+            update_target,
+            None if update_target else (self.largest_edit.text() or "").strip(),
             (self.fragments_edit.text() or "").strip(),
             selection_scope_checked(self),
         )
@@ -261,14 +300,6 @@ class GenerateSingleConformationDialog(QDialog):
         self.resize(460, 320)
         self._have_selection = selected_row_count > 0
         root = QVBoxLayout(self)
-        intro = QLabel(
-            "For each row, embed a single 3D conformer with ETKDG, minimize with MMFF94 or UFF, "
-            "and write the result to the \"confs\" column (one lowest-energy geometry per structure). "
-            "Right-click the cell and choose \"View Conformers…\" to open the 3D viewer. "
-            "The working Structure column is unchanged."
-        )
-        intro.setWordWrap(True)
-        root.addWidget(intro)
         form = QFormLayout()
         self.ff_combo = QComboBox()
         self.ff_combo.addItems(["MMFF", "UFF"])
@@ -325,16 +356,6 @@ class GenerateConformationsDialog(QDialog):
         self.resize(480, 420)
         self._have_selection = selected_row_count > 0
         root = QVBoxLayout(self)
-        intro = QLabel(
-            "Each row's working molecule is copied, embedded with ETKDG, minimized (MMFF94 or UFF), "
-            "then conformers outside the energy window are discarded.\n\n"
-            "The \"confs\" column shows compact generation metadata; full 3D coordinates are kept in memory for "
-            "responsiveness (and saved with sessions). When there are at least two conformers, rightâ€‘click that cell "
-            "and choose \"View Conformersâ€¦\" to open the 3D viewer "
-            "(switch between one-at-a-time and superpose-all inside the viewer)."
-        )
-        intro.setWordWrap(True)
-        root.addWidget(intro)
         form = QFormLayout()
         self.num_confs_sb = QSpinBox()
         self.num_confs_sb.setRange(1, 500)
@@ -423,14 +444,6 @@ class SuperposeConformersDialog(QDialog):
         self.resize(520, 500)
         self._have_selection = selected_row_count > 0
         root = QVBoxLayout(self)
-        intro = QLabel(
-            'Reads each row\'s multi-conformer data from the "confs" column (from Generate Conformations), '
-            "rigidly aligns every conformer to one reference conformer, then writes the aligned ensemble to a new "
-            '"superpose" column (same format as "confs": compact cell text plus in-memory coordinates). '
-            "Optionally restrict alignment to atoms matching a SMILES or SMARTS substructure."
-        )
-        intro.setWordWrap(True)
-        root.addWidget(intro)
 
         form = QFormLayout()
         self.ref_sb = QSpinBox()
@@ -526,7 +539,6 @@ class FragmentDecompositionDialog(QDialog):
         self,
         *,
         window_title: str,
-        intro: str,
         default_prefix: str,
         method: str,
         structure_sources: list[str],
@@ -544,10 +556,6 @@ class FragmentDecompositionDialog(QDialog):
         root = QVBoxLayout(self)
         root.setContentsMargins(10, 10, 10, 8)
         root.setSpacing(8)
-
-        intro_lbl = QLabel(intro)
-        intro_lbl.setWordWrap(True)
-        root.addWidget(intro_lbl)
 
         form = QFormLayout()
         self.src_combo = QComboBox()
@@ -615,7 +623,6 @@ class FragmentRecompositionDialog(QDialog):
         self,
         *,
         window_title: str,
-        intro: str,
         default_prefix: str,
         method: str,
         table_headers: list[str],
@@ -634,10 +641,6 @@ class FragmentRecompositionDialog(QDialog):
         root = QVBoxLayout(self)
         root.setContentsMargins(10, 10, 10, 8)
         root.setSpacing(8)
-
-        intro_lbl = QLabel(intro)
-        intro_lbl.setWordWrap(True)
-        root.addWidget(intro_lbl)
 
         form = QFormLayout()
         self.prefix_combo = QComboBox()
@@ -725,14 +728,6 @@ class CoreBasedDecompositionDialog(QDialog):
         root = QVBoxLayout(self)
         root.setContentsMargins(10, 10, 10, 8)
         root.setSpacing(8)
-
-        intro = QLabel(
-            "Provide a labeled core (dummy atoms [*], [1*], … for substituent attachment). "
-            "Each table row is decomposed against that core; results are written as new columns "
-            "(core scaffold and substituent SMILES per attachment)."
-        )
-        intro.setWordWrap(True)
-        root.addWidget(intro)
 
         form = QFormLayout()
         self.core_edit = QLineEdit()

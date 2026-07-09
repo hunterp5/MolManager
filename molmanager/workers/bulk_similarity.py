@@ -12,7 +12,7 @@ from PyQt5.QtCore import QRunnable
 from rdkit import Chem, DataStructs
 
 from ..tool_progress import ToolProgressState, report_tool_progress
-from ..rdkit_fingerprints import fingerprint_bitvect_for_ui_choice
+from ..rdkit_fingerprints import fingerprint_bitvect_for_row, fingerprint_bitvect_for_ui_choice
 from .fingerprint_similarity import SIMILARITY_METRIC_LABELS, pairwise_fingerprint_similarity
 from .signals import BulkSimilaritySignals
 
@@ -80,7 +80,9 @@ class BulkSimilarityWorker(QRunnable):
                     self.signals.failed.emit("Cancelled.")
                     return
                 try:
-                    fp = fingerprint_bitvect_for_ui_choice(mol, self.fp_choice)
+                    fp = fingerprint_bitvect_for_row(int(oid), mol, self.fp_choice)
+                    if fp is None:
+                        fp = fingerprint_bitvect_for_ui_choice(mol, self.fp_choice)
                 except Exception:
                     fp = None
                 if fp is None:

@@ -1,7 +1,0 @@
-# Shared CPU PyTorch for pkasolver (torch-geometric 2.0.1) and optional Chemprop permeability.
-# Install via scripts/install_pytorch_pka.ps1 (Windows) or install_pytorch_pka.sh (macOS/Linux),
-# which also installs matching torch-scatter / torch-sparse wheels from PyG.
-
---extra-index-url https://download.pytorch.org/whl/cpu
-torch==2.5.1
-torchvision==0.20.1

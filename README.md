@@ -217,9 +217,9 @@ python -m pip install --upgrade pip
 python3 -m pip install --upgrade pip
 ```
 
-### Step 6b — Install required libraries
+### Step 6b — Install all dependencies
 
-This downloads and installs PyQt5, RDKit, and the other packages MolManager needs. It can take **5–15 minutes** depending on your internet speed.
+This downloads and installs everything MolManager needs in one step: the desktop app (PyQt5, RDKit), machine-learning tools (PyTorch, pkasolver, Chemprop), docking helpers (Meeko), and development tools (pytest). It can take **15–30 minutes** depending on your internet speed.
 
 ```bash
 pip install -r requirements.txt
@@ -260,33 +260,27 @@ Every time you want to use MolManager:
 
 ---
 
-## Optional — Extra features
+## Optional — Extra setup
 
-These are **not** required for basic use. Install them only if you need the corresponding tools.
+Most Python packages are already installed by **Step 6b**. The items below are binaries or data files that are not installed by pip.
 
-### pKa Predictor (Tools → pKa Predictor)
+### pKa / PyTorch repair
 
-The pKa tool needs **PyTorch** and **pkasolver** in the **same** virtual environment as MolManager. Do **not** create a second venv for pKa.
+If **Tools → pKa Predictor** fails with a PyTorch version error (often after installing another package that upgrades torch), run this in the **same** venv — do **not** create a second environment:
 
-**Windows** (venv active, from project folder):
+**Windows:**
 
 ```powershell
 .\scripts\install_pytorch_pka.ps1
 ```
 
-**macOS / Linux**:
+**macOS / Linux:**
 
 ```bash
 bash scripts/install_pytorch_pka.sh
 ```
 
-These scripts install CPU PyTorch 2.5.1, the graph libraries pkasolver needs, and pkasolver itself. They also remove **admet-ai** if present, because it conflicts with the required PyTorch version.
-
-Alternatively, after the scripts (or manually following the comments in `requirements-pka.txt`):
-
-```bash
-pip install -r requirements-all.txt
-```
+This removes conflicting packages (such as **admet-ai**) and reinstalls from `requirements.txt`.
 
 ### Docking (Smina)
 
@@ -314,14 +308,22 @@ See **Tools → Docking** in the app after the binary is in place.
 bash scripts/bootstrap_optional_tools.sh
 ```
 
-This installs core requirements and prints reminders for optional binaries.
+This runs `pip install -r requirements.txt`, `pip install -e .`, and can download permeability model weights.
 
-### Permeability prediction and other extras
+### Permeability model weights
 
-Advanced optional Python stacks are listed in `pyproject.toml` under optional dependencies (`permeability`, etc.). Install only if you know you need them, typically after the pKa PyTorch script:
+The Chemprop Python packages are in `requirements.txt`, but the **GNN-MTL model file** is not stored in git. Download it once:
 
 ```bash
-pip install -e ".[permeability]"
+python scripts/bootstrap_gnn_mtl_model.py
+```
+
+### Boltz (optional)
+
+The Boltz Python package is not in `requirements.txt`. Install only if you need it:
+
+```bash
+pip install "boltz>=2.0.0"
 ```
 
 ---
@@ -378,7 +380,7 @@ Use **one** environment only. Run `scripts\install_pytorch_pka.ps1` or `bash scr
 
 ### Apple Silicon (M1/M2/M3 Mac)
 
-Core MolManager runs natively. For pKa, use `bash scripts/install_pytorch_pka.sh` or follow the manual order in `requirements-pka.txt` (PyTorch 2.5.1 + matching `torch-scatter` / `torch-sparse` wheels from [pytorch.org](https://pytorch.org) and [data.pyg.org](https://data.pyg.org/whl/)).
+Core MolManager runs natively. If pKa fails on Apple Silicon, run `bash scripts/install_pytorch_pka.sh` to reinstall the CPU PyTorch stack from `requirements.txt`.
 
 ---
 
@@ -396,18 +398,17 @@ pip install -e .
 # Run
 python -m molmanager
 
-# Optional pKa (same venv)
+# Repair pKa / PyTorch conflicts (same venv)
 # Windows:  scripts\install_pytorch_pka.ps1
 # Unix:     bash scripts/install_pytorch_pka.sh
 
-# Development / tests
-pip install -r requirements-dev.txt
+# Tests (pytest is already in requirements.txt)
 # Windows:  set QT_QPA_PLATFORM=offscreen
 # Unix:     export QT_QPA_PLATFORM=offscreen
 python -m pytest tests/ -v
 ```
 
-Editable install with extras: `pip install -e ".[dev]"`, `pip install -e ".[pka]"`, `pip install -e ".[permeability]"` (see `pyproject.toml`).
+Editable install extras in `pyproject.toml` (`pka`, `boltz`, `permeability`, `dev`) mirror subsets of `requirements.txt` for `pip install -e ".[extra]"` workflows.
 
 Packaging and installer builds: `docs/PACKAGING.md`.
 
@@ -463,11 +464,7 @@ Optional settings for power users and IT deployments:
 
 ## Development
 
-**Tests** (with venv active):
-
-```bash
-pip install -r requirements-dev.txt
-```
+**Tests** (with venv active; pytest is included in `requirements.txt`):
 
 Windows:
 

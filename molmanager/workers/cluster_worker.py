@@ -14,6 +14,7 @@ from rdkit.ML.Cluster import Butina
 from rdkit.SimDivFilters.rdSimDivPickers import LeaderPicker
 
 from .fingerprint_similarity import fingerprint_bitvect_for_ui_choice
+from ..rdkit_fingerprints import fingerprint_bitvect_for_row
 from .signals import emit_partial_results_if_cancelled
 
 logger = logging.getLogger(__name__)
@@ -482,7 +483,9 @@ class ClusterWorker(QRunnable):
                 throttle=throttle,
             )
             try:
-                fp = fingerprint_bitvect_for_ui_choice(mol, self.fp_choice)
+                fp = fingerprint_bitvect_for_row(int(oid), mol, self.fp_choice)
+                if fp is None:
+                    fp = fingerprint_bitvect_for_ui_choice(mol, self.fp_choice)
             except Exception:
                 fp = None
             if fp is None:
@@ -594,7 +597,9 @@ class ClusterExploreWorker(QRunnable):
                 throttle=fp_throttle,
             )
             try:
-                fp = fingerprint_bitvect_for_ui_choice(mol, self.fp_choice)
+                fp = fingerprint_bitvect_for_row(int(oid), mol, self.fp_choice)
+                if fp is None:
+                    fp = fingerprint_bitvect_for_ui_choice(mol, self.fp_choice)
             except Exception:
                 fp = None
             if fp is None:
