@@ -137,6 +137,7 @@ class ChemicalTableApp(
         self.signals.rendered.connect(self.on_row_ready, _qc)
         self.signals.washed.connect(self.on_wash_finished, _qc)
         self.signals.neutralized.connect(self.on_neutralize_finished, _qc)
+        self.signals.explicit_hydrogens_added.connect(self.on_add_explicit_hydrogens_finished, _qc)
         self.signals.calculated.connect(self.on_calc_finished, _qc)
         self.signals.conformers_finished.connect(self.on_conformers_finished, _qc)
         self.signals.superpose_finished.connect(self.on_superpose_finished, _qc)
@@ -205,6 +206,8 @@ class ChemicalTableApp(
         self._chembl_dialog = None
         self._patent_query_dialog = None
         self._smina_dock_dialog = None
+        self._pdbqt_generator_dialog = None
+        self._pdb_fixer_dialog = None
         self._export_busy = False
         self._export_prep = None
         self._render2d_queue = None
@@ -653,6 +656,12 @@ class ChemicalTableApp(
                 None,
             ),
             (
+                "Add Explicit Hydrogens…",
+                self.run_add_explicit_hydrogens,
+                "Expand implicit hydrogens to explicit H atoms in the target column (RDKit AddHs).",
+                None,
+            ),
+            (
                 "Protonate…",
                 self.run_protonate,
                 "Generate the dominant protomer (pkasolver) into a new column and render it.",
@@ -756,18 +765,31 @@ class ChemicalTableApp(
                 "Enumerate protomers or tautomers from structures and add results to the table.",
                 None,
             ),
-            (
-                "Dock (Smina)…",
-                self.open_smina_dock,
-                "Run Smina rigid docking: receptor/ligand PDBQT, search box, and log (install smina separately).",
-                None,
-            ),
         ):
             act = QAction(title, self, triggered=slot)
             if hk_id:
                 self._bind_hotkey(hk_id, act)
             act.setToolTip(tip)
             tools.addAction(act)
+
+        dock_menu = tools.addMenu("&Dock")
+        dock_menu.setToolTipsVisible(True)
+        act_dock_prepare = QAction("Prepare…", self, triggered=self.open_dock_prepare)
+        act_dock_prepare.setToolTip(
+            "Generate receptor and/or ligand PDBQT files with Meeko (PDB, SDF, SMILES, or table rows)."
+        )
+        dock_menu.addAction(act_dock_prepare)
+        act_dock_prepare_pdb = QAction("Prepare PDB…", self, triggered=self.open_dock_prepare_pdb)
+        act_dock_prepare_pdb.setToolTip(
+            "Clean a receptor PDB with PDBFixer (remove ligands/waters, add atoms and hydrogens) "
+            "before PDBQT conversion or Smina docking."
+        )
+        dock_menu.addAction(act_dock_prepare_pdb)
+        act_dock_smina = QAction("Smina…", self, triggered=self.open_smina_dock)
+        act_dock_smina.setToolTip(
+            "Run Smina rigid docking: receptor/ligand PDBQT, search box, and log (install smina separately)."
+        )
+        dock_menu.addAction(act_dock_smina)
 
         decomp_menu = tools.addMenu("&R-Group Decomposition")
         decomp_menu.setToolTipsVisible(True)
@@ -1047,6 +1069,8 @@ class ChemicalTableApp(
             "_chembl_dialog",
             "_patent_query_dialog",
             "_smina_dock_dialog",
+            "_pdbqt_generator_dialog",
+            "_pdb_fixer_dialog",
         ):
             dlg = getattr(self, attr, None)
             if dlg is None:

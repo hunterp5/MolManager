@@ -108,15 +108,6 @@ class SminaDockDialog(QDialog):
         io_form.addRow("Output:", ow)
         root.addWidget(io_gb)
 
-        gen_row = QHBoxLayout()
-        gen_row.addWidget(QLabel("PDBQT generation:"))
-        btn_gen = QPushButton("Generate .pdbqt…")
-        btn_gen.setToolTip("Generate receptor/ligand PDBQT files using Meeko.")
-        btn_gen.clicked.connect(self._open_pdbqt_generator)
-        gen_row.addWidget(btn_gen)
-        gen_row.addStretch()
-        root.addLayout(gen_row)
-
         box_gb = QGroupBox("Search box (Å)")
         box_form = QFormLayout(box_gb)
         self.spin_cx = QDoubleSpinBox()
@@ -216,16 +207,6 @@ class SminaDockDialog(QDialog):
 
         QShortcut(QKeySequence("Ctrl+Return"), self, activated=self._run_smina)
         make_window_minimizable(self)
-
-    def _open_pdbqt_generator(self) -> None:
-        from .dialogs.pdbqt_generator import PdbqtGeneratorDialog
-
-        dlg = PdbqtGeneratorDialog(self._main_window)
-        dlg.setParent(self, Qt.Dialog)
-        dlg.setModal(False)
-        dlg.show()
-        dlg.raise_()
-        dlg.activateWindow()
 
     def is_smina_running(self) -> bool:
         return self._proc.state() != QProcess.NotRunning

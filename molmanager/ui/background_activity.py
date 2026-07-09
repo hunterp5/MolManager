@@ -82,7 +82,7 @@ class BackgroundActivityHub(QObject):
             metas.insert(0, {"kind": "render2d"})
 
         if self.smina_dock_active():
-            rows.insert(0, ("Running", "(smina)", "Dock (Smina) — smina"))
+            rows.insert(0, ("Running", "(smina)", "Dock — Smina"))
             metas.insert(0, {"kind": "smina"})
 
         for job_id, title in sorted((getattr(self._app, "_background_jobs", None) or {}).items()):

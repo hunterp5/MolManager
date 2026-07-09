@@ -25,7 +25,7 @@ class PdbqtGeneratorDialog(QDialog):
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
         self.parent_app = parent
-        self.setWindowTitle("Generate .pdbqt (Meeko)")
+        self.setWindowTitle("Dock — Prepare")
         self.setMinimumWidth(720)
         self.resize(760, 560)
 
@@ -211,21 +211,27 @@ class PdbqtGeneratorDialog(QDialog):
             lambda ev, r=req, sig=self._signals: PdbqtGeneratorWorker(r, signals=sig, cancel_event=ev),
         )
 
+    def _populate_open_smina_paths(self, receptor_pdbqt: str, ligand_pdbqt: str) -> None:
+        """If the Smina dialog is open, fill receptor/ligand path fields with generated PDBQT files."""
+        app = self.parent_app
+        dock = getattr(app, "_smina_dock_dialog", None) if app is not None else None
+        if dock is None:
+            return
+        try:
+            if receptor_pdbqt and hasattr(dock, "edit_receptor"):
+                dock.edit_receptor.setText(receptor_pdbqt)
+            if ligand_pdbqt and hasattr(dock, "edit_ligand"):
+                dock.edit_ligand.setText(ligand_pdbqt)
+        except RuntimeError:
+            pass
+
     def _on_finished(self, receptor_pdbqt: str, ligand_pdbqt: str) -> None:
         self.btn_run.setEnabled(True)
         if receptor_pdbqt:
             self._append_log(f"Receptor PDBQT written: {receptor_pdbqt}")
         if ligand_pdbqt:
             self._append_log(f"Ligand PDBQT written: {ligand_pdbqt}")
-        # If launched from docking dialog, parent_app may be ChemicalTableApp; the docking dialog is parent of this.
-        dock = self.parent()
-        try:
-            if receptor_pdbqt and hasattr(dock, "edit_receptor"):
-                dock.edit_receptor.setText(receptor_pdbqt)
-            if ligand_pdbqt and hasattr(dock, "edit_ligand"):
-                dock.edit_ligand.setText(ligand_pdbqt)
-        except Exception:
-            pass
+        self._populate_open_smina_paths(receptor_pdbqt, ligand_pdbqt)
 
     def _on_failed(self, msg: str) -> None:
         self.btn_run.setEnabled(True)

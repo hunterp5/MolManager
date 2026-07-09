@@ -20,7 +20,7 @@ dependencies = [
     "sqlalchemy>=2.0",
     "pubchempy>=1.0.4",
     "chembl_webresource_client>=0.10.9",
-    "rdkit-pypi>=2022.9.5",
+    "rdkit>=2022.9.5",
     "scikit-learn>=1.3",
 ]
 

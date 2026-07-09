@@ -12,11 +12,13 @@ from PyQt5.QtWidgets import (
 
 from rdkit import Chem
 
+from ...conformer_output import iter_single_conformer_mols, write_conformer_results_to_sdf
 from ...confs_codec import (
     demote_v1_cell_to_sidecar,
     rehydrate_v1_confs_cell,
     unpack_confs_blocks_json_b64,
 )
+from ...utils import mol_to_canonical_smiles
 from ..strings import (
     TOOL_SINGLE_CONFORMATION,
 )
@@ -78,6 +80,7 @@ class ConformersDescriptorsMixin:
             )
             return
         params = d.params()
+        self._conformer_output_options = d.output_options()
         n = len(data)
         ps = self._tool_progress_state
         self._begin_tool_progress("Generate conformations", n)
@@ -120,6 +123,7 @@ class ConformersDescriptorsMixin:
             )
             return
         params = d.params()
+        self._conformer_output_options = d.output_options()
         n = len(data)
         ps = self._tool_progress_state
         self._begin_tool_progress(TOOL_SINGLE_CONFORMATION, n)
@@ -151,6 +155,10 @@ class ConformersDescriptorsMixin:
 
     def on_conformers_finished(self, results: list) -> None:
         self._finish_tool_progress("Generate conformations")
+        output_opts = getattr(self, "_conformer_output_options", None)
+        self._conformer_output_options = None
+        added_rows = 0
+        saved_count = 0
         self.table.setSortingEnabled(False)
         try:
             self.table.setUpdatesEnabled(False)
@@ -176,6 +184,13 @@ class ConformersDescriptorsMixin:
                 pairs.append((oid, light))
             if pairs:
                 self._table_model.set_column_text_by_oids("confs", pairs)
+            if output_opts is not None and output_opts.add_to_table:
+                added_rows = self._append_generated_conformers_as_rows(results)
+            if output_opts is not None and output_opts.save_to_file and output_opts.save_path:
+                try:
+                    saved_count = write_conformer_results_to_sdf(output_opts.save_path, results)
+                except OSError as e:
+                    QMessageBox.warning(self, "Generate Conformations", f"Could not write SDF file:\n{e}")
             self.schedule_calculate_global_bounds()
             self.table.setSortingEnabled(False)
         finally:
@@ -183,7 +198,67 @@ class ConformersDescriptorsMixin:
                 self.table.setUpdatesEnabled(True)
             except Exception:
                 pass
-        self.status_label.setText(self._consume_partial_results_notice() or "Done.")
+        notice = self._consume_partial_results_notice()
+        parts = []
+        if notice:
+            parts.append(notice)
+        if output_opts is not None and output_opts.add_to_table:
+            parts.append(f"Added {added_rows} conformer row(s) to the table.")
+        if output_opts is not None and output_opts.save_to_file and output_opts.save_path:
+            if saved_count:
+                parts.append(f"Wrote {saved_count} conformer(s) to {output_opts.save_path}.")
+            elif not any(p.startswith("Could not") for p in parts):
+                parts.append("No conformers were written to the SDF file.")
+        self.status_label.setText(" ".join(parts) if parts else "Done.")
+
+    def _append_generated_conformers_as_rows(self, results: list) -> int:
+        """Append one table row per generated conformer; keep 3D coordinates in ``self.mols``."""
+        records: list[tuple[str, dict[str, str], Chem.Mol]] = []
+        for item in results:
+            if len(item) < 2:
+                continue
+            parent_oid, mol = int(item[0]), item[1]
+            if mol is None:
+                continue
+            for conf_i, cm in enumerate(iter_single_conformer_mols(mol)):
+                smi = mol_to_canonical_smiles(cm)
+                if not smi:
+                    continue
+                records.append(
+                    (
+                        smi,
+                        {
+                            "Parent OID": str(parent_oid),
+                            "Conformer": str(conf_i + 1),
+                        },
+                        cm,
+                    )
+                )
+        if not records:
+            return 0
+        field_names: set[str] = set()
+        for _smi, fields, _mol in records:
+            field_names.update(fields.keys())
+        self._ensure_columns(["SMILES"] + sorted(field_names))
+        batch_rows: list[tuple[int, dict[str, str]]] = []
+        new_mols: list[tuple[int, Chem.Mol]] = []
+        for smiles, fields, mol in records:
+            oid = self.next_oid
+            self.next_oid += 1
+            row_cells: dict[str, str] = {}
+            for h in self.headers[2:]:
+                if h == "SMILES":
+                    row_cells[h] = smiles
+                else:
+                    row_cells[h] = str(fields.get(h, "") or "")
+            batch_rows.append((oid, row_cells))
+            new_mols.append((oid, mol))
+        self._table_model.append_rows_batch(batch_rows)
+        for oid, mol in new_mols:
+            self.mols[oid] = mol
+            self.start_render_worker(oid, mol)
+        self._sync_global_bounds_for_headers(sorted(field_names), refresh_filters=False)
+        return len(batch_rows)
 
     def open_superpose_conformers(self):
         if not self.headers or self._table_model.rowCount() == 0:
