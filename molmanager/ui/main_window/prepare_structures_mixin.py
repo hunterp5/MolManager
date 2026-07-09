@@ -170,25 +170,26 @@ class PrepareStructuresMixin:
 
         candidates = self.chemistry_tool_structure_sources()
         n_sel = len(self._selected_logical_rows())
-        dlg = FastPrepareDialog(candidates, n_sel, self)
+        dlg = FastPrepareDialog(candidates, self.headers, n_sel, self)
         self._prepare_tool_dialog(dlg)
         dlg.setAttribute(Qt.WA_DeleteOnClose, True)
         dlg.accepted.connect(lambda *_, d=dlg: self._on_fast_prepare_dialog_accepted(d))
         dlg.show()
 
     def _on_fast_prepare_dialog_accepted(self, dlg) -> None:
-        src, fragments_col, only_selected = dlg.config()
+        src, update_target, largest_col, fragments_col, only_selected = dlg.config()
         allowed = self._selected_oids_set() if only_selected else None
         if self._abort_if_only_selected_but_empty(only_selected, allowed, "Fast Prepare"):
             return
+        prepare_col = src if update_target else largest_col
         self._fast_prepare_active = True
-        self._fast_prepare_source = src
+        self._fast_prepare_source = prepare_col
         self._fast_prepare_allowed_oids = allowed
         self.status_label.setText("Fast prepare: disconnecting fragments…")
         self._enqueue_disconnect_fragments(
             src,
-            update_target=True,
-            largest_col=None,
+            update_target=update_target,
+            largest_col=largest_col,
             fragments_col=fragments_col,
             only_selected=only_selected,
             no_render_2d=True,

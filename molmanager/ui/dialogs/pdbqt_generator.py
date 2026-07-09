@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from PyQt5.QtCore import Qt
 from PyQt5.QtWidgets import (
     QComboBox,
     QDialog,
@@ -8,7 +7,6 @@ from PyQt5.QtWidgets import (
     QFormLayout,
     QGroupBox,
     QHBoxLayout,
-    QLabel,
     QLineEdit,
     QMessageBox,
     QPushButton,
@@ -34,15 +32,6 @@ class PdbqtGeneratorDialog(QDialog):
         root = QVBoxLayout(self)
         root.setContentsMargins(8, 6, 8, 6)
         root.setSpacing(6)
-
-        hint = QLabel(
-            "<p>Generate <b>receptor</b> and/or <b>ligand</b> PDBQT using Meeko "
-            "(<code>mk_prepare_receptor.py</code>, <code>mk_prepare_ligand.py</code>).</p>"
-        )
-        hint.setWordWrap(True)
-        hint.setTextFormat(Qt.RichText)
-        hint.setStyleSheet("color: palette(mid);")
-        root.addWidget(hint)
 
         # Receptor
         rec_gb = QGroupBox("Receptor")

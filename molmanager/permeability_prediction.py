@@ -125,10 +125,9 @@ def permeability_model_available() -> bool:
 
 _WINDOWS_TORCH_DLL_HELP = (
     "PyTorch could not load its native libraries (Windows DLL error).\n\n"
-    "Install the shared CPU PyTorch 2.5.1 stack (same as pKa), then Chemprop:\n"
+    "Reinstall dependencies (includes CPU PyTorch 2.5.1 and Chemprop):\n"
     "  scripts\\install_pytorch_pka.ps1\n"
-    "  pip install -r requirements-permeability.txt\n\n"
-    "See requirements-pytorch-cpu.txt and requirements-pka.txt."
+    "  pip install -r requirements.txt\n"
 )
 
 
@@ -142,8 +141,8 @@ def permeability_stack_import_error() -> str | None:
         import lightning  # noqa: F401
     except ImportError as e:
         return (
-            "Chemprop is not installed. Install the optional stack, e.g.\n"
-            "  pip install -r requirements-permeability.txt\n"
+            "Chemprop is not installed. Install dependencies from the repo root:\n"
+            "  pip install -r requirements.txt\n"
             f"Details: {e}"
         )
     except OSError as e:
@@ -157,16 +156,15 @@ def permeability_stack_import_error() -> str | None:
         if "_array_api" in msg or "numpy" in msg:
             return (
                 "Chemprop/RDKit need NumPy 1.x (NumPy 2 breaks RDKit in this stack).\n\n"
-                "  pip install \"numpy>=1.24,<2\"\n"
-                "  pip install -r requirements-permeability.txt\n\n"
+                "  pip install -r requirements.txt\n\n"
                 f"Details: {e}"
             )
         if "torchvision" in msg or "torch" in msg:
             return (
                 "Chemprop could not load PyTorch / Lightning (version mismatch is common).\n\n"
-                "Reinstall the shared CPU PyTorch 2.5.1 stack, then Chemprop:\n"
+                "Reinstall dependencies:\n"
                 "  scripts\\install_pytorch_pka.ps1\n"
-                "  pip install -r requirements-permeability.txt\n\n"
+                "  pip install -r requirements.txt\n\n"
                 f"Details: {e}"
             )
         return f"Chemprop stack failed to initialize:\n{e}"

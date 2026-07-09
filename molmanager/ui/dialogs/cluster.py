@@ -225,15 +225,6 @@ class ClusterDialog(QDialog):
         sm_lyt.addWidget(self._opt_stack)
         root.addWidget(self._single_method_widget)
 
-        self.hint = QLabel(
-            "Large tables: agglomerative clustering uses substantial memory. Prefer K-Means for thousands of rows. "
-            "Butina builds O(n²) distance data; sphere exclusion (Leader) is faster on large sets. "
-            "Exploratory mode caps total trials."
-        )
-        self.hint.setWordWrap(True)
-        self.hint.setStyleSheet("color: palette(mid); font-size: 11px;")
-        root.addWidget(self.hint)
-
         self.explore_table = QTableWidget(0, 7)
         self.explore_table.setHorizontalHeaderLabels(
             ["Method", "Settings", "Clusters", "Silhouette", "Noise %", "Largest %", "Notes"]

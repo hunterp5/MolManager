@@ -317,6 +317,29 @@ def fingerprint_bitvect_for_ui_choice(mol: Chem.Mol, fp_choice: str) -> Any | No
     return fingerprint_for_label(mol, fp_choice)
 
 
+def fingerprint_bitvect_for_row(
+    oid: int,
+    mol: Chem.Mol | None,
+    fp_choice: str,
+) -> Any | None:
+    """
+    Return a fingerprint bit vector for a table row, reusing the session cache when possible.
+
+    Tools that only have a molecule (no OID) should call :func:`fingerprint_bitvect_for_ui_choice`.
+    """
+    if mol is None:
+        return None
+    spec = spec_for_label(fp_choice)
+    if spec is not None:
+        from .fingerprint_cache import get, store_from_mol
+
+        cached = get(int(oid), spec.internal_key)
+        if cached is not None:
+            return cached
+        return store_from_mol(int(oid), spec.internal_key, mol)
+    return fingerprint_for_label(mol, fp_choice)
+
+
 def fingerprint_onbits_for_internal_key(internal_key: str) -> Callable[[Chem.Mol], int | str]:
     spec = spec_for_internal_key(internal_key)
 
@@ -350,8 +373,11 @@ def fingerprint_onbits_for_descriptor(
 
     def _calc(mol: Chem.Mol) -> int | str:
         if oid is not None and mol is not None:
-            from .fingerprint_cache import store_from_mol
+            from .fingerprint_cache import get, store_from_mol
 
+            cached = get(int(oid), internal_key)
+            if cached is not None:
+                return _fingerprint_onbits(cached)
             fp = store_from_mol(int(oid), internal_key, mol)
             if fp is not None:
                 return _fingerprint_onbits(fp)

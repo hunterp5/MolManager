@@ -59,17 +59,6 @@ class SminaDockDialog(QDialog):
         self._heartbeat.timeout.connect(self._on_heartbeat)
 
         root = QVBoxLayout(self)
-        intro = QLabel(
-            "<p><b>Smina</b> is a Vina-compatible docking tool with additional options. "
-            "Prepare rigid <b>receptor</b> and <b>ligand</b> as PDBQT (e.g. with MGLTools / "
-            "<code>prepare_receptor4.py</code>, <code>prepare_ligand4.py</code>, or Open Babel).</p>"
-        )
-        intro.setWordWrap(True)
-        intro.setOpenExternalLinks(True)
-        intro.setTextFormat(Qt.RichText)
-        intro.setStyleSheet("color: palette(mid);")
-        root.addWidget(intro)
-
         exe_row = QHBoxLayout()
         exe_row.addWidget(QLabel("Smina executable:"))
         self.edit_exe = QLineEdit(default_external_executable("smina"))

@@ -20,7 +20,7 @@ def main() -> int:
     print(f"Downloading GNN-MTL model to {DEST} …")
     urllib.request.urlretrieve(URL, DEST)
     print(f"Done ({DEST.stat().st_size} bytes).")
-    print("Install Chemprop stack: pip install -r requirements-permeability.txt")
+    print("Dependencies are in requirements.txt (pip install -r requirements.txt).")
     return 0
 
 

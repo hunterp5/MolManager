@@ -118,11 +118,6 @@ class FragmentToolsMixin:
             method="brics",
             window_title=TOOL_BRICS_DECOMP,
             default_prefix="BRICS",
-            intro=(
-                "Break each structure into BRICS fragments (retrosynthetic building blocks). "
-                "Fragments are written as SMILES in new columns (BRICS_1, BRICS_2, …). "
-                "Dummy atoms in SMILES mark connection points."
-            ),
         )
 
     def open_recap_decomposition(self) -> None:
@@ -130,10 +125,6 @@ class FragmentToolsMixin:
             method="recap",
             window_title=TOOL_RECAP_DECOMP,
             default_prefix="RECAP",
-            intro=(
-                "Break each structure into RECAP fragments (retrosynthetic hierarchies). "
-                "Leaf fragments are written as SMILES in new columns (RECAP_1, RECAP_2, …)."
-            ),
         )
 
     def _open_fragment_decomposition_dialog(
@@ -142,7 +133,6 @@ class FragmentToolsMixin:
         method: str,
         window_title: str,
         default_prefix: str,
-        intro: str,
     ) -> None:
         if not self.headers or self._table_model.rowCount() == 0:
             QMessageBox.information(
@@ -155,7 +145,6 @@ class FragmentToolsMixin:
 
         d = FragmentDecompositionDialog(
             window_title=window_title,
-            intro=intro,
             default_prefix=default_prefix,
             method=method,
             structure_sources=self.chemistry_tool_structure_sources(),
@@ -239,11 +228,6 @@ class FragmentToolsMixin:
             method="brics",
             window_title=TOOL_BRICS_RECOMP,
             default_prefix="BRICS",
-            intro=(
-                "Combine unique BRICS fragments from decomposition columns (e.g. BRICS_1, BRICS_2) "
-                "into new product structures using RDKit BRICSBuild. Products are appended as new "
-                "table rows with SMILES and 2D structures."
-            ),
         )
 
     def open_recap_recomposition(self) -> None:
@@ -251,11 +235,6 @@ class FragmentToolsMixin:
             method="recap",
             window_title=TOOL_RECAP_RECOMP,
             default_prefix="RECAP",
-            intro=(
-                "Combine unique RECAP fragments from decomposition columns (e.g. RECAP_1, RECAP_2) "
-                "into new product structures. RECAP attachment points (*) are coupled via the "
-                "BRICS builder; products are appended as new rows with SMILES and 2D structures."
-            ),
         )
 
     def _open_fragment_recomposition_dialog(
@@ -264,7 +243,6 @@ class FragmentToolsMixin:
         method: str,
         window_title: str,
         default_prefix: str,
-        intro: str,
     ) -> None:
         if not self.headers or self._table_model.rowCount() == 0:
             QMessageBox.information(
@@ -277,7 +255,6 @@ class FragmentToolsMixin:
 
         d = FragmentRecompositionDialog(
             window_title=window_title,
-            intro=intro,
             default_prefix=default_prefix,
             method=method,
             table_headers=list(self.headers),

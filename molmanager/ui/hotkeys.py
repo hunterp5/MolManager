@@ -48,7 +48,7 @@ HOTKEY_SPECS: tuple[HotkeySpec, ...] = (
     HotkeySpec("data.toggle_plot_panel", "Toggle Plot Panel", "Data", ("Ctrl+Shift+P",)),
     HotkeySpec("data.cluster", "Cluster…", "Data", ()),
     HotkeySpec("data.analyze_table", "Analyze Table…", "Data", ()),
-    HotkeySpec("help.user_guides", "Help", "Help", ("F1",)),
+    HotkeySpec("help.user_guides", "User Guide", "User Guide", ("F1",)),
 )
 
 _SPECS_BY_ID: dict[str, HotkeySpec] = {s.action_id: s for s in HOTKEY_SPECS}

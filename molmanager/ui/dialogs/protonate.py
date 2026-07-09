@@ -8,7 +8,6 @@ from PyQt5.QtWidgets import (
     QDoubleSpinBox,
     QFormLayout,
     QHBoxLayout,
-    QLabel,
     QLineEdit,
     QPushButton,
     QVBoxLayout,
@@ -63,14 +62,6 @@ class ProtonateDialog(QDialog):
         self.render_cb = QCheckBox("Render 2D image in output column")
         self.render_cb.setChecked(True)
         form.addRow("", self.render_cb)
-
-        hint = QLabel(
-            "<small>Uses pkasolver microstates to choose the most populated protomer at the target pH "
-            "(approximate; independent-site HH pooling). This may take time on large tables.</small>"
-        )
-        hint.setWordWrap(True)
-        hint.setStyleSheet("color: palette(mid);")
-        root.addWidget(hint)
 
         btn_row = QHBoxLayout()
         self.run_btn = QPushButton("Run")

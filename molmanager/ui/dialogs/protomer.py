@@ -92,18 +92,12 @@ class ProtomerGeneratorDialog(QDialog):
         ph_row.addStretch()
         root.addLayout(ph_row)
 
-        hint = QLabel(
-            "<p><small>% values are a rough HH-style sum over pkasolver microstates "
-            "(independent sites; not Epik-grade). Identical structures are computed once and reused; "
-            "with several <i>different</i> structures the app may use parallel processes (see "
-            "<code>MOLMANAGER_PROTOmer_PROCESSES</code> in the README).</small></p>"
-            + protomer_dialog_footer_html()
-        )
-        hint.setWordWrap(True)
-        hint.setTextFormat(Qt.RichText)
-        hint.setOpenExternalLinks(True)
-        hint.setStyleSheet("color: palette(mid); font-size: 11px;")
-        root.addWidget(hint)
+        ref_lbl = QLabel(protomer_dialog_footer_html())
+        ref_lbl.setWordWrap(True)
+        ref_lbl.setTextFormat(Qt.RichText)
+        ref_lbl.setOpenExternalLinks(True)
+        ref_lbl.setStyleSheet("color: palette(mid); font-size: 11px;")
+        root.addWidget(ref_lbl)
 
         gen_row = QHBoxLayout()
         gen_row.setSpacing(6)

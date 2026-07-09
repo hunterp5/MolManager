@@ -43,7 +43,7 @@ from ..compound_table_model import (
 from ..filter_proxy_model import FilterProxyModel
 from ..table_selection_delegate import RowHighlightDelegate
 from ..process_queue import ProcessQueueManager
-from ..user_guides import add_user_guide_menu_entries, open_user_guide_dialog
+from ..user_guides import open_user_guide_dialog
 from .cluster_mixin import ClusterMixin
 from .dimension_reduction_mixin import DimensionReductionMixin
 from .medchem_space_mixin import MedChemSpaceMixin
@@ -908,19 +908,15 @@ class ChemicalTableApp(
 
         self._init_settings_menu(mb)
 
-        help_menu = mb.addMenu("&Help")
-        help_menu.setToolTipsVisible(True)
-        act_guides = self._bind_hotkey(
+        self._act_user_guide = self._bind_hotkey(
             "help.user_guides",
-            QAction("&User guides…", self, triggered=lambda: open_user_guide_dialog(self)),
+            QAction(self),
         )
-        act_guides.setToolTip(
-            "Browse all help topics by category (sidebar). Press F1 from anywhere in the window."
+        self._act_user_guide.setToolTip(
+            "Open the MolManager user guide (F1)."
         )
-        help_menu.addAction(act_guides)
-        self.addAction(act_guides)
-        help_menu.addSeparator()
-        add_user_guide_menu_entries(help_menu, self)
+        self._act_user_guide.triggered.connect(lambda: open_user_guide_dialog(self))
+        self.addAction(self._act_user_guide)
 
         # Native Windows menu bars can swallow clicks meant for the corner widget; use in-window bar.
         if sys.platform == "win32":
@@ -929,6 +925,15 @@ class ChemicalTableApp(
         corner = QWidget(mb)
         corner_ly = QHBoxLayout(corner)
         corner_ly.setContentsMargins(0, 0, 4, 0)
+        btn_guide = QToolButton(corner)
+        btn_guide.setText("User Guide")
+        btn_guide.setToolTip("Open the MolManager user guide (F1).")
+        btn_guide.setToolButtonStyle(Qt.ToolButtonTextOnly)
+        btn_guide.setAutoRaise(True)
+        btn_guide.setFocusPolicy(Qt.NoFocus)
+        btn_guide.setFont(mb.font())
+        btn_guide.clicked.connect(self._act_user_guide.trigger)
+        corner_ly.addWidget(btn_guide)
         btn_proc = QToolButton(corner)
         btn_proc.setText("Processes")
         btn_proc.setToolTip("View queued background jobs (conformers, descriptors, import, export, …).")

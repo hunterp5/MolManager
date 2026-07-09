@@ -1,4 +1,6 @@
-# Install CPU PyTorch 2.5.1 + PyG scatter/sparse + pkasolver into the *active* Python (no extra venv).
+# Repair or install the CPU PyTorch 2.5.1 + pkasolver stack in the *active* Python (no extra venv).
+# On a fresh install, `pip install -r requirements.txt` already includes these packages.
+# Run this script when pKa fails due to a conflicting torch build (e.g. after installing admet-ai).
 $ErrorActionPreference = "Stop"
 $Root = Split-Path -Parent $PSScriptRoot
 Set-Location $Root
@@ -18,14 +20,8 @@ $ErrorActionPreference = "Continue"
 python -m pip uninstall -y torch torchvision torchaudio 2>&1 | Out-Host
 $ErrorActionPreference = $prevEap
 
-Write-Host "`nInstalling pinned CPU PyTorch..."
-python -m pip install -r requirements-pytorch-cpu.txt
-
-Write-Host "`nInstalling PyG binary extensions for torch 2.5.1+cpu..."
-python -m pip install torch-scatter torch-sparse -f https://data.pyg.org/whl/torch-2.5.1+cpu.html
-
-Write-Host "`nInstalling pkasolver + torch-geometric..."
-python -m pip install -r requirements-pka.txt
+Write-Host "`nReinstalling dependencies from requirements.txt..."
+python -m pip install -r requirements.txt
 
 Write-Host "`nVerifying imports..."
 python -c @"
