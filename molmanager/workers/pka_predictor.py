@@ -42,6 +42,11 @@ _query_model_singleton = None
 # pkasolver / PyTorch QueryModel is not safe for concurrent use from multiple threads.
 _query_model_lock = threading.Lock()
 
+# Per-child-process cache: the 25-model GNN ensemble costs ~0.5 s to load, so a process pool
+# must build it once per worker, not once per structure.
+_worker_query_model = None
+_worker_threads_pinned = False
+
 # Loggers that become noisy when pkasolver imports RDKit PandasTools (pandas 3.x API drift) or logs steps.
 _PKA_SUPPRESSED_LOGGER_NAMES = (
     "rdkit.Chem.PandasPatcher",
@@ -140,6 +145,53 @@ def _ensure_cairosvg_importable() -> None:
         sys.modules["cairosvg"] = stub
 
 
+def _pin_worker_torch_threads() -> None:
+    """
+    Pin intra-op threads to 1 inside pool children.
+
+    A process pool runs one pkasolver worker per core; letting each PyTorch model spawn its
+    default thread pool (``torch.get_num_threads()`` cores) oversubscribes the CPU and thrashes
+    caches, so parallel throughput collapses. Runs once per process.
+    """
+    global _worker_threads_pinned
+    if _worker_threads_pinned:
+        return
+    _worker_threads_pinned = True
+    for var in ("OMP_NUM_THREADS", "MKL_NUM_THREADS", "OPENBLAS_NUM_THREADS", "NUMEXPR_NUM_THREADS"):
+        os.environ.setdefault(var, "1")
+    try:
+        import torch
+
+        torch.set_num_threads(1)
+    except Exception:
+        logger.debug("could not pin torch thread count in worker", exc_info=True)
+
+
+def get_worker_query_model():
+    """Return this process's cached pkasolver ``QueryModel`` (loads the 25-model ensemble once)."""
+    global _worker_query_model
+    if _worker_query_model is None:
+        _pin_worker_torch_threads()
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", FutureWarning)
+            from pkasolver.query import QueryModel
+
+            _worker_query_model = QueryModel()
+    return _worker_query_model
+
+
+@contextlib.contextmanager
+def pkasolver_inference_mode():
+    """Disable autograd during pkasolver GNN inference (prediction never needs gradients)."""
+    try:
+        import torch
+    except Exception:
+        yield
+        return
+    with torch.inference_mode():
+        yield
+
+
 def _patch_pkasolver_dimorphite() -> None:
     """Use in-process Dimorphite-DL instead of pkasolver's subprocess + test.pkl path."""
     import pkasolver.query as pq
@@ -217,7 +269,8 @@ def _mp_compute_pka_text(
     """
     Child-process entry: load pkasolver, predict one structure, return formatted pKa text.
 
-    Each process keeps its own ``QueryModel`` so jobs can run in parallel (RAM trade-off).
+    The 25-model ``QueryModel`` ensemble is cached per worker process (see
+    :func:`get_worker_query_model`) so only inference cost is paid per structure.
     """
     key, mol_blob, most_basic_only, most_acidic_only = task
     if not mol_blob:
@@ -228,7 +281,8 @@ def _mp_compute_pka_text(
             with warnings.catch_warnings():
                 warnings.simplefilter("ignore", FutureWarning)
                 _patch_pkasolver_dimorphite()
-                from pkasolver.query import QueryModel, calculate_microstate_pka_values
+                from pkasolver.query import calculate_microstate_pka_values
+            qm = get_worker_query_model()
         except Exception:
             logger.exception("pKa subprocess: pkasolver import failed")
             return key, "Error (see log)"
@@ -242,10 +296,7 @@ def _mp_compute_pka_text(
     if safe is None:
         return key, "N/A"
     try:
-        with warnings.catch_warnings():
-            warnings.simplefilter("ignore", FutureWarning)
-            qm = QueryModel()
-        with _discard_stdout_only(), isolated_sys_argv_for_embedded_cli():
+        with pkasolver_inference_mode(), _discard_stdout_only(), isolated_sys_argv_for_embedded_cli():
             states = calculate_microstate_pka_values(safe, query_model=qm)
         txt = _format_microstate_pkas(
             states,
@@ -443,7 +494,7 @@ class PKaPredictorWorker(QRunnable):
                             txt = "N/A"
                         else:
                             try:
-                                with _discard_stdout_only(), isolated_sys_argv_for_embedded_cli():
+                                with pkasolver_inference_mode(), _discard_stdout_only(), isolated_sys_argv_for_embedded_cli():
                                     if not _acquire_lock_cooperative(_query_model_lock, cancel_ev):
                                         cancelled = True
                                         break

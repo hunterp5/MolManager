@@ -34,7 +34,9 @@ from .pka_predictor import (
     _patch_pkasolver_dimorphite,
     _quieter_pkasolver_dependency_loggers,
     _safe_emit,
+    get_worker_query_model,
     isolated_sys_argv_for_embedded_cli,
+    pkasolver_inference_mode,
     prepare_mol_for_pkasolver,
 )
 
@@ -45,7 +47,8 @@ def _mp_compute_protomer_smiles_pct(task: tuple[str, bytes, float]) -> tuple[str
     """
     Child-process entry: load pkasolver, run one structure, return SMILES + approximate %.
 
-    Each process keeps its own ``QueryModel`` so jobs can run in parallel (RAM trade-off).
+    The 25-model ``QueryModel`` ensemble is cached per worker process (see
+    :func:`get_worker_query_model`) so only inference cost is paid per structure.
     """
     key, mol_blob, ph = task
     if not mol_blob:
@@ -56,7 +59,8 @@ def _mp_compute_protomer_smiles_pct(task: tuple[str, bytes, float]) -> tuple[str
             with warnings.catch_warnings():
                 warnings.simplefilter("ignore", FutureWarning)
                 _patch_pkasolver_dimorphite()
-                from pkasolver.query import QueryModel, calculate_microstate_pka_values
+                from pkasolver.query import calculate_microstate_pka_values
+            qm = get_worker_query_model()
         except Exception:
             logger.exception("Protomer subprocess: pkasolver import failed")
             return key, []
@@ -70,10 +74,7 @@ def _mp_compute_protomer_smiles_pct(task: tuple[str, bytes, float]) -> tuple[str
     if safe is None:
         return key, []
     try:
-        with warnings.catch_warnings():
-            warnings.simplefilter("ignore", FutureWarning)
-            qm = QueryModel()
-        with _discard_stdout_only(), isolated_sys_argv_for_embedded_cli():
+        with pkasolver_inference_mode(), _discard_stdout_only(), isolated_sys_argv_for_embedded_cli():
             states = calculate_microstate_pka_values(safe, query_model=qm)
         pops = estimate_protomer_populations_from_states(states, ph)
         return key, [(smi, float(pct)) for smi, pct, _m in pops]
@@ -283,7 +284,7 @@ class ProtomerGeneratorWorker(QRunnable):
                         if safe_mol is None:
                             continue
                         try:
-                            with _discard_stdout_only(), isolated_sys_argv_for_embedded_cli():
+                            with pkasolver_inference_mode(), _discard_stdout_only(), isolated_sys_argv_for_embedded_cli():
                                 with pka_mod._query_model_lock:
                                     states = calculate_microstate_pka_values(safe_mol, query_model=qm)
                             pops = estimate_protomer_populations_from_states(states, self.pH)
