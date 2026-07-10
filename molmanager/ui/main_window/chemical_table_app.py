@@ -26,6 +26,7 @@ from PyQt5.QtWidgets import (
 )
 
 from ...config import load_config
+from ...lazy_mol_store import LazyMolStore
 from ...performance import PerformanceTracker
 from ...tool_progress import ToolProgressState
 from ...storage import SqliteTableStore
@@ -128,7 +129,8 @@ class ChemicalTableApp(
         else:
             ren_cap = max(2, min(cap, 8))
         self._render_threadpool.setMaxThreadCount(ren_cap)
-        self.mols, self.headers, self.filters, self.global_bounds = {}, [], [], {}
+        self.mols = LazyMolStore(max_live=cfg.mols_live_max)
+        self.headers, self.filters, self.global_bounds = [], [], {}
         self.zoomed_ids = set()
         self.signals = WorkerSignals()
         _qc = Qt.QueuedConnection
@@ -139,6 +141,8 @@ class ChemicalTableApp(
         self.signals.neutralized.connect(self.on_neutralize_finished, _qc)
         self.signals.explicit_hydrogens_added.connect(self.on_add_explicit_hydrogens_finished, _qc)
         self.signals.calculated.connect(self.on_calc_finished, _qc)
+        self.signals.calculated_partial.connect(self.on_calc_partial, _qc)
+        self.signals.table_sorted.connect(self._on_table_sorted, _qc)
         self.signals.conformers_finished.connect(self.on_conformers_finished, _qc)
         self.signals.superpose_finished.connect(self.on_superpose_finished, _qc)
         self.signals.custom_calc.connect(self.on_custom_calc_finished, _qc)

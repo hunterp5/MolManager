@@ -485,7 +485,7 @@ class ToolsSqlPredictMixin:
                 smiles_col = next((c for c in cols if c.lower() == "smiles"), None)
 
                 # Reset molecule store.
-                self.mols = {}
+                self.mols.clear()
                 self._clear_filter_target_smiles_cache()
                 self.global_bounds = {}
                 self.next_oid = 0

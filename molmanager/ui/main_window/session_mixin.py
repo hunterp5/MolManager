@@ -235,7 +235,7 @@ class SessionMixin:
         self._table_model.clear_rows()
         self._table_model.set_headers(list(self.headers))
         self.table.setColumnHidden(0, True)
-        self.mols = {}
+        self.mols.clear()
         self._clear_filter_target_smiles_cache()
         self.global_bounds = {}
         rows = doc.get("rows") or []
@@ -484,7 +484,7 @@ class SessionMixin:
         self._table_model.clear_rows()
         self._table_model.set_headers(list(self.headers))
         self.table.setColumnHidden(0, True)
-        self.mols = {}
+        self.mols.clear()
         self._clear_filter_target_smiles_cache()
         self.global_bounds = {}
         self.next_oid = 0

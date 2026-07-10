@@ -253,9 +253,13 @@ def _run_descriptor_process_pool(
     batch_size: int,
     cancel_event: threading.Event | None,
     emit_progress,
+    stream_result=None,
 ) -> tuple[list, bool]:
     """
     Run descriptor rows in child processes (keeps the Qt GUI thread off the GIL).
+
+    ``stream_result``, when given, is called with each completed ``(oid, values)`` tuple so the
+    caller can apply results progressively to the table instead of only at job end.
 
     Returns ``(results, cancelled)``.
     """
@@ -303,8 +307,11 @@ def _run_descriptor_process_pool(
                     continue
                 try:
                     for idx, row_d in f.result():
-                        mp_results_dict[int(idx)] = row_d
+                        oid_i = int(idx)
+                        mp_results_dict[oid_i] = row_d
                         done_count += 1
+                        if stream_result is not None:
+                            stream_result((oid_i, row_d))
                     emit_progress(done_count)
                 except Exception:
                     logger.exception("Process-pool descriptor batch failed")
@@ -1114,6 +1121,32 @@ class CalcWorker(QRunnable):
                 )
                 self.signals.calculated.emit(results, self.disp_headers)
                 return
+        # Progressive results: on large jobs, push finished rows to the table in chunks so columns
+        # fill during computation instead of only at job end (keeps the UI feeling responsive).
+        stream_chunk = max(1, int(cfg.descriptor_stream_chunk_rows))
+        stream_enabled = (
+            cfg.descriptor_stream_min_rows > 0
+            and nrows >= cfg.descriptor_stream_min_rows
+            and self.signals is not None
+        )
+        stream_buffer: list = []
+
+        def _flush_stream() -> None:
+            if not stream_buffer:
+                return
+            try:
+                self.signals.calculated_partial.emit(list(stream_buffer), self.disp_headers)
+            except Exception:
+                pass
+            stream_buffer.clear()
+
+        def _stream_result(row) -> None:
+            if not stream_enabled:
+                return
+            stream_buffer.append(row)
+            if len(stream_buffer) >= stream_chunk:
+                _flush_stream()
+
         # ThreadPoolExecutor row tasks so RDKit never runs on the Qt GUI thread and small jobs
         # still use a worker thread instead of the process-queue thread doing every row inline.
         # RDKit descriptor / fingerprint work holds the GIL; child processes keep Qt responsive.
@@ -1132,6 +1165,7 @@ class CalcWorker(QRunnable):
                     batch_size=int(cfg.descriptor_process_pool_batch_size),
                     cancel_event=cancel_ev,
                     emit_progress=_emit_progress,
+                    stream_result=_stream_result if stream_enabled else None,
                 )
                 cancelled = cancelled or pool_cancelled
                 mp_used = True
@@ -1186,13 +1220,16 @@ class CalcWorker(QRunnable):
                         if f.cancelled():
                             continue
                         try:
-                            results.append(f.result())
+                            row = f.result()
+                            results.append(row)
                             done_count += 1
+                            _stream_result(row)
                         except Exception:
                             logger.exception("Descriptor row task failed")
                         _emit_progress(done_count)
             _emit_progress(min(done_count, tot), force=True)
 
+        _flush_stream()
         emit_partial_results_if_cancelled(
             self.signals, "Calculate descriptors", len(results), tot, cancelled
         )

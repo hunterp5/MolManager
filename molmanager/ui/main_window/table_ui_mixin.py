@@ -100,11 +100,39 @@ class TableUIMixin(TableSearchMixin, FilterPanelMixin):
         self.status_label.setText(f"Coloring cleared: {header_name}.")
 
     def _apply_table_sort(self, logical_col: int, ascending: bool, sort_kind: str) -> None:
-        """Apply sort on the model and record state for session save/restore."""
+        """Apply sort and record state for session save/restore.
+
+        Large tables sort on a worker thread (key parsing + sort is O(n log n)) so the GUI stays
+        responsive; the resulting row order is applied back on the GUI thread.
+        """
         order = Qt.AscendingOrder if ascending else Qt.DescendingOrder
         self.table.setSortingEnabled(False)
-        self._table_model.sort(logical_col, order, sort_kind=sort_kind)
         self._session_sort = {"column": logical_col, "ascending": ascending, "mode": sort_kind}
+
+        from ...config import load_config
+
+        n = self._table_model.rowCount()
+        if n < load_config().sort_async_min_rows:
+            self._table_model.sort(logical_col, order, sort_kind=sort_kind)
+            return
+
+        self._sort_generation = getattr(self, "_sort_generation", 0) + 1
+        gen = self._sort_generation
+        pairs = self._table_model.snapshot_sort_pairs(logical_col)
+        from ...workers.table_sort import TableSortWorker
+
+        self.status_label.setText(f"Sorting {n:,} rows…")
+        worker = TableSortWorker(
+            pairs, logical_col, sort_kind, not ascending, gen, self.signals
+        )
+        self.threadpool.start(worker)
+
+    def _on_table_sorted(self, generation: int, ordered_oids: list) -> None:
+        """Apply a background sort result on the GUI thread (ignoring superseded requests)."""
+        if generation != getattr(self, "_sort_generation", 0):
+            return
+        self._table_model.apply_sorted_oids(ordered_oids)
+        self.status_label.setText("Ready.")
 
     def _on_horizontal_header_section_clicked(self, logical_index: int) -> None:
         if logical_index < 0 or logical_index >= len(self.headers):

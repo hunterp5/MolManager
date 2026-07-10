@@ -111,6 +111,8 @@ class CompoundTableModel(QAbstractTableModel):
         self.beginResetModel()
         self._rows.clear()
         self._pixmaps.clear()
+        if self._structure_png_store is not None:
+            self._structure_png_store.clear()
         self._structure_png_store = None
         self._oid_to_row.clear()
         self._extra_pixmaps.clear()
@@ -142,6 +144,8 @@ class CompoundTableModel(QAbstractTableModel):
         self.beginResetModel()
         self._rows.clear()
         self._pixmaps.clear()
+        if self._structure_png_store is not None:
+            self._structure_png_store.clear()
         self._structure_png_store = None
         self._headers.clear()
         self._oid_to_row.clear()
@@ -354,6 +358,9 @@ class CompoundTableModel(QAbstractTableModel):
         return store is not None and len(store) > 0
 
     def set_structure_png_store(self, store: StructureRenderStore | None) -> None:
+        prev = self._structure_png_store
+        if prev is not None and prev is not store:
+            prev.clear()
         self._structure_png_store = store
 
     def clear_structure_png_store(self) -> None:
@@ -620,54 +627,33 @@ class CompoundTableModel(QAbstractTableModel):
             return str(section + 1)
         return None
 
+    def snapshot_sort_pairs(self, column: int) -> list[tuple[int, str]]:
+        """Cheap ``(oid, raw_text)`` snapshot for *column* (raw text unused for oid/structure cols)."""
+        if column < 0 or column >= len(self._headers):
+            return []
+        if column == 0 or column == 1:
+            return [(r.oid, "") for r in self._rows]
+        h = self._headers[column]
+        return [(r.oid, r.values.get(h, "") or "") for r in self._rows]
+
+    def apply_sorted_oids(self, ordered_oids: list[int]) -> None:
+        """Reorder rows to match a precomputed oid order (from :func:`table_sort.build_sort_order`)."""
+        pos = {int(oid): i for i, oid in enumerate(ordered_oids)}
+        tail = len(pos)
+        self.layoutAboutToBeChanged.emit([], QAbstractItemModel.VerticalSortHint)
+        self._rows.sort(key=lambda r: pos.get(r.oid, tail))
+        self.layoutChanged.emit([], QAbstractItemModel.VerticalSortHint)
+        self._rebuild_oid_index()
+
     def sort(self, column: int, order: Qt.SortOrder = Qt.AscendingOrder, *, sort_kind: str = "auto") -> None:  # noqa: N802
         """Sort rows by *column*. *sort_kind*: ``auto`` (numbers then text), ``numeric``, or ``alphabetic``."""
         if column < 0 or column >= len(self._headers):
             return
-        h = self._headers[column]
-        rev = order == Qt.DescendingOrder
+        from ..table_sort import build_sort_order
 
-        def key_auto(row: _Row) -> tuple:
-            if column == 0:
-                return (0, row.oid)
-            if column == 1:
-                return (0, row.oid)
-            raw = row.values.get(h, "") or ""
-            f = safe_float(raw)
-            if f is not None:
-                return (0, float(f))
-            return (1, raw.lower())
-
-        def key_numeric(row: _Row) -> tuple:
-            if column == 0:
-                return (0, row.oid)
-            if column == 1:
-                return (0, row.oid)
-            raw = (row.values.get(h, "") or "").strip()
-            f = safe_float(raw)
-            if f is not None:
-                return (0, float(f))
-            return (1, raw.lower())
-
-        def key_alpha(row: _Row) -> tuple:
-            if column == 0:
-                return (0, str(row.oid))
-            if column == 1:
-                return (0, str(row.oid))
-            raw = (row.values.get(h, "") or "").strip()
-            return (1, raw.lower())
-
-        if sort_kind == "numeric":
-            key = key_numeric
-        elif sort_kind == "alphabetic":
-            key = key_alpha
-        else:
-            key = key_auto
-
-        self.layoutAboutToBeChanged.emit([], QAbstractItemModel.VerticalSortHint)
-        self._rows.sort(key=key, reverse=rev)
-        self.layoutChanged.emit([], QAbstractItemModel.VerticalSortHint)
-        self._rebuild_oid_index()
+        pairs = self.snapshot_sort_pairs(column)
+        ordered = build_sort_order(pairs, column, sort_kind, order == Qt.DescendingOrder)
+        self.apply_sorted_oids(ordered)
 
     def all_oids_in_order(self) -> list[int]:
         return [r.oid for r in self._rows]
