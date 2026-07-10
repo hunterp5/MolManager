@@ -61,7 +61,9 @@ def _mp_compute_microstates(task: tuple[str, bytes]) -> tuple[str, list | None]:
         _ensure_cairosvg_importable,
         _patch_pkasolver_dimorphite,
         _quieter_pkasolver_dependency_loggers,
+        get_worker_query_model,
         isolated_sys_argv_for_embedded_cli,
+        pkasolver_inference_mode,
         prepare_mol_for_pkasolver,
     )
 
@@ -74,7 +76,8 @@ def _mp_compute_microstates(task: tuple[str, bytes]) -> tuple[str, list | None]:
             with warnings.catch_warnings():
                 warnings.simplefilter("ignore", FutureWarning)
                 _patch_pkasolver_dimorphite()
-                from pkasolver.query import QueryModel, calculate_microstate_pka_values
+                from pkasolver.query import calculate_microstate_pka_values
+            qm = get_worker_query_model()
         except Exception:
             logger.exception("pkasolver subprocess: import failed")
             return key, None
@@ -88,10 +91,7 @@ def _mp_compute_microstates(task: tuple[str, bytes]) -> tuple[str, list | None]:
     if safe is None:
         return key, None
     try:
-        with warnings.catch_warnings():
-            warnings.simplefilter("ignore", FutureWarning)
-            qm = QueryModel()
-        with _discard_stdio(), isolated_sys_argv_for_embedded_cli():
+        with pkasolver_inference_mode(), _discard_stdio(), isolated_sys_argv_for_embedded_cli():
             states = calculate_microstate_pka_values(safe, query_model=qm)
         if not states:
             return key, None

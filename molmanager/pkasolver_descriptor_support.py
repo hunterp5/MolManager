@@ -27,6 +27,7 @@ from molmanager.workers.pka_predictor import (
     _patch_pkasolver_dimorphite,
     _quieter_pkasolver_dependency_loggers,
     isolated_sys_argv_for_embedded_cli,
+    pkasolver_inference_mode,
     prepare_mol_for_pkasolver,
 )
 from molmanager.workers.protomer_generator import estimate_protomer_populations_from_states
@@ -123,7 +124,7 @@ def microstates_for_mol(mol: Chem.Mol) -> list | None:
                 if pka_pred._query_model_singleton is None:
                     pka_pred._query_model_singleton = QueryModel()
                 qm = pka_pred._query_model_singleton
-                with _discard_stdio(), isolated_sys_argv_for_embedded_cli():
+                with pkasolver_inference_mode(), _discard_stdio(), isolated_sys_argv_for_embedded_cli():
                     states = calculate_microstate_pka_values(safe, query_model=qm)
                 if not states:
                     return None
