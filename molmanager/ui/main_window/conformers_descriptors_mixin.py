@@ -472,6 +472,40 @@ class ConformersDescriptorsMixin:
         if callable(refresh_search):
             refresh_search()
 
+    def _apply_calc_result_values(self, res, calc_h) -> list[str]:
+        """Insert any new descriptor columns and write result values. Returns newly added headers."""
+        h_map = {h: i for i, h in enumerate(self.headers)}
+        new_h = [h for h in calc_h if h not in h_map]
+        if new_h:
+            col_at = len(self.headers)
+            self.headers.extend(new_h)
+            self._table_model.insert_columns_at(col_at, new_h, None)
+        bulk_rows = [(int(oid), {h: str(row_d.get(h, "N/A")) for h in calc_h}) for oid, row_d in res]
+        if bulk_rows:
+            if len(calc_h) == 1:
+                hdr = calc_h[0]
+                self._table_model.set_column_text_by_oids(
+                    hdr,
+                    [(oid, values[hdr]) for oid, values in bulk_rows],
+                )
+            else:
+                self._table_model.apply_columns_values_bulk(calc_h, bulk_rows)
+        return new_h
+
+    def on_calc_partial(self, res, calc_h):
+        """Apply a progressive chunk of descriptor results during a large computation.
+
+        Columns fill incrementally so the table stays responsive; the terminal ``calculated``
+        signal still performs the authoritative full apply and numeric-bounds refresh.
+        """
+        if not res:
+            return
+        try:
+            self.table.setSortingEnabled(False)
+        except Exception:
+            pass
+        self._apply_calc_result_values(res, calc_h)
+
     def on_calc_finished(self, res, calc_h, *, finish_progress: bool = True, progress_label: str | None = None):
         if finish_progress:
             self._finish_tool_progress(progress_label, status_message=None)
@@ -481,22 +515,7 @@ class ConformersDescriptorsMixin:
         except Exception:
             pass
         try:
-            h_map = {h: i for i, h in enumerate(self.headers)}
-            new_h = [h for h in calc_h if h not in h_map]
-            if new_h:
-                col_at = len(self.headers)
-                self.headers.extend(new_h)
-                self._table_model.insert_columns_at(col_at, new_h, None)
-            bulk_rows = [(int(oid), {h: str(row_d.get(h, "N/A")) for h in calc_h}) for oid, row_d in res]
-            if bulk_rows:
-                if len(calc_h) == 1:
-                    hdr = calc_h[0]
-                    self._table_model.set_column_text_by_oids(
-                        hdr,
-                        [(oid, values[hdr]) for oid, values in bulk_rows],
-                    )
-                else:
-                    self._table_model.apply_columns_values_bulk(calc_h, bulk_rows)
+            new_h = self._apply_calc_result_values(res, calc_h)
             if self._table_model.rowCount() >= 5000:
                 dirty = {
                     h

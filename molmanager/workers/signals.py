@@ -34,6 +34,9 @@ class WorkerSignals(QObject):
     neutralized = pyqtSignal(list)
     explicit_hydrogens_added = pyqtSignal(list)
     calculated = pyqtSignal(list, list)
+    # Progressive descriptor results applied during computation on large jobs (chunk, headers).
+    # The terminal ``calculated`` signal is still emitted with the full result set.
+    calculated_partial = pyqtSignal(list, list)
     # list of (oid, mol_or_None, confs_cell_json_str)
     conformers_finished = pyqtSignal(list)
     # list of (oid, mol_or_None, superpose_cell_str) — same packed format as ``confs`` when successful
@@ -52,6 +55,9 @@ class WorkerSignals(QObject):
     cluster_failed = pyqtSignal(str)
     # Exploratory clustering: list of dict rows (method, params, settings, metrics, notes)
     cluster_explore_finished = pyqtSignal(list)
+
+    # Background table sort finished (sort_generation, ordered_oids).
+    table_sorted = pyqtSignal(int, list)
 
     # --- Progress banner (message, done, total; total < 0 => indeterminate) ---
     tool_progress = pyqtSignal(str, int, int)
