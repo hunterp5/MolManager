@@ -1023,6 +1023,38 @@ class CalcWorker(QRunnable):
         else:
             max_workers = min(8, max(1, (os.cpu_count() or 4)))
 
+        cancel_ev = self.cancel_event
+        cancelled = False
+
+        prog_last_emit = 0.0
+        prog_last_done = -1
+
+        def _emit_progress(done_count: int, *, force: bool = False) -> None:
+            """Update shared progress state every row; throttle cross-thread signal emissions."""
+            nonlocal prog_last_emit, prog_last_done
+            from ..tool_progress import report_tool_progress
+
+            now = time.monotonic()
+            step = _descriptor_progress_emit_step(tot)
+            throttle_signal = (
+                force
+                or done_count >= tot
+                or done_count <= 1
+                or (done_count - prog_last_done) >= step
+                or (now - prog_last_emit) >= 0.15
+            )
+            if throttle_signal:
+                prog_last_emit = now
+                prog_last_done = done_count
+            report_tool_progress(
+                message="Calculate descriptors",
+                done=done_count,
+                total=tot,
+                progress_state=self.progress_state,
+                signals=self.signals if throttle_signal else None,
+                force_signal=force,
+            )
+
         pka_by_idx: dict[int, list | None] = {}
         pka_cache_used = False
         if int_fns_need_pkasolver(self.int_fns) and nrows > 0:
@@ -1084,38 +1116,6 @@ class CalcWorker(QRunnable):
                 return
         # ThreadPoolExecutor row tasks so RDKit never runs on the Qt GUI thread and small jobs
         # still use a worker thread instead of the process-queue thread doing every row inline.
-        cancel_ev = self.cancel_event
-        cancelled = False
-
-        prog_last_emit = 0.0
-        prog_last_done = -1
-
-        def _emit_progress(done_count: int, *, force: bool = False) -> None:
-            """Update shared progress state every row; throttle cross-thread signal emissions."""
-            nonlocal prog_last_emit, prog_last_done
-            from ..tool_progress import report_tool_progress
-
-            now = time.monotonic()
-            step = _descriptor_progress_emit_step(tot)
-            throttle_signal = (
-                force
-                or done_count >= tot
-                or done_count <= 1
-                or (done_count - prog_last_done) >= step
-                or (now - prog_last_emit) >= 0.15
-            )
-            if throttle_signal:
-                prog_last_emit = now
-                prog_last_done = done_count
-            report_tool_progress(
-                message="Calculate descriptors",
-                done=done_count,
-                total=tot,
-                progress_state=self.progress_state,
-                signals=self.signals if throttle_signal else None,
-                force_signal=force,
-            )
-
         # RDKit descriptor / fingerprint work holds the GIL; child processes keep Qt responsive.
         mp_min = _descriptor_process_pool_min_rows(cfg, self.int_fns)
         use_process_pool = nrows >= mp_min and nrows >= 2 and max_workers > 1
