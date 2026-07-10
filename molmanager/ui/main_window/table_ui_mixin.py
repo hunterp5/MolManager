@@ -134,31 +134,40 @@ class TableUIMixin(TableSearchMixin, FilterPanelMixin):
         if sm is not None:
             sm.select(sel, QItemSelectionModel.ClearAndSelect | QItemSelectionModel.Columns)
         self.table.setSelectionBehavior(prev_behavior)
-        self._refresh_table_selection_visual([0] if n > 0 else None)
+        self._refresh_table_selection_visual([0] if n > 0 else None, anchor_col=col)
         self._report_table_selection_status(n)
 
-    def _refresh_table_selection_visual(self, anchor_rows: list[int] | None) -> None:
+    def _refresh_table_selection_visual(
+        self, anchor_rows: list[int] | None, anchor_col: int | None = None
+    ) -> None:
         """
         Show selection highlight immediately after programmatic select.
 
         Deferred one event-loop tick so context-menu focus is released first; then
         anchor the current cell, scroll if needed, focus the table, and repaint.
+
+        When ``anchor_col`` is given (e.g. column selection), the current cell and any
+        auto-scroll target that column so the horizontal scroll position is preserved;
+        otherwise it defaults to the Structure column for row-based selections.
         """
 
         def _apply() -> None:
             if anchor_rows:
                 first = min(anchor_rows)
                 ncol = self._table_model.columnCount()
-                anchor_col = 1 if ncol > 1 else 0
+                if anchor_col is not None:
+                    target_col = max(0, min(anchor_col, ncol - 1))
+                else:
+                    target_col = 1 if ncol > 1 else 0
                 view_model = self.table.model()
                 proxy = getattr(self, "_filter_proxy_model", None)
                 if proxy is not None and view_model is proxy:
                     pidx = proxy.mapFromSource(self._table_model.index(first, 0))
                     if not pidx.isValid():
                         return
-                    idx = view_model.index(pidx.row(), anchor_col)
+                    idx = view_model.index(pidx.row(), target_col)
                 else:
-                    idx = self._table_model.index(first, anchor_col)
+                    idx = self._table_model.index(first, target_col)
                 sm = self.table.selectionModel()
                 if sm is not None and idx.isValid():
                     sm.setCurrentIndex(idx, QItemSelectionModel.NoUpdate)

@@ -1,0 +1,66 @@
+"""Calculate Descriptors must emit partial results when cancelled mid-pkasolver."""
+
+from __future__ import annotations
+
+from unittest.mock import patch
+
+from molmanager.workers.chemistry_tools import CalcWorker
+from molmanager.workers.signals import WorkerSignals
+
+
+class _AlwaysCancelled:
+    def is_set(self) -> bool:
+        return True
+
+
+def test_calc_worker_emits_partial_results_when_cancelled_during_pkasolver():
+    """
+    Regression: cancelling while pkasolver (ClogD / LogS 7.4) microstates are still computing
+    must still emit the rows already finished instead of crashing with a NameError.
+    """
+    sigs = WorkerSignals()
+    out: dict[str, object] = {}
+    sigs.calculated.connect(lambda rows, headers: out.update({"rows": rows, "headers": headers}))
+    sigs.partial_results.connect(
+        lambda label, done, total: out.update({"partial": (label, done, total)})
+    )
+
+    data = [(1, "CCO"), (2, "CCN"), (3, "CCC")]
+    disp_headers = ["LogD 7.4"]
+
+    # Only rows 1 and 3 finished microstates before the cancel; row 2 is incomplete (None).
+    partial_cache = {1: ["state1"], 2: None, 3: ["state3"]}
+
+    with (
+        patch(
+            "molmanager.workers.chemistry_tools.int_fns_need_pkasolver",
+            return_value=True,
+        ),
+        patch(
+            "molmanager.workers.chemistry_tools.build_microstates_cache_for_rows",
+            return_value=partial_cache,
+        ),
+        patch(
+            "molmanager.workers.chemistry_tools._calc_descriptor_row_task",
+            side_effect=lambda task: (task[0], {"LogD 7.4": f"val{task[0]}"}),
+        ),
+    ):
+        worker = CalcWorker(
+            data=data,
+            disp_headers=disp_headers,
+            int_fns=["LogD 7.4"],
+            is_smiles=True,
+            signals=sigs,
+            cancel_event=_AlwaysCancelled(),
+        )
+        worker.run()
+
+    rows = out.get("rows")
+    assert isinstance(rows, list)
+    # Only the two structures with completed microstates should be returned.
+    assert {oid for oid, _ in rows} == {1, 3}
+    assert out.get("headers") == disp_headers
+    label, done, total = out["partial"]
+    assert label == "Calculate descriptors"
+    assert done == 2
+    assert total == 3

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from PyQt5.QtCore import QSettings
-from PyQt5.QtGui import QColor, QPalette
+from PyQt5.QtGui import QColor, QFont, QPalette
 from PyQt5.QtWidgets import QApplication, QWidget
 
 THEME_LIGHT = "light"
@@ -12,14 +12,77 @@ THEME_DARK = "dark"
 _SETTINGS_ORG = "MolManager"
 _SETTINGS_APP = "MolManager"
 _SETTINGS_KEY_THEME = "gui/theme"
+_SETTINGS_KEY_TABLE_FONT_PT = "gui/table_font_pt"
+_SETTINGS_KEY_APP_FONT_PT = "gui/app_font_pt"
 
 _CURRENT_THEME = THEME_LIGHT
 
 _FC_CTRL_H = 20
 
+MIN_FONT_PT = 8
+MAX_FONT_PT = 32
+DEFAULT_FONT_PT = 10
+# Backwards-compatible aliases (table-specific names used elsewhere).
+MIN_TABLE_FONT_PT = MIN_FONT_PT
+MAX_TABLE_FONT_PT = MAX_FONT_PT
+
 
 def current_theme_name() -> str:
     return _CURRENT_THEME
+
+
+def _clamp_font_pt(pt: int) -> int:
+    return max(MIN_FONT_PT, min(MAX_FONT_PT, int(pt)))
+
+
+def default_app_font_pt() -> int:
+    """Default application-wide font point size."""
+    return DEFAULT_FONT_PT
+
+
+def default_table_font_pt() -> int:
+    """Default table font size (matches the application default)."""
+    return DEFAULT_FONT_PT
+
+
+def _load_saved_font_pt(key: str) -> int:
+    raw = QSettings(_SETTINGS_ORG, _SETTINGS_APP).value(key, 0)
+    try:
+        pt = int(raw)
+    except (TypeError, ValueError):
+        pt = 0
+    if pt <= 0:
+        return default_app_font_pt()
+    return _clamp_font_pt(pt)
+
+
+def load_saved_table_font_pt() -> int:
+    """Saved table font point size, clamped to the supported range (default when unset)."""
+    return _load_saved_font_pt(_SETTINGS_KEY_TABLE_FONT_PT)
+
+
+def save_table_font_pt(pt: int) -> None:
+    QSettings(_SETTINGS_ORG, _SETTINGS_APP).setValue(_SETTINGS_KEY_TABLE_FONT_PT, int(pt))
+
+
+def load_saved_app_font_pt() -> int:
+    """Saved application-wide font point size, clamped (default when unset)."""
+    return _load_saved_font_pt(_SETTINGS_KEY_APP_FONT_PT)
+
+
+def save_app_font_pt(pt: int) -> None:
+    QSettings(_SETTINGS_ORG, _SETTINGS_APP).setValue(_SETTINGS_KEY_APP_FONT_PT, int(pt))
+
+
+def apply_application_font_pt(pt: int) -> int:
+    """Set the application-wide font point size; returns the clamped size applied."""
+    app = QApplication.instance()
+    pt = _clamp_font_pt(pt)
+    if app is not None:
+        font = QFont(app.font())
+        font.setPointSize(pt)
+        app.setFont(font)
+    return pt
 
 
 def load_saved_theme_name() -> str:
