@@ -1,4 +1,4 @@
-"""Output filters for BRICS / RECAP fragment recomposition products."""
+"""Property constraints for BRICS / RECAP fragment recomposition."""
 
 from __future__ import annotations
 
@@ -206,13 +206,31 @@ def _value_passes_rule(value: float, rule: RecompFilterRule) -> bool:
 def product_passes_filters(mol: Chem.Mol, rules: list[RecompFilterRule]) -> bool:
     if not rules:
         return True
+    return product_passes_compiled(mol, compile_recomposition_filters(rules))
+
+
+def compile_recomposition_filters(
+    rules: list[RecompFilterRule],
+) -> list[tuple[RecompFilterRule, Callable[[Chem.Mol], float]]]:
+    """Pre-build property getters for repeated filter evaluation in a hot loop."""
     getters: dict[str, Callable[[Chem.Mol], float]] = {}
+    compiled: list[tuple[RecompFilterRule, Callable[[Chem.Mol], float]]] = []
     for rule in rules:
         if rule.property_key not in getters:
             getters[rule.property_key] = _property_getter(rule.property_key)
-    for rule in rules:
+        compiled.append((rule, getters[rule.property_key]))
+    return compiled
+
+
+def product_passes_compiled(
+    mol: Chem.Mol,
+    compiled: list[tuple[RecompFilterRule, Callable[[Chem.Mol], float]]],
+) -> bool:
+    if not compiled:
+        return True
+    for rule, getter in compiled:
         try:
-            value = getters[rule.property_key](mol)
+            value = getter(mol)
         except Exception:
             return False
         if not _value_passes_rule(value, rule):

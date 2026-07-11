@@ -6,7 +6,7 @@ import logging
 import time
 from contextlib import nullcontext
 
-from PyQt5.QtCore import QEventLoop, QTimer
+from PyQt5.QtCore import QEventLoop, Qt, QTimer
 from PyQt5.QtGui import QImage, QPixmap
 from PyQt5.QtWidgets import (
     QApplication,
@@ -327,6 +327,52 @@ class IngestRenderMixin:
         self._sqlite_rebuild_pending_filters = False
         self.status_label.setText("Table indexing failed — filters may be slow until data changes.")
 
+    def _view_row_to_source_row(self, view_row: int) -> int:
+        """Map a table view row index to the source ``CompoundTableModel`` row."""
+        proxy = getattr(self, "_filter_proxy_model", None)
+        if proxy is not None:
+            src = proxy.mapToSource(proxy.index(int(view_row), 0))
+            if src.isValid():
+                return int(src.row())
+        return int(view_row)
+
+    def _sync_structure_column_width_for_zoom_state(self) -> None:
+        """Set Structure column width from zoom state (O(1), no full-table scan)."""
+        pad = STRUCTURE_COLUMN_HORIZONTAL_PADDING
+        need = (
+            STRUCTURE_DEPICT_WIDTH * 2 + pad
+            if getattr(self, "zoomed_ids", None)
+            else STRUCTURE_DEPICT_WIDTH + pad
+        )
+        col = CompoundTableModel.STRUCTURE_COL
+        if int(self.table.columnWidth(col)) != need:
+            self.table.setColumnWidth(col, need)
+
+    def _normal_structure_pixmap_for_oid(self, oid: int) -> QPixmap | None:
+        """Best-effort 1× depiction: PNG store, else scale down the in-memory pixmap."""
+        store = self._table_model._structure_png_store
+        if store is not None and store.has_png(oid):
+            pm = store.pixmap(oid)
+            if pm is not None and not pm.isNull():
+                return pm
+        current = self._table_model.structure_pixmap_for_oid(oid)
+        if current is None or current.isNull():
+            return None
+        w, h = STRUCTURE_DEPICT_WIDTH, STRUCTURE_DEPICT_HEIGHT
+        if current.width() <= w and current.height() <= h:
+            return current
+        return current.scaled(w, h, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+
+    def _try_restore_structure_zoom_out(self, oid: int, view_row: int) -> bool:
+        """Restore normal-size structure depiction without re-rendering when possible."""
+        pm = self._normal_structure_pixmap_for_oid(oid)
+        if pm is None or pm.isNull():
+            return False
+        self._table_model.set_structure_pixmap(oid, pm)
+        self.table.setRowHeight(int(view_row), STRUCTURE_DEPICT_HEIGHT)
+        self._sync_structure_column_width_for_zoom_state()
+        return True
+
     def _sync_structure_column_width_for_pixmap(self, pm: QPixmap | None, fallback_w: int) -> None:
         """Grow the Structure column to fit the pixmap + padding (never shrink — avoids fighting user resizes)."""
         col = CompoundTableModel.STRUCTURE_COL
@@ -383,21 +429,11 @@ class IngestRenderMixin:
                     updates = {name: str(props.get(name, "")) for name in self.headers[2:] if name in props}
                     if updates:
                         self._table_model.set_cell_text_batch(oid, updates)
-                pend = getattr(self, "_structure_column_autosize_after_render_oid", None)
-                if pend is not None and pend == oid:
-                    self._structure_column_autosize_after_render_oid = None
-                    if self._table_model.rowCount() <= 20_000:
-                        try:
-                            self.table.resizeColumnToContents(CompoundTableModel.STRUCTURE_COL)
-                        except Exception:
-                            pass
+                if not pix_target and oid not in self.zoomed_ids:
+                    self._sync_structure_column_width_for_zoom_state()
         else:
             if batch:
                 self._render2d_pending[oid] = (b"", False, int(w), int(h))
-            else:
-                pend = getattr(self, "_structure_column_autosize_after_render_oid", None)
-                if pend is not None and pend == oid:
-                    self._structure_column_autosize_after_render_oid = None
 
         if getattr(self, "_import_progress_active", False) and self._import_render_goal > 0:
             self._import_render_done += 1
@@ -599,23 +635,24 @@ class IngestRenderMixin:
         self._render2d_eager_flush_idx = 0
         self._render2d_eager_uniform_height = False
 
-    def on_cell_double_click(self, r, c):
+    def on_cell_double_click(self, view_row, c):
         if c != 1:
             return
-        t0 = self._table_model.cell_text(r, 0)
+        src_row = self._view_row_to_source_row(view_row)
+        t0 = self._table_model.cell_text(src_row, 0)
         if not t0.isdigit():
             return
         oid = int(t0)
-        mol = self._mol_for_structure_row(r)
+        mol = self._mol_for_structure_row(src_row)
         if mol is None:
             self.status_label.setText("No structure available for this row.")
             return
         if oid in self.zoomed_ids:
             self.zoomed_ids.remove(oid)
+            if self._try_restore_structure_zoom_out(oid, view_row):
+                return
             w, h = STRUCTURE_DEPICT_WIDTH, STRUCTURE_DEPICT_HEIGHT
-            self._structure_column_autosize_after_render_oid = oid
         else:
             self.zoomed_ids.add(oid)
             w, h = STRUCTURE_DEPICT_WIDTH * 2, STRUCTURE_DEPICT_HEIGHT * 2
-            self._structure_column_autosize_after_render_oid = None
         self.start_render_worker(oid, mol, w, h)

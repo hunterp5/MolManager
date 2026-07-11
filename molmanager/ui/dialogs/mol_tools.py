@@ -749,16 +749,13 @@ class FragmentDecompositionDialog(QDialog):
         form.addRow("Column name prefix:", self.prefix_edit)
         root.addLayout(form)
 
-        scope_box = QGroupBox("Scope")
-        scope_lyt = QVBoxLayout(scope_box)
         self.only_selected_cb = QCheckBox("Only selected rows")
         self._only_selected_scope_prefix = "Only selected rows"
         if self._have_selection:
             self.only_selected_cb.setText(f"{self._only_selected_scope_prefix} ({selected_row_count} row(s))")
         else:
             self.only_selected_cb.setEnabled(False)
-        scope_lyt.addWidget(self.only_selected_cb)
-        root.addWidget(scope_box)
+        root.addWidget(self.only_selected_cb)
 
         self.render_2d_cb = QCheckBox("Render 2D after decomposition")
         self.render_2d_cb.setChecked(False)
@@ -846,11 +843,13 @@ class FragmentRecompositionDialog(QDialog):
         self.max_products_sb = QSpinBox()
         self.max_products_sb.setRange(10, 50_000)
         self.max_products_sb.setValue(2000)
-        self.max_products_sb.setToolTip("Stop after this many unique product SMILES are generated.")
+        self.max_products_sb.setToolTip(
+            "Stop after this many accepted product SMILES that meet generation constraints."
+        )
         form.addRow("Max products:", self.max_products_sb)
         root.addLayout(form)
 
-        filters_box = QGroupBox("Output filters")
+        filters_box = QGroupBox("Generation constraints")
         filters_lyt = QVBoxLayout(filters_box)
         self.output_filters_edit = QPlainTextEdit()
         self.output_filters_edit.setPlaceholderText(
@@ -858,23 +857,21 @@ class FragmentRecompositionDialog(QDialog):
             "MW 200-500, LogP <= 5, HeavyAtoms >= 10, TPSA < 140"
         )
         self.output_filters_edit.setToolTip(
-            "Filter generated products before adding rows. Supported properties include "
-            f"{recomposition_filter_property_help()}."
+            "Only assemble products that satisfy these property limits. "
+            "Candidates that fail a constraint are skipped and do not count toward max products. "
+            f"Supported properties include {recomposition_filter_property_help()}."
         )
         self.output_filters_edit.setMaximumHeight(88)
         filters_lyt.addWidget(self.output_filters_edit)
         root.addWidget(filters_box)
 
-        scope_box = QGroupBox("Scope")
-        scope_lyt = QVBoxLayout(scope_box)
         self.only_selected_cb = QCheckBox("Only selected rows")
         self._only_selected_scope_prefix = "Only selected rows"
         if self._have_selection:
             self.only_selected_cb.setText(f"{self._only_selected_scope_prefix} ({selected_row_count} row(s))")
         else:
             self.only_selected_cb.setEnabled(False)
-        scope_lyt.addWidget(self.only_selected_cb)
-        root.addWidget(scope_box)
+        root.addWidget(self.only_selected_cb)
 
         box = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
         box.accepted.connect(self._on_accept)
@@ -967,16 +964,13 @@ class CoreBasedDecompositionDialog(QDialog):
 
         root.addLayout(form)
 
-        scope_box = QGroupBox("Scope")
-        scope_lyt = QVBoxLayout(scope_box)
         self.only_selected_cb = QCheckBox("Only selected rows")
         self._only_selected_scope_prefix = "Only selected rows"
         if self._have_selection:
             self.only_selected_cb.setText(f"{self._only_selected_scope_prefix} ({selected_row_count} row(s))")
         else:
             self.only_selected_cb.setEnabled(False)
-        scope_lyt.addWidget(self.only_selected_cb)
-        root.addWidget(scope_box)
+        root.addWidget(self.only_selected_cb)
 
         box = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
         box.accepted.connect(self._on_accept)

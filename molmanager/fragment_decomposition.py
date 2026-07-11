@@ -3,10 +3,19 @@
 from __future__ import annotations
 
 import re
+import threading
+from collections.abc import Callable
 from typing import Literal
 
 from rdkit import Chem
 from rdkit.Chem import BRICS, Recap
+
+from .config import load_config
+from .fragment_recomposition_filters import (
+    compile_recomposition_filters,
+    parse_recomposition_filter_text,
+    product_passes_compiled,
+)
 
 DecompositionMethod = Literal["brics", "recap"]
 RecompositionMethod = Literal["brics", "recap"]
@@ -111,12 +120,22 @@ def recompose_fragments(
     max_depth: int = 3,
     max_products: int = 2000,
     uniquify: bool = True,
-) -> list[str]:
+    output_filters: str = "",
+    cancel_event: threading.Event | None = None,
+    progress_callback: Callable[[int, int, int], None] | None = None,
+) -> tuple[list[str], int, bool]:
     """
     Combine fragment SMILES into new molecules using :func:`BRICS.BRICSBuild`.
 
     RECAP fragments (``*`` attachment points) are mapped to BRICS dummies before coupling.
-  """
+    When ``output_filters`` is set, only assemblies that satisfy all constraints are retained;
+    ``max_products`` counts accepted products (the build continues until that cap is met or
+    candidates are exhausted).
+
+    Returns ``(product_smiles, n_candidates_skipped_by_constraints, cancelled)``.
+    """
+    if cancel_event is not None and cancel_event.is_set():
+        return [], 0, True
     unique = unique_fragment_smiles(fragment_smiles)
     mols: list[Chem.Mol] = []
     for smi in unique:
@@ -126,10 +145,34 @@ def recompose_fragments(
     if len(mols) < 2:
         raise ValueError("Need at least two distinct, parseable fragments to recompose.")
 
+    rules = parse_recomposition_filter_text(output_filters)
+    compiled = compile_recomposition_filters(rules)
     depth = max(1, int(max_depth))
     cap = max(1, int(max_products))
+    cfg = load_config()
+    max_candidates: int | None = None
+    if compiled:
+        max_candidates = max(
+            int(cfg.recomp_constraint_min_candidates),
+            cap * int(cfg.recomp_constraint_candidate_multiplier),
+        )
     seen: set[str] = set()
     products: list[str] = []
+    skipped = 0
+    examined = 0
+    last_progress = -1
+
+    def _report_progress() -> None:
+        nonlocal last_progress
+        if progress_callback is None:
+            return
+        accepted = len(products)
+        if accepted == last_progress and examined % 64 != 0:
+            return
+        last_progress = accepted
+        progress_callback(accepted, cap, examined)
+
+    _report_progress()
     for mol in BRICS.BRICSBuild(
         mols,
         maxDepth=depth,
@@ -137,16 +180,42 @@ def recompose_fragments(
         scrambleReagents=False,
         onlyCompleteMols=True,
     ):
+        examined += 1
+        if cancel_event is not None and cancel_event.is_set():
+            return sorted(products), skipped, True
+        if max_candidates is not None and examined > max_candidates:
+            break
         try:
             smi = Chem.MolToSmiles(mol)
         except Exception:
             continue
         if smi in seen:
             continue
+        check_mol = Chem.MolFromSmiles(smi)
+        if check_mol is None:
+            continue
         seen.add(smi)
+        if compiled and not product_passes_compiled(check_mol, compiled):
+            skipped += 1
+            if examined % 16 == 0:
+                _report_progress()
+            continue
         products.append(smi)
+        _report_progress()
         if len(products) >= cap:
             break
+    if cancel_event is not None and cancel_event.is_set():
+        return sorted(products), skipped, True
     if not products:
+        if compiled:
+            if max_candidates is not None and examined >= max_candidates:
+                raise ValueError(
+                    "No products met the generation constraints within the candidate limit. "
+                    "Relax the property limits or increase max products."
+                )
+            raise ValueError(
+                "No products met the generation constraints. "
+                "Relax the property limits or increase max products."
+            )
         raise ValueError("No products were generated from the fragment pool.")
-    return sorted(products)
+    return sorted(products), skipped, False

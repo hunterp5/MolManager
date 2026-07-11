@@ -774,6 +774,34 @@ class PrepareStructuresMixin:
             row_by_oid[oid] = r
         return renders, row_by_oid
 
+    def _build_render2d_tasks_for_oids(
+        self,
+        oids: list[int],
+        base_w: int,
+        base_h: int,
+    ) -> tuple[list, dict[int, int]]:
+        """Build render tasks for explicit oids (O(n) in ``oids``; used after bulk external append)."""
+        renders: list = []
+        row_by_oid: dict[int, int] = {}
+        for oid in oids:
+            row = self._table_model.logical_row_for_oid(int(oid))
+            if row < 0:
+                continue
+            mol = self.mols.get(int(oid))
+            if mol is None:
+                mol = self._mol_for_structure_row(row)
+            if mol is None:
+                continue
+            self.mols[int(oid)] = mol
+            rw, rh = (
+                (STRUCTURE_DEPICT_WIDTH * 2, STRUCTURE_DEPICT_HEIGHT * 2)
+                if int(oid) in self.zoomed_ids
+                else (base_w, base_h)
+            )
+            renders.append((int(oid), mol, rw, rh))
+            row_by_oid[int(oid)] = row
+        return renders, row_by_oid
+
     def _try_auto_render_all_structures_after_ingest(self) -> bool:
         """Queue 2D renders for every row with an in-memory Structure mol (after file ingest or SQL load)."""
         if getattr(self, "_render2d_batch_active", False):

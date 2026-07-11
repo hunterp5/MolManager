@@ -7,8 +7,7 @@ import threading
 from PyQt5.QtCore import QRunnable
 
 from ..fragment_decomposition import RecompositionMethod, recompose_fragments
-from ..fragment_recomposition_filters import filter_product_smiles
-from .signals import WorkerSignals
+from .signals import WorkerSignals, emit_partial_results_if_cancelled
 
 
 class FragmentRecompositionWorker(QRunnable):
@@ -41,36 +40,50 @@ class FragmentRecompositionWorker(QRunnable):
     def run(self) -> None:
         ev = self.cancel_event
         if ev is not None and ev.is_set():
+            self._finish_cancelled([], 0)
             return
         from ..tool_progress import report_tool_progress
 
         label = self.tool_title
+        target = max(1, int(self.max_products))
+        throttle = [0, 0.0]
+
+        def on_progress(accepted: int, cap: int, examined: int) -> None:
+            report_tool_progress(
+                message=f"{label} ({examined:,} examined)",
+                done=min(max(0, int(accepted)), cap),
+                total=cap,
+                progress_state=self.progress_state,
+                signals=self.signals,
+                throttle=throttle,
+            )
+
         report_tool_progress(
             message=label,
             done=0,
-            total=1,
+            total=target,
             progress_state=self.progress_state,
             signals=self.signals,
+            throttle=throttle,
             force_signal=True,
         )
         if ev is not None and ev.is_set():
+            self._finish_cancelled([], 0)
             return
         try:
-            products = recompose_fragments(
+            products, skipped, cancelled = recompose_fragments(
                 self.fragment_smiles,
                 self.method,
                 max_depth=self.max_depth,
                 max_products=self.max_products,
+                output_filters=self.output_filters,
+                cancel_event=ev,
+                progress_callback=on_progress,
             )
-            filtered_out = 0
-            if self.output_filters.strip():
-                products, filtered_out = filter_product_smiles(products, self.output_filters)
-                if not products:
-                    raise ValueError(
-                        "No products passed the output filters. "
-                        "Relax the property limits or increase max products."
-                    )
         except ValueError as exc:
+            if ev is not None and ev.is_set():
+                self._finish_cancelled([], 0)
+                return
             try:
                 self.signals.fragment_recomp_failed.emit(
                     str(exc) or exc.__class__.__name__,
@@ -80,6 +93,9 @@ class FragmentRecompositionWorker(QRunnable):
                 pass
             return
         except Exception as exc:
+            if ev is not None and ev.is_set():
+                self._finish_cancelled([], 0)
+                return
             try:
                 self.signals.fragment_recomp_failed.emit(
                     str(exc) or exc.__class__.__name__,
@@ -88,15 +104,37 @@ class FragmentRecompositionWorker(QRunnable):
             except Exception:
                 pass
             return
+        if cancelled or (ev is not None and ev.is_set()):
+            self._finish_cancelled(products, skipped)
+            return
         report_tool_progress(
             message=label,
-            done=1,
-            total=1,
+            done=target,
+            total=target,
             progress_state=self.progress_state,
             signals=self.signals,
             force_signal=True,
         )
         try:
-            self.signals.fragment_recomp_finished.emit(products, self.tool_title, filtered_out)
+            self.signals.fragment_recomp_finished.emit(products, self.tool_title, skipped)
+        except Exception:
+            pass
+
+    def _finish_cancelled(self, products: list[str], skipped: int) -> None:
+        kept = [str(smi) for smi in products if (smi or "").strip()]
+        if kept:
+            emit_partial_results_if_cancelled(
+                self.signals,
+                self.tool_title,
+                len(kept),
+                self.max_products,
+                True,
+            )
+            try:
+                self.signals.fragment_recomp_finished.emit(kept, self.tool_title, int(skipped))
+            except Exception:
+                pass
+        try:
+            self.signals.fragment_recomp_failed.emit("Cancelled.", self.tool_title)
         except Exception:
             pass
