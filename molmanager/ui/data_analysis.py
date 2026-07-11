@@ -57,7 +57,8 @@ def iter_scoped_table_analysis_rows(
 
     visible_rows: set[int] | None = None
     if visible_only:
-        visible_rows = set(app._visible_source_row_indices())
+        vis = app._visible_source_row_indices()
+        visible_rows = None if vis is None else set(vis)
 
     for r in range(nrows):
         if visible_rows is not None and r not in visible_rows:

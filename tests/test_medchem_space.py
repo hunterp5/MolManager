@@ -23,7 +23,7 @@ from molmanager.ui.medchem_space_plot import build_boiled_egg_figure, build_gold
 
 
 def test_snapshot_scope_row_indices():
-    assert snapshot_scope_row_indices(10) == list(range(10))
+    assert snapshot_scope_row_indices(10) is None
     assert snapshot_scope_row_indices(10, visible_row_indices=[2, 4]) == [2, 4]
     assert snapshot_scope_row_indices(10, only_selected_rows=[1, 2, 8]) == [1, 2, 8]
     assert snapshot_scope_row_indices(
@@ -62,6 +62,7 @@ def test_golden_triangle_uses_table_without_rdkit_when_populated():
         use_table_columns_only=True,
     )
     assert len(ds.points) == 1
+    assert ds.golden_triangle_count == 1
     assert updates == []
 
 

@@ -170,6 +170,7 @@ class ChemicalTableApp(
         self._substructure_target_mol_cache = {}
         self._partial_results_notice = None
         self._ingest_loading = False
+        self._ingest_prep_before_reveal = False
         self._structures_queued = 0
         self._import_progress_active = False
         self._import_render_done = 0

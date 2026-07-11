@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import time
 from typing import TYPE_CHECKING, Any, Callable, Literal
 
 from PyQt5.QtCore import Qt, QTimer
@@ -303,26 +304,76 @@ class MedChemPlotPanel(QWidget):
 
     def _snapshot_collect_chunk_size(self) -> int:
         cfg = load_config()
-        return max(4000, int(cfg.table_selection_chunk_rows) * 2)
+        return max(512, int(cfg.table_selection_chunk_rows))
+
+    def _snapshot_scope_row_count(self, scope_rows: list[int] | None) -> int:
+        assert self.parent_app is not None
+        if scope_rows is not None:
+            return len(scope_rows)
+        return self.parent_app._table_model.rowCount()
 
     def _cancel_snapshot_collect(self) -> None:
         self._snapshot_collect_gen += 1
         self._snapshot_collect_ctx = None
 
-    def _snapshot_scope_rows(self) -> list[int]:
+    def _snapshot_scope_rows(self) -> list[int] | None:
         app = self.parent_app
         assert app is not None
         only_sel = selection_scope_checked(self)
         if only_sel and not app._selected_oids_set():
             raise ValueError("\u201cOnly selected rows\u201d is checked but nothing is selected.")
         only_rows = app._selected_logical_rows() if only_sel else None
-        visible_rows = (
-            app._visible_source_row_indices()
-        )
+        visible_rows = app._visible_source_row_indices()
         return snapshot_scope_row_indices(
             app._table_model.rowCount(),
             only_selected_rows=only_rows,
             visible_row_indices=visible_rows,
+        )
+
+    def _snapshot_export_headers(
+        self,
+        *,
+        id_col: str | None,
+        tpsa_col: str | None,
+        logp_col: str | None,
+        mw_col: str | None,
+        wlogp_col: str | None,
+        src: str,
+        include_structure: bool,
+    ) -> list[str]:
+        headers: list[str] = []
+        for h in (id_col, tpsa_col, logp_col, mw_col, wlogp_col):
+            if h and h not in headers:
+                headers.append(h)
+        if include_structure and src and src not in headers:
+            headers.append(src)
+        return headers
+
+    def _snapshot_from_cells(
+        self,
+        oid: int,
+        cells: dict[str, str],
+        *,
+        id_col: str | None,
+        tpsa_col: str | None,
+        logp_col: str | None,
+        mw_col: str | None,
+        wlogp_col: str | None,
+        src: str,
+    ) -> MedChemRowSnapshot:
+        def cell(header: str | None) -> str:
+            return cells.get(header, "") if header else ""
+
+        label = cell(id_col) if id_col else f"OID {oid}"
+        structure_text = cell(src) if src == "Structure" else cell(src)
+        return MedChemRowSnapshot(
+            oid=int(oid),
+            label=label,
+            structure_text=(structure_text or "").strip(),
+            tpsa_text=cell(tpsa_col),
+            wlogp_text=cell(wlogp_col),
+            mw_text=cell(mw_col),
+            logp_text=cell(logp_col),
         )
 
     def _snapshot_from_row(
@@ -361,7 +412,14 @@ class MedChemPlotPanel(QWidget):
         except ValueError as exc:
             QMessageBox.warning(self, self._window_title, str(exc))
             return
-        if not scope_rows:
+        if scope_rows is not None and not scope_rows:
+            QMessageBox.information(
+                self,
+                self._window_title,
+                "No rows in the current scope.",
+            )
+            return
+        if scope_rows is None and self.parent_app._table_model.rowCount() == 0:
             QMessageBox.information(
                 self,
                 self._window_title,
@@ -369,19 +427,38 @@ class MedChemPlotPanel(QWidget):
             )
             return
         tpsa_col, logp_col, mw_col, wlogp_col = self._descriptor_column_names()
+        use_table = required_descriptor_columns_ok(
+            self._plot_kind,
+            tpsa_col=tpsa_col,
+            logp_col=logp_col,
+            mw_col=mw_col,
+            wlogp_col=wlogp_col,
+        )
         app = self.parent_app
         id_col = resolve_descriptor_column(
             app.headers, ("id", "name", "compound", "compound name")
         )
+        src = self.struct_src_combo.currentText()
         self._cancel_snapshot_collect()
         gen = self._snapshot_collect_gen
+        export_headers = self._snapshot_export_headers(
+            id_col=id_col,
+            tpsa_col=tpsa_col,
+            logp_col=logp_col,
+            mw_col=mw_col,
+            wlogp_col=wlogp_col,
+            src=src,
+            include_structure=not use_table,
+        )
         self._snapshot_collect_ctx = {
             "gen": gen,
             "scope_rows": scope_rows,
             "idx": 0,
             "snapshots": [],
             "chunk": self._snapshot_collect_chunk_size(),
-            "src": self.struct_src_combo.currentText(),
+            "use_bulk_export": bool(use_table and scope_rows is None and export_headers),
+            "export_headers": export_headers,
+            "src": src,
             "id_col": id_col,
             "tpsa_col": tpsa_col,
             "logp_col": logp_col,
@@ -389,7 +466,7 @@ class MedChemPlotPanel(QWidget):
             "wlogp_col": wlogp_col,
         }
         self._set_refresh_ui_busy(True)
-        total = len(scope_rows)
+        total = self._snapshot_scope_row_count(scope_rows)
         self.summary_text.setPlainText(f"Reading table… (0/{total:,})")
         QTimer.singleShot(0, self._snapshot_collect_step)
 
@@ -402,28 +479,52 @@ class MedChemPlotPanel(QWidget):
             self._cancel_snapshot_collect()
             self._set_refresh_ui_busy(False)
             return
-        scope_rows: list[int] = ctx["scope_rows"]
+        scope_rows: list[int] | None = ctx.get("scope_rows")
         idx = int(ctx["idx"])
         chunk = int(ctx["chunk"])
-        end = min(idx + chunk, len(scope_rows))
+        total = self._snapshot_scope_row_count(scope_rows)
+        cfg = load_config()
+        deadline = time.monotonic() + max(0.005, int(cfg.ingest_gui_time_budget_ms) / 1000.0)
         model = app._table_model
         snapshots: list[MedChemRowSnapshot] = ctx["snapshots"]
-        for r in scope_rows[idx:end]:
-            snapshots.append(
-                self._snapshot_from_row(
-                    int(r),
-                    model=model,
-                    src=str(ctx["src"]),
-                    id_col=ctx.get("id_col"),
-                    tpsa_col=ctx.get("tpsa_col"),
-                    logp_col=ctx.get("logp_col"),
-                    mw_col=ctx.get("mw_col"),
-                    wlogp_col=ctx.get("wlogp_col"),
+        end = idx
+        if ctx.get("use_bulk_export"):
+            headers: list[str] = ctx["export_headers"]
+            while end < total and (end - idx) < chunk and time.monotonic() < deadline:
+                slice_end = min(end + max(64, chunk // 4), total)
+                for oid, cells in model.export_rows_for_sqlite_slice(headers, end, slice_end):
+                    snapshots.append(
+                        self._snapshot_from_cells(
+                            oid,
+                            cells,
+                            id_col=ctx.get("id_col"),
+                            tpsa_col=ctx.get("tpsa_col"),
+                            logp_col=ctx.get("logp_col"),
+                            mw_col=ctx.get("mw_col"),
+                            wlogp_col=ctx.get("wlogp_col"),
+                            src=str(ctx["src"]),
+                        )
+                    )
+                end = slice_end
+        else:
+            while end < total and (end - idx) < chunk and time.monotonic() < deadline:
+                row = int(scope_rows[end] if scope_rows is not None else end)
+                snapshots.append(
+                    self._snapshot_from_row(
+                        row,
+                        model=model,
+                        src=str(ctx["src"]),
+                        id_col=ctx.get("id_col"),
+                        tpsa_col=ctx.get("tpsa_col"),
+                        logp_col=ctx.get("logp_col"),
+                        mw_col=ctx.get("mw_col"),
+                        wlogp_col=ctx.get("wlogp_col"),
+                    )
                 )
-            )
+                end += 1
         ctx["idx"] = end
-        self.summary_text.setPlainText(f"Reading table… ({end:,}/{len(scope_rows):,})")
-        if end < len(scope_rows):
+        self.summary_text.setPlainText(f"Reading table… ({end:,}/{total:,})")
+        if end < total:
             QTimer.singleShot(0, self._snapshot_collect_step)
             return
         self._snapshot_collect_ctx = None
@@ -522,7 +623,7 @@ class MedChemPlotPanel(QWidget):
                 )
             QMessageBox.information(self, self._window_title, detail)
             return
-        self._push_plot_figure()
+        QTimer.singleShot(0, self._push_plot_figure)
         if self.parent_app is not None:
             shown = len(self._plot_dataset.points)
             n_written = len(result.table_updates)
