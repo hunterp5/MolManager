@@ -85,6 +85,9 @@ class MolManagerConfig:
     ingest_gui_chunk_size: int
     ingest_gui_time_budget_ms: int
     ingest_worker_batch_size: int
+    ingest_sdf_parallel_min_bytes: int
+    ingest_sdf_parallel_workers: int
+    ingest_sdf_parse_chunk: int
     structure_render_lazy_after_ingest_min_rows: int
     perf_metrics_enabled: bool
     perf_log_every: int
@@ -172,6 +175,11 @@ def load_config() -> MolManagerConfig:
         ingest_gui_chunk_size=_env_int("MOLMANAGER_INGEST_GUI_CHUNK", 256, lo=16, hi=10_000),
         ingest_gui_time_budget_ms=_env_int("MOLMANAGER_INGEST_GUI_TIME_MS", 25, lo=5, hi=200),
         ingest_worker_batch_size=_env_int("MOLMANAGER_INGEST_WORKER_BATCH", 800, lo=64, hi=20_000),
+        ingest_sdf_parallel_min_bytes=_env_int(
+            "MOLMANAGER_INGEST_SDF_PARALLEL_MIN_BYTES", 1_000_000, lo=0, hi=10_000_000_000
+        ),
+        ingest_sdf_parallel_workers=_env_int("MOLMANAGER_INGEST_SDF_PARALLEL_WORKERS", 6, lo=1, hi=16),
+        ingest_sdf_parse_chunk=_env_int("MOLMANAGER_INGEST_SDF_PARSE_CHUNK", 32, lo=4, hi=512),
         structure_render_lazy_after_ingest_min_rows=_env_int(
             "MOLMANAGER_STRUCTURE_RENDER_LAZY_AFTER_INGEST", 200, lo=0, hi=10_000_000
         ),
