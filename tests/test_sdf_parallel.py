@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 from rdkit import Chem
 
-from molmanager.sdf_parallel import iter_sdf_molblocks, mp_parse_sdf_molblocks
+from molmanager.sdf_parallel import iter_sdf_molblocks, mp_parse_sdf_molblocks, _parse_sdf_block
 
 
 def _write_two_record_sdf(path) -> None:
@@ -36,3 +38,24 @@ def test_mp_parse_sdf_molblocks_preserves_sd_tags(tmp_path):
     assert blobs[0] is not None
     mol = Chem.Mol(blobs[0])
     assert mol.GetProp("Note") == "alpha"
+
+
+def test_parse_bindingdb_style_titles(tmp_path):
+    """BindingDB uses whitespace titles and zero-padded numeric IDs."""
+    sdf_path = tmp_path / "bindingdb_like.sdf"
+    donor = Path(__file__).resolve().parents[1] / "samples" / "bindingdb_subset.sdf"
+    blocks = list(iter_sdf_molblocks(str(donor)))
+    assert blocks
+    for idx in (0, 9, 132):
+        mol = _parse_sdf_block(blocks[idx])
+        assert mol is not None, f"block {idx} should parse"
+    w = Chem.SDWriter(str(sdf_path))
+    try:
+        for block in blocks[:3]:
+            mol = _parse_sdf_block(block)
+            assert mol is not None
+            w.write(mol)
+    finally:
+        w.close()
+    reparsed = [m for m in Chem.SDMolSupplier(str(sdf_path)) if m]
+    assert len(reparsed) == 3

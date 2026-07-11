@@ -218,12 +218,28 @@ class CompoundTableModel(QAbstractTableModel):
         if dirty_cols:
             self._mark_numeric_bounds_dirty(dirty_cols)
 
-    def rebuild_column_color_caches_after_bulk_load(self) -> None:
-        """Refresh conditional-format caches after a large append (skipped per row during ingest)."""
-        if not self._column_color_rules:
-            return
-        for header_name in list(self._column_color_rules.keys()):
+    def rebuild_column_color_caches_after_bulk_load(
+        self, *, limit_headers: int | None = None
+    ) -> list[str]:
+        """Refresh conditional-format caches after a large append (skipped per row during ingest).
+
+        When *limit_headers* is set, rebuild at most that many columns and return any remaining
+        header names so the UI can continue on later timer ticks.
+        """
+        headers = list(self._column_color_rules.keys())
+        if not headers:
+            return []
+        if limit_headers is None or limit_headers >= len(headers):
+            for header_name in headers:
+                self._rebuild_column_color_cache(header_name)
+            return []
+        for header_name in headers[:limit_headers]:
             self._rebuild_column_color_cache(header_name)
+        return headers[limit_headers:]
+
+    def rebuild_column_color_cache_for_header(self, header_name: str) -> None:
+        """Rebuild the conditional-format cache for a single column."""
+        self._rebuild_column_color_cache(header_name)
 
     def insert_row_at(self, logical_index: int, oid: int, cells: dict[str, str]) -> None:
         n = len(self._store)
