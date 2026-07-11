@@ -7,6 +7,7 @@ import threading
 from PyQt5.QtCore import QRunnable
 
 from ..fragment_decomposition import RecompositionMethod, recompose_fragments
+from ..fragment_recomposition_filters import filter_product_smiles
 from .signals import WorkerSignals
 
 
@@ -21,6 +22,8 @@ class FragmentRecompositionWorker(QRunnable):
         max_products: int,
         tool_title: str,
         signals: WorkerSignals,
+        *,
+        output_filters: str = "",
         cancel_event: threading.Event | None = None,
         progress_state=None,
     ):
@@ -29,6 +32,7 @@ class FragmentRecompositionWorker(QRunnable):
         self.method = method
         self.max_depth = int(max_depth)
         self.max_products = int(max_products)
+        self.output_filters = str(output_filters or "")
         self.tool_title = tool_title
         self.signals = signals
         self.cancel_event = cancel_event
@@ -58,6 +62,23 @@ class FragmentRecompositionWorker(QRunnable):
                 max_depth=self.max_depth,
                 max_products=self.max_products,
             )
+            filtered_out = 0
+            if self.output_filters.strip():
+                products, filtered_out = filter_product_smiles(products, self.output_filters)
+                if not products:
+                    raise ValueError(
+                        "No products passed the output filters. "
+                        "Relax the property limits or increase max products."
+                    )
+        except ValueError as exc:
+            try:
+                self.signals.fragment_recomp_failed.emit(
+                    str(exc) or exc.__class__.__name__,
+                    self.tool_title,
+                )
+            except Exception:
+                pass
+            return
         except Exception as exc:
             try:
                 self.signals.fragment_recomp_failed.emit(
@@ -76,6 +97,6 @@ class FragmentRecompositionWorker(QRunnable):
             force_signal=True,
         )
         try:
-            self.signals.fragment_recomp_finished.emit(products, self.tool_title)
+            self.signals.fragment_recomp_finished.emit(products, self.tool_title, filtered_out)
         except Exception:
             pass

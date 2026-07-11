@@ -327,21 +327,25 @@ class FragmentToolsMixin:
                 pp.max_products,
                 pp.tool_title,
                 sigs,
+                output_filters=pp.output_filters,
                 cancel_event=ev,
                 progress_state=prog,
             ),
         )
 
-    def on_fragment_recomp_finished(self, products: list, tool_title: str) -> None:
+    def on_fragment_recomp_finished(self, products: list, tool_title: str, filtered_out: int = 0) -> None:
         self._finish_tool_progress(tool_title)
         method_label = "BRICS" if "BRICS" in tool_title.upper() else "RECAP"
         records = [
             (str(smi), {"Recompose_Method": method_label}) for smi in products if (smi or "").strip()
         ]
         n = self.add_rows_from_external_records_batch(records, render_structures=True)
+        suffix = ""
+        if filtered_out > 0:
+            suffix = f" ({filtered_out:,} product(s) filtered out)"
         self.status_label.setText(
             self._consume_partial_results_notice()
-            or f"{tool_title}: added {n:,} product row(s)."
+            or f"{tool_title}: added {n:,} product row(s){suffix}."
         )
 
     def on_fragment_recomp_failed(self, message: str, tool_title: str) -> None:

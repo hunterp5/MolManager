@@ -14,6 +14,7 @@ from PyQt5.QtWidgets import (
     QHBoxLayout,
     QLineEdit,
     QMessageBox,
+    QPlainTextEdit,
     QPushButton,
     QRadioButton,
     QSpinBox,
@@ -21,7 +22,10 @@ from PyQt5.QtWidgets import (
     QWidget,
 )
 
-from ...workers import ConformerGenParams, SuperposeParams
+from ...fragment_recomposition_filters import (
+    parse_recomposition_filter_text,
+    recomposition_filter_property_help,
+)
 from ..qt_widget_utils import make_window_minimizable
 from ..strings import (
     TOOL_ADD_EXPLICIT_HYDROGENS,
@@ -790,6 +794,7 @@ class FragmentRecompDialogParams:
     method: str  # "brics" | "recap"
     max_depth: int
     max_products: int
+    output_filters: str
     tool_title: str
 
 
@@ -845,6 +850,21 @@ class FragmentRecompositionDialog(QDialog):
         form.addRow("Max products:", self.max_products_sb)
         root.addLayout(form)
 
+        filters_box = QGroupBox("Output filters")
+        filters_lyt = QVBoxLayout(filters_box)
+        self.output_filters_edit = QPlainTextEdit()
+        self.output_filters_edit.setPlaceholderText(
+            "Optional. Comma- or line-separated AND conditions, e.g.\n"
+            "MW 200-500, LogP <= 5, HeavyAtoms >= 10, TPSA < 140"
+        )
+        self.output_filters_edit.setToolTip(
+            "Filter generated products before adding rows. Supported properties include "
+            f"{recomposition_filter_property_help()}."
+        )
+        self.output_filters_edit.setMaximumHeight(88)
+        filters_lyt.addWidget(self.output_filters_edit)
+        root.addWidget(filters_box)
+
         scope_box = QGroupBox("Scope")
         scope_lyt = QVBoxLayout(scope_box)
         self.only_selected_cb = QCheckBox("Only selected rows")
@@ -866,6 +886,13 @@ class FragmentRecompositionDialog(QDialog):
         if not (self.prefix_combo.currentText() or "").strip():
             QMessageBox.warning(self, self.windowTitle(), "Enter a fragment column prefix.")
             return
+        filter_text = self.output_filters_edit.toPlainText().strip()
+        if filter_text:
+            try:
+                parse_recomposition_filter_text(filter_text)
+            except ValueError as exc:
+                QMessageBox.warning(self, self.windowTitle(), str(exc))
+                return
         self.accept()
 
     def only_selected_rows(self) -> bool:
@@ -877,6 +904,7 @@ class FragmentRecompositionDialog(QDialog):
             method=self._method,
             max_depth=int(self.max_depth_sb.value()),
             max_products=int(self.max_products_sb.value()),
+            output_filters=self.output_filters_edit.toPlainText().strip(),
             tool_title=self._tool_title,
         )
 

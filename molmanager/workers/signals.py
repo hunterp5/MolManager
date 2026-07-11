@@ -45,7 +45,7 @@ class WorkerSignals(QObject):
     rgroup_decomp_finished = pyqtSignal(list, list)
     rgroup_decomp_failed = pyqtSignal(str)
     # BRICS / RECAP recomposition: product SMILES list, tool_title
-    fragment_recomp_finished = pyqtSignal(list, str)
+    fragment_recomp_finished = pyqtSignal(list, str, int)
     fragment_recomp_failed = pyqtSignal(str, str)
     # BRICS / RECAP: (rows, headers, tool_title)
     fragment_decomp_finished = pyqtSignal(list, list, str)
