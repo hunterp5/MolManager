@@ -38,8 +38,11 @@ def snapshot_scope_row_indices(
     *,
     only_selected_rows: list[int] | None = None,
     visible_row_indices: list[int] | None = None,
-) -> list[int]:
-    """Source-model rows to scan when building medchem plot snapshots."""
+) -> list[int] | None:
+    """Source-model rows to scan when building medchem plot snapshots.
+
+    Returns ``None`` when the scope is all source rows ``[0, row_count)`` (no list allocation).
+    """
     if only_selected_rows is not None:
         rows = list(only_selected_rows)
         if visible_row_indices is not None:
@@ -48,7 +51,7 @@ def snapshot_scope_row_indices(
         return rows
     if visible_row_indices is not None:
         return list(visible_row_indices)
-    return list(range(max(0, int(row_count))))
+    return None
 
 # GIA (intestinal absorption) and BBB (brain penetration) boundaries — [TPSA, WLOGP].
 _GIA_POLYGON: list[tuple[float, float]] = [
@@ -354,6 +357,9 @@ class MedChemSpaceDataset:
     points: tuple[MedChemSpacePoint, ...]
     skipped: int
     subsample_note: str = ""
+    gia_count: int | None = None
+    bbb_count: int | None = None
+    golden_triangle_count: int | None = None
 
     @property
     def oids(self) -> list[int]:
@@ -366,11 +372,17 @@ class MedChemSpaceDataset:
         total = total_in_scope if total_in_scope is not None else n
         lines = [f"{total:,} compound(s) in scope with valid descriptors."]
         if plot_kind == "golden_triangle":
-            gt = sum(1 for p in self.points if p.golden_triangle)
+            gt = self.golden_triangle_count
+            if gt is None:
+                gt = sum(1 for p in self.points if p.golden_triangle)
             lines.append(f"In golden triangle region: {gt:,}")
         else:
-            gia = sum(1 for p in self.points if p.gia)
-            bbb = sum(1 for p in self.points if p.bbb)
+            gia = self.gia_count
+            bbb = self.bbb_count
+            if gia is None:
+                gia = sum(1 for p in self.points if p.gia)
+            if bbb is None:
+                bbb = sum(1 for p in self.points if p.bbb)
             lines.append(f"GIA (intestinal absorption region): {gia:,}")
             lines.append(f"BBB (brain penetration yolk): {bbb:,}")
         if self.skipped:
@@ -611,6 +623,9 @@ def build_medchem_space_from_snapshots(
     points: list[MedChemSpacePoint] = []
     table_updates: list[tuple[int, dict[str, str]]] = []
     skipped = 0
+    gia_count = 0
+    bbb_count = 0
+    golden_triangle_count = 0
     plan = column_plan or medchem_table_column_plan(
         plot_kind,
         tpsa_col=tpsa_col,
@@ -717,6 +732,12 @@ def build_medchem_space_from_snapshots(
             skipped += 1
             continue
         points.append(pt)
+        if pt.gia:
+            gia_count += 1
+        if pt.bbb:
+            bbb_count += 1
+        if pt.golden_triangle:
+            golden_triangle_count += 1
         if computed_from_mol:
             row_updates = _collect_table_updates_for_snap(
                 snap,
@@ -734,7 +755,13 @@ def build_medchem_space_from_snapshots(
             progress_state.update(progress_label, total, total)
         except Exception:
             pass
-    return MedChemSpaceDataset(points=tuple(points), skipped=skipped), table_updates
+    return MedChemSpaceDataset(
+        points=tuple(points),
+        skipped=skipped,
+        gia_count=gia_count,
+        bbb_count=bbb_count,
+        golden_triangle_count=golden_triangle_count,
+    ), table_updates
 
 
 def build_medchem_space_result(

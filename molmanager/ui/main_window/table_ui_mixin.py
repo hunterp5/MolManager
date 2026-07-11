@@ -215,10 +215,16 @@ class TableUIMixin(TableSearchMixin, FilterPanelMixin):
             return proxy.mapFromSource(self._table_model.index(source_row, 0)).isValid()
         return not self.table.isRowHidden(source_row)
 
-    def _visible_source_row_indices(self) -> list[int]:
-        """Source-model row indices for rows currently shown in the table view."""
+    def _visible_source_row_indices(self) -> list[int] | None:
+        """Source-model row indices for rows currently shown in the table view.
+
+        Returns ``None`` when every source row is visible (no list allocation).
+        """
         if self._use_filter_proxy_for_table():
             proxy = self._filter_proxy_model
+            src_n = self._table_model.rowCount()
+            if proxy.rowCount() == src_n:
+                return None
             out: list[int] = []
             for pr in range(proxy.rowCount()):
                 pidx = proxy.index(pr, 0)
@@ -226,7 +232,19 @@ class TableUIMixin(TableSearchMixin, FilterPanelMixin):
                 if sidx.isValid():
                     out.append(int(sidx.row()))
             return out
-        return [r for r in range(self._table_model.rowCount()) if not self.table.isRowHidden(r)]
+        n = self._table_model.rowCount()
+        for r in range(n):
+            if self.table.isRowHidden(r):
+                return [r for r in range(n) if not self.table.isRowHidden(r)]
+        return None
+
+    def _iter_visible_source_row_indices(self):
+        """Iterate visible source rows without building a full index list when possible."""
+        indices = self._visible_source_row_indices()
+        if indices is None:
+            yield from range(self._table_model.rowCount())
+        else:
+            yield from indices
 
     def _repaint_table_selection_viewport(self) -> None:
         vp = self.table.viewport()
@@ -577,7 +595,16 @@ class TableUIMixin(TableSearchMixin, FilterPanelMixin):
     def _select_all_visible_rows(self) -> None:
         """Select every row currently visible in the table (respects active filters)."""
         self._maybe_status_before_large_select()
-        self.select_table_rows(self._visible_source_row_indices())
+        vis = self._visible_source_row_indices()
+        if vis is None:
+            n_rows = self._table_model.rowCount()
+            cfg = load_config()
+            if n_rows >= cfg.table_selection_oid_override_min:
+                self._start_chunked_oid_selection(list(range(n_rows)))
+                return
+            self.select_table_rows(list(range(n_rows)))
+            return
+        self.select_table_rows(vis)
 
     def _select_all_rows(self) -> None:
         """Select every row in the table, including rows hidden by filters."""
@@ -633,7 +660,7 @@ class TableUIMixin(TableSearchMixin, FilterPanelMixin):
         self._maybe_status_before_large_select()
         seen: set[str] = set()
         to_sel: list[int] = []
-        for r in self._visible_source_row_indices():
+        for r in self._iter_visible_source_row_indices():
             txt = (self._table_model.cell_text(r, col) or "").strip()
             if not txt:
                 continue
@@ -647,7 +674,7 @@ class TableUIMixin(TableSearchMixin, FilterPanelMixin):
         """Select visible rows where this column is empty or whitespace-only."""
         self._maybe_status_before_large_select()
         to_sel: list[int] = []
-        for r in self._visible_source_row_indices():
+        for r in self._iter_visible_source_row_indices():
             if not (self._table_model.cell_text(r, col) or "").strip():
                 to_sel.append(r)
         self.select_table_rows(to_sel)
@@ -683,7 +710,7 @@ class TableUIMixin(TableSearchMixin, FilterPanelMixin):
     def _select_empty_structure_cells(self) -> None:
         self._maybe_status_before_large_select()
         to_sel: list[int] = []
-        for r in self._visible_source_row_indices():
+        for r in self._iter_visible_source_row_indices():
             if self._structure_column_row_is_empty(r):
                 to_sel.append(r)
         self.select_table_rows(to_sel)
@@ -732,7 +759,7 @@ class TableUIMixin(TableSearchMixin, FilterPanelMixin):
         seen: set[str] = set()
         to_sel: list[int] = []
         smiles_key_cache: dict[str, str] = {}
-        for r in self._visible_source_row_indices():
+        for r in self._iter_visible_source_row_indices():
             key = self._structure_distinct_key_for_row(r, smiles_key_cache=smiles_key_cache)
             if not key or key in seen:
                 continue
@@ -1090,9 +1117,10 @@ class TableUIMixin(TableSearchMixin, FilterPanelMixin):
         """
         allowed = self._selected_oids_set() if only_selected else None
         col = None if src == "Structure" else self.headers.index(src)
-        visible_rows: set[int] | None = (
-            set(self._visible_source_row_indices()) if only_visible else None
-        )
+        visible_rows: set[int] | None = None
+        if only_visible:
+            vis = self._visible_source_row_indices()
+            visible_rows = None if vis is None else set(vis)
         is_pixmap_src = src != "Structure" and self._table_model.is_pixmap_data_column(src)
         out: list[tuple[int, Chem.Mol]] = []
         for r in range(self._table_model.rowCount()):
@@ -1138,9 +1166,10 @@ class TableUIMixin(TableSearchMixin, FilterPanelMixin):
 
         allowed = self._selected_oids_set() if only_selected else None
         col = None if src == "Structure" else self.headers.index(src)
-        visible_rows: set[int] | None = (
-            set(self._visible_source_row_indices()) if only_visible else None
-        )
+        visible_rows: set[int] | None = None
+        if only_visible:
+            vis = self._visible_source_row_indices()
+            visible_rows = None if vis is None else set(vis)
         is_pixmap_src = src != "Structure" and self._table_model.is_pixmap_data_column(src)
         smiles_h = self._canonical_smiles_header_for_updates()
         out: list[tuple[int, str]] = []

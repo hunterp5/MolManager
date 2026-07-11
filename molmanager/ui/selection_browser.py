@@ -206,17 +206,21 @@ class SelectionBrowserDialog(QDialog):
         self._update_ui()
 
     def _rows_for_scope(self, app: Any) -> list[int]:
-        visible = set(app._visible_source_row_indices())
+        visible = app._visible_source_row_indices()
         if self._cb_only_selected.isChecked():
             raw = list(app._selected_logical_rows())
-            vis = [r for r in raw if r in visible]
+            if visible is None:
+                vis = raw
+            else:
+                vis_set = set(visible)
+                vis = [r for r in raw if r in vis_set]
             return vis if vis else raw
-        # Whole-table browsing: prefer visible rows so navigation always lands on something the user can see.
         n = int(app._table_model.rowCount())
-        if visible:
-            ordered = [r for r in range(n) if r in visible]
-            if ordered:
-                return ordered
+        if visible is None:
+            return list(range(n))
+        ordered = [r for r in range(n) if r in set(visible)]
+        if ordered:
+            return ordered
         return list(range(n))
 
     def _row_navigable(self, r: int) -> bool:

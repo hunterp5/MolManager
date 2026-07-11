@@ -159,33 +159,33 @@ class IngestRenderMixin:
             self._processing_batches = False
 
     def _finalize_ingest_on_gui_thread(self) -> None:
-        """Show the table, then defer heavy follow-up (bounds, 2D batch) so the window stays responsive."""
+        """Finish ingest on the loading page; reveal the table once filters are prepared."""
         if getattr(self, "_sqlite_store", None) is not None:
             self._sqlite_store_dirty = True
         else:
             self._rebuild_sqlite_store_from_model()
         self.table.setSortingEnabled(False)
-        self._ingest_loading = False
         self._structures_queued = 0
+        self._ingest_prep_before_reveal = True
         try:
             self.table.setUpdatesEnabled(False)
         except Exception:
             pass
-        self._table_stack.setCurrentIndex(1)
         self._import_progress_active = False
         self._clear_tool_progress(status_message=None)
         self._ingest_append_mode = False
         self._last_batch_received = False
         self._processing_batches = False
-        app = QApplication.instance()
-        if app is not None:
-            app.processEvents(QEventLoop.ExcludeUserInputEvents)
+        n = self._table_model.rowCount()
+        self._loading_detail.setText(
+            f"Table built ({n:,} row(s)).\nPreparing filters and formatting…"
+        )
         if "confs" in self.headers or "superpose" in self.headers:
             QTimer.singleShot(0, self._migrate_legacy_confs_cells_to_sidecar)
         QTimer.singleShot(0, self._deferred_post_ingest_follow_up)
 
     def _deferred_post_ingest_follow_up(self) -> None:
-        """Runs after the table is visible: color caches, bounds, then optional auto 2D render."""
+        """Runs on the loading page: color caches, bounds, then reveal the table."""
         headers = self._table_model.pending_color_cache_headers()
         if headers:
             self._post_ingest_color_headers = headers
@@ -198,6 +198,10 @@ class IngestRenderMixin:
         headers = getattr(self, "_post_ingest_color_headers", None) or []
         idx = int(getattr(self, "_post_ingest_color_idx", 0))
         if idx < len(headers):
+            if getattr(self, "_ingest_prep_before_reveal", False):
+                self._loading_detail.setText(
+                    f"Preparing conditional formatting…\n({idx + 1}/{len(headers)} columns)"
+                )
             self._table_model._rebuild_column_color_cache(headers[idx])
             self._post_ingest_color_idx = idx + 1
             QTimer.singleShot(0, self._post_ingest_color_cache_step)
@@ -206,8 +210,17 @@ class IngestRenderMixin:
         self._post_ingest_after_color_caches()
 
     def _post_ingest_after_color_caches(self) -> None:
+        self.calculate_global_bounds(on_complete=self._reveal_table_after_ingest_prep)
+
+    def _reveal_table_after_ingest_prep(self) -> None:
+        """Switch from the loading page to the table once prep work is finished."""
+        self._ingest_prep_before_reveal = False
+        self._ingest_loading = False
+        self._table_stack.setCurrentIndex(1)
+        app = QApplication.instance()
+        if app is not None:
+            app.processEvents(QEventLoop.ExcludeUserInputEvents)
         started_render = self._try_auto_render_all_structures_after_ingest()
-        self.schedule_calculate_global_bounds(delay_ms=0)
         try:
             self.table.setUpdatesEnabled(True)
         except Exception:
@@ -215,9 +228,6 @@ class IngestRenderMixin:
         if started_render:
             return
         n = self._table_model.rowCount()
-        cfg = load_config()
-        if n >= int(cfg.bounds_async_min_rows):
-            return
         self.status_label.setText(STATUS_READY_RENDER_2D if n else "Ready.")
 
     def _rebuild_sqlite_store_from_model(self) -> None:

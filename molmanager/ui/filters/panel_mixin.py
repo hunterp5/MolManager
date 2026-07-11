@@ -121,8 +121,9 @@ class FilterPanelMixin:
             page_size=page,
         )
 
-    def calculate_global_bounds(self) -> None:
+    def calculate_global_bounds(self, *, on_complete=None) -> None:
         """Scan numeric columns and refresh filter/plot axis bounds."""
+        self._bounds_on_complete = on_complete
         self._bounds_chunk_gen = int(getattr(self, "_bounds_chunk_gen", 0)) + 1
         self._bounds_chunk_active = False
         n = self._table_model.rowCount()
@@ -131,6 +132,29 @@ class FilterPanelMixin:
             self._begin_chunked_global_bounds()
             return
         self._apply_global_bounds_sync()
+        self._finish_bounds_calculation()
+
+    def _finish_bounds_calculation(self) -> None:
+        """Invoke optional ingest/deferred callback or update status when bounds are ready."""
+        cb = getattr(self, "_bounds_on_complete", None)
+        self._bounds_on_complete = None
+        if cb is not None:
+            QTimer.singleShot(0, cb)
+            return
+        if hasattr(self, "status_label") and not getattr(self, "_render2d_batch_active", False):
+            cur = self.status_label.text()
+            if cur.startswith("Preparing filters"):
+                n = self._table_model.rowCount()
+                from ..strings import STATUS_READY_RENDER_2D
+
+                self.status_label.setText(STATUS_READY_RENDER_2D if n else "Ready.")
+
+    def _set_bounds_prep_progress(self, message: str) -> None:
+        """Show bounds-prep progress on the loading page during ingest."""
+        if getattr(self, "_ingest_prep_before_reveal", False) and hasattr(self, "_loading_detail"):
+            self._loading_detail.setText(message)
+        if hasattr(self, "status_label") and not getattr(self, "_render2d_batch_active", False):
+            self.status_label.setText(message.replace("\n", " — "))
 
     def _apply_global_bounds_sync(self) -> None:
         self.global_bounds = self._table_model.numeric_bounds_by_column()
@@ -151,6 +175,7 @@ class FilterPanelMixin:
         headers = self._table_model.list_bounds_data_headers()
         if not headers:
             self._apply_global_bounds_sync()
+            self._finish_bounds_calculation()
             return
         self._bounds_chunk_active = True
         self._bounds_chunk_headers = headers
@@ -158,10 +183,7 @@ class FilterPanelMixin:
         self._bounds_chunk_row_i = 0
         self._bounds_chunk_acc: dict[str, dict] = {}
         gen = int(self._bounds_chunk_gen)
-        if hasattr(self, "status_label") and not getattr(self, "_render2d_batch_active", False):
-            cur = self.status_label.text()
-            if not cur or cur.startswith("Preparing filters"):
-                self.status_label.setText(f"Preparing filters… (0/{len(headers)} columns)")
+        self._set_bounds_prep_progress(f"Preparing filters…\n(0/{len(headers)} columns)")
         QTimer.singleShot(0, lambda g=gen: self._bounds_chunk_step(g))
 
     def _bounds_chunk_step(self, gen: int) -> None:
@@ -195,23 +217,16 @@ class FilterPanelMixin:
                 self._bounds_chunk_row_i = end
         self._bounds_chunk_col_i = ci
         if ci < len(headers):
-            if hasattr(self, "status_label"):
-                self.status_label.setText(
-                    f"Preparing filters… ({ci}/{len(headers)} columns)"
-                )
+            self._set_bounds_prep_progress(
+                f"Preparing filters…\n({ci}/{len(headers)} columns)"
+            )
             QTimer.singleShot(0, lambda g=gen: self._bounds_chunk_step(g))
             return
         self._bounds_chunk_active = False
         self._table_model.install_numeric_bounds_cache(self._bounds_chunk_acc)
         self.global_bounds = dict(self._bounds_chunk_acc)
         self._refresh_bounds_on_filter_cards()
-        if hasattr(self, "status_label") and not getattr(self, "_render2d_batch_active", False):
-            cur = self.status_label.text()
-            if cur.startswith("Preparing filters"):
-                n = self._table_model.rowCount()
-                from ..strings import STATUS_READY_RENDER_2D
-
-                self.status_label.setText(STATUS_READY_RENDER_2D if n else "Ready.")
+        self._finish_bounds_calculation()
 
     def schedule_calculate_global_bounds(self, *, delay_ms: int | None = None) -> None:
         """Debounce full-table bounds scans after bulk load/ingest (keeps UI responsive)."""
