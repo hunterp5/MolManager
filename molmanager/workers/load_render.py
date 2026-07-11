@@ -15,11 +15,10 @@ from .process_pool_utils import (
 from PyQt5.QtCore import QRunnable
 from rdkit import Chem
 
-from rdkit.Chem.Draw import rdMolDraw2D
-
 from ..display_constants import STRUCTURE_DEPICT_HEIGHT, STRUCTURE_DEPICT_WIDTH
 from ..import_structure import needs_structure_source_picker
 from ..fragment_disconnect import largest_fragment_and_rest
+from ..structure_draw import render_molecule_png
 from ..structure_neutralize import neutralize_mol
 from ..structure_hydrogens import add_explicit_hydrogens, remove_explicit_hydrogens
 from ..utils import parse_molecule_from_cell_text, safe_mol_prop_string
@@ -40,10 +39,8 @@ def _mp_render_structure_row(args: tuple):
             p = {}
         else:
             p = {n: safe_mol_prop_string(mol, n) for n in mol.GetPropNames()}
-        d = rdMolDraw2D.MolDraw2DCairo(int(w), int(h))
-        rdMolDraw2D.PrepareAndDrawMolecule(d, mol)
-        d.FinishDrawing()
-        return int(oid), p, d.GetDrawingText(), True, int(w), int(h), sid
+        png = render_molecule_png(mol, int(w), int(h))
+        return int(oid), p, png, True, int(w), int(h), sid
     except Exception:
         return int(oid), {}, b"", False, int(w), int(h), sid
 
@@ -330,10 +327,8 @@ class RenderWorker(QRunnable):
                 p = self.props
             else:
                 p = {n: safe_mol_prop_string(self.mol, n) for n in self.mol.GetPropNames()}
-            d = rdMolDraw2D.MolDraw2DCairo(self.w, self.h)
-            rdMolDraw2D.PrepareAndDrawMolecule(d, self.mol)
-            d.FinishDrawing()
-            self.signals.rendered.emit(self.idx, p, d.GetDrawingText(), True, self.w, self.h, sid)
+            png = render_molecule_png(self.mol, int(self.w), int(self.h))
+            self.signals.rendered.emit(self.idx, p, png, True, self.w, self.h, sid)
         except Exception:
             self.signals.rendered.emit(self.idx, {}, b"", False, self.w, self.h, sid)
 

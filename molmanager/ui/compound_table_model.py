@@ -815,9 +815,23 @@ class CompoundTableModel(QAbstractTableModel):
 
     @staticmethod
     def _scan_numeric_column(rows: list[_Row], h: str) -> dict | None:
-        lo = hi = None
-        int_ok = True
-        for row in rows:
+        return CompoundTableModel.merge_numeric_bounds_rows(rows, h, 0, len(rows), None)
+
+    @staticmethod
+    def merge_numeric_bounds_rows(
+        rows: list[_Row],
+        h: str,
+        start_row: int,
+        end_row: int,
+        acc: dict | None,
+    ) -> dict | None:
+        """Merge numeric min/max for ``rows[start_row:end_row]`` into *acc*."""
+        lo = acc.get("min") if acc else None
+        hi = acc.get("max") if acc else None
+        int_ok = bool(acc.get("is_int", True)) if acc else True
+        start = max(0, int(start_row))
+        end = min(len(rows), int(end_row))
+        for row in rows[start:end]:
             f = safe_float(row.values.get(h, ""))
             if f is None:
                 continue
@@ -835,6 +849,28 @@ class CompoundTableModel(QAbstractTableModel):
         if lo is None:
             return None
         return {"min": lo, "max": hi, "is_int": int_ok}
+
+    def list_bounds_data_headers(self) -> list[str]:
+        return self._sorted_bounds_data_headers()
+
+    def merge_numeric_bounds_chunk(
+        self,
+        header: str,
+        start_row: int,
+        end_row: int,
+        acc: dict | None,
+    ) -> dict | None:
+        return self.merge_numeric_bounds_rows(self._rows, header, start_row, end_row, acc)
+
+    def install_numeric_bounds_cache(self, cache: dict[str, dict]) -> None:
+        self._numeric_bounds_cache = dict(cache)
+        self._numeric_bounds_key = tuple(self._sorted_bounds_data_headers())
+        self._numeric_bounds_dirty_cols = set()
+
+    def pending_color_cache_headers(self) -> list[str]:
+        if not self._column_color_rules:
+            return []
+        return [h for h in self._column_color_rules if h not in self._pixmap_columns]
 
     def _full_numeric_bounds_scan(self) -> dict[str, dict]:
         data_headers = sorted(
