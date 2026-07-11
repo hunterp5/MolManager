@@ -137,6 +137,33 @@ def test_app_table_search_selects_matching_row(qapp):  # noqa: ARG001
     assert len(indexes) == ncols
 
 
+def test_app_table_search_works_when_sqlite_index_stale(qapp):  # noqa: ARG001
+    """Large tables must not require a second Enter while the SQLite mirror rebuilds."""
+    w = ChemicalTableApp()
+    w.headers = ["ID_HIDDEN", "Structure", "Note"]
+    w._table_model.set_headers(list(w.headers))
+    for i in range(6000):
+        w._table_model.append_row(i, {"Note": "keep" if i == 42 else "other"})
+    w.next_oid = 6000
+    w.calculate_global_bounds()
+    w._sqlite_store_dirty = True
+
+    w._search_panel.setVisible(True)
+    w._populate_table_search_columns_combo()
+    note_col = w.headers.index("Note")
+    for j in range(w._search_col_combo.count()):
+        if w._search_col_combo.itemData(j) == note_col:
+            w._search_col_combo.setCurrentIndex(j)
+            break
+    w._search_query_edit.setText('"keep"')
+    w._run_table_search()
+    qapp.processEvents()
+
+    sm = w.table.selectionModel()
+    rows_hit = {ix.row() for ix in sm.selectedIndexes()}
+    assert rows_hit == {42}
+
+
 def test_table_chemistry_context_menu_column_eligibility(qapp):  # noqa: ARG001
     """Chemistry context actions apply to Structure / SMILES-like columns and parseable cells."""
     from rdkit import Chem

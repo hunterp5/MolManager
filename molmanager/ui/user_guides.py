@@ -403,7 +403,7 @@ apply the best trial to add a cluster ID column.</p>
 <ul>
 <li><b>Core-Based Decomposition</b> — labeled core SMARTS and substituent columns per attachment point.</li>
 <li><b>BRICS</b> / <b>RECAP Decomposition</b> — retrosynthetic fragments as SMILES columns; optional 2D render.</li>
-<li><b>BRICS</b> / <b>RECAP Recomposition</b> — combine fragment columns into new product rows.</li>
+<li><b>BRICS</b> / <b>RECAP Recomposition</b> — combine fragment columns into new product rows; optional output filters on MW, LogP, TPSA, atom counts, and related properties.</li>
 </ul>
 <h3>QSAR (Tools → QSAR)</h3>
 <p>Train regression or classification models: pick an activity column (Y), numeric descriptors and/or

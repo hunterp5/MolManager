@@ -334,8 +334,9 @@ class TableSearchMixin:
             sqlite_ready = ensure_sqlite()
         store = getattr(self, "_sqlite_store", None)
         if not sqlite_ready and self._table_model.rowCount() > 5000:
-            self.status_label.setText("Indexing table… (retry search in a moment)")
-            return []
+            self.status_label.setText(
+                "Search: indexing table in background; scanning rows now (may take a moment)…"
+            )
         perf = getattr(self, "_perf", None)
         scope = perf.track if perf is not None else (lambda *_a, **_k: nullcontext())
 
@@ -394,11 +395,11 @@ class TableSearchMixin:
                 result &= row_sets[i]
         return result
 
-    def _select_table_rows(self, rows: list[int]) -> bool:
+    def _select_table_rows(self, rows: list[int], *, allow_hidden: bool = False) -> bool:
         """Select *rows* in the table view; return False if nothing selected."""
         if not rows:
             return False
-        n = self.select_table_rows(rows)
+        n = self.select_table_rows(rows, allow_hidden=allow_hidden)
         if n <= 0:
             return False
         view_rows = self._source_rows_to_view_rows(sorted({int(r) for r in rows}))
@@ -451,13 +452,21 @@ class TableSearchMixin:
                 )
 
         combined = sorted(self._combine_search_row_sets(specs, row_sets))
-        self.table.clearSelection()
+        sm = self.table.selectionModel()
+        self._in_programmatic_table_selection = True
+        try:
+            if sm is not None:
+                sm.clearSelection()
+        finally:
+            self._in_programmatic_table_selection = False
         if not combined:
             self.status_label.setText("Search: no matches.")
             return
-        if not self._select_table_rows(combined):
+        if not self._select_table_rows(combined, allow_hidden=True):
             self.status_label.setText("Search: no visible matches.")
             return
+
+        self.table.setFocus(Qt.ShortcutFocusReason)
 
         n_crit = len(specs)
         glue_bits = [s.glue for s in specs[1:] if s.glue]
