@@ -101,9 +101,7 @@ class IngestExportMixin:
         if getattr(self, "_export_busy", False):
             QMessageBox.warning(self, "Export", "An export is already in progress.")
             return
-        # Materialize a plain-dict snapshot on the GUI thread: the export runs on a worker thread
-        # and must not touch the live (disk-spilling) mol store directly.
-        t_mols = dict(self.mols.items())
+        t_mols = self.mols
         # Export in current visual column order (but always include ID/Structure first).
         vis_cols = self._visual_logical_columns()
         ordered_headers = [self.headers[i] for i in vis_cols if i < len(self.headers)]
