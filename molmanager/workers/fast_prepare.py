@@ -128,6 +128,14 @@ class FastPrepareWorker(QRunnable):
             except Exception:
                 pass
 
+        def _emit_chunk(chunk: list[tuple[int, Chem.Mol, str]]) -> None:
+            if not chunk:
+                return
+            try:
+                self.signals.fast_prepare_chunk.emit(chunk)
+            except Exception:
+                logger.exception("fast_prepare_chunk emit failed")
+
         try:
             for batch in batch_args:
                 pending.add(ex.submit(_mp_fast_prepare_batch, batch))
@@ -138,10 +146,14 @@ class FastPrepareWorker(QRunnable):
                     for fut in list(pending):
                         if fut.done() and not fut.cancelled():
                             try:
+                                chunk: list[tuple[int, Chem.Mol, str]] = []
                                 for oid, blob, fragments, ok in fut.result():
                                     done_count += 1
                                     if ok and blob:
-                                        results.append((oid, Chem.Mol(blob), fragments))
+                                        row = (int(oid), Chem.Mol(blob), fragments)
+                                        results.append(row)
+                                        chunk.append(row)
+                                _emit_chunk(chunk)
                             except Exception:
                                 logger.exception("Fast prepare batch failed during cancel drain")
                         else:
@@ -152,10 +164,14 @@ class FastPrepareWorker(QRunnable):
                     if fut.cancelled():
                         continue
                     try:
+                        chunk = []
                         for oid, blob, fragments, ok in fut.result():
                             done_count += 1
                             if ok and blob:
-                                results.append((oid, Chem.Mol(blob), fragments))
+                                row = (int(oid), Chem.Mol(blob), fragments)
+                                results.append(row)
+                                chunk.append(row)
+                        _emit_chunk(chunk)
                         _emit_progress(done_count)
                     except Exception:
                         logger.exception("Fast prepare batch failed")

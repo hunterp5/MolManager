@@ -159,6 +159,30 @@ class Render2DBatchProcessWorker(QRunnable):
             shutdown_process_pool_executor(ex, kill_workers=should_terminate_process_pool(ev))
 
 
+class Render2DBatchChunkRunner(QRunnable):
+    """Run one Render 2D chunk and notify the app on the GUI thread when finished."""
+
+    def __init__(self, worker: Render2DBatchProcessWorker, app) -> None:
+        super().__init__()
+        self._worker = worker
+        self._app = app
+
+    def run(self) -> None:
+        try:
+            self._worker.run()
+        finally:
+            try:
+                from PyQt5.QtCore import QMetaObject, Qt
+
+                QMetaObject.invokeMethod(
+                    self._app,
+                    "_on_fast_prepare_render_chunk_done",
+                    Qt.QueuedConnection,
+                )
+            except Exception:
+                logger.exception("Render2DBatchChunkRunner completion notify failed")
+
+
 class UniversalLoadWorker(QRunnable):
     def __init__(
         self,
