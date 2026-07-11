@@ -101,7 +101,11 @@ class ProcessesDialog(QDialog):
             hub = getattr(self._app, "background_activity", None)
             self._btn_cancel.setEnabled(bool(hub.smina_dock_active()) if hub is not None else False)
         elif m.get("kind") == "pq_running":
-            self._btn_cancel.setEnabled(bool(m.get("cancellable")))
+            hub = getattr(self._app, "background_activity", None)
+            if hub is not None and hub.render2d_batch_active():
+                self._btn_cancel.setEnabled(True)
+            else:
+                self._btn_cancel.setEnabled(bool(m.get("cancellable")))
         elif m.get("kind") == "pq_fast_running":
             self._btn_cancel.setEnabled(bool(m.get("cancellable", True)))
         elif m.get("kind") == "pq_queued":

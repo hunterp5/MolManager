@@ -36,6 +36,17 @@ class BackgroundActivityHub(QObject):
         fn = getattr(self._app, "smina_dock_active", None)
         return bool(fn()) if callable(fn) else False
 
+    def _render2d_on_process_queue(self, snap: dict[str, Any] | None = None) -> bool:
+        """True when Render 2D is the currently running serial queue job."""
+        if not self.render2d_batch_active():
+            return False
+        if snap is None:
+            pq = getattr(self._app, "process_queue", None)
+            if pq is None:
+                return False
+            snap = pq.snapshot()
+        return bool(snap.get("running"))
+
     def processes_view_rows(
         self,
     ) -> tuple[list[tuple[str, str, str]], list[dict[str, Any]]]:
@@ -77,7 +88,7 @@ class BackgroundActivityHub(QObject):
                 }
             )
 
-        if self.render2d_batch_active():
+        if self.render2d_batch_active() and not self._render2d_on_process_queue(snap):
             rows.insert(0, ("Running", "(render-2d)", "Render 2D — drawing structures…"))
             metas.insert(0, {"kind": "render2d"})
 
@@ -118,6 +129,11 @@ class BackgroundActivityHub(QObject):
             return (("Cancel", "Smina is not running."), None)
 
         if kind == "pq_running":
+            if self.render2d_batch_active():
+                cancel = getattr(app, "cancel_render_2d_batch", None)
+                if callable(cancel) and cancel():
+                    return (None, "Render 2D cancelled.")
+                return (("Cancel", "Render 2D is not active."), None)
             run = pq.snapshot().get("running") if pq else None
             if not run or run.get("job_id") != meta.get("job_id"):
                 return (("Cancel", "That job is no longer running."), None)
