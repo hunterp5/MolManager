@@ -96,12 +96,12 @@ class IngestExportMixin:
         self.headers = ["ID_HIDDEN", "Structure"] + merged_tail
 
     def run_export(self, selected=False):
-        if not self.mols:
+        if self._table_model.rowCount() == 0:
             return
         if getattr(self, "_export_busy", False):
             QMessageBox.warning(self, "Export", "An export is already in progress.")
             return
-        t_mols = self.mols
+        t_mols = dict(self.mols)
         # Export in current visual column order (but always include ID/Structure first).
         vis_cols = self._visual_logical_columns()
         ordered_headers = [self.headers[i] for i in vis_cols if i < len(self.headers)]
@@ -129,7 +129,7 @@ class IngestExportMixin:
                         "No rows are selected. Select one or more rows in the table first.",
                     )
                     return
-                t_mols = {oid: self.mols[oid] for oid in oids_override if oid in self.mols}
+                t_mols = {oid: self.mols.get(oid) for oid in oids_override}
                 rows = []
             else:
                 if not selected_rows:
@@ -146,13 +146,15 @@ class IngestExportMixin:
                     tr = self._table_model.cell_text(r, 0)
                     if tr.isdigit():
                         k = int(tr)
-                        if k in self.mols:
-                            t_mols[k] = self.mols[k]
+                        t_mols[k] = self.mols.get(k)
             items = sel.selectedIndexes() if sel is not None else []
             cols = list(set(i.column() for i in items))
             cols = [c for c in cols if c > 1]  # never export the hidden ID or Structure via selection list
             cols.sort(key=self.table.horizontalHeader().visualIndex)
             t_heads = ["ID_HIDDEN", "Structure"] + [self.headers[c] for c in cols if c < len(self.headers)]
+        else:
+            oids_all = self._table_model.all_oids_in_order()
+            t_mols = {oid: self.mols.get(oid) for oid in oids_all}
         f_filter = "SDF (*.sdf);;Molfile (*.mol);;SMILES (*.smi);;CSV (*.csv);;TDT (*.tdt);;PDB (*.pdb)"
         path, sel_f = QFileDialog.getSaveFileName(self, "Export Data", "", f_filter)
         if path:

@@ -53,7 +53,10 @@ class ExportWorker(QRunnable):
                             break
                         row = self.table_data.get(oid, {}).copy()
                         if "SMILES" not in row or not row["SMILES"]:
-                            row["SMILES"] = mol_to_canonical_smiles(mol)
+                            if mol is not None:
+                                row["SMILES"] = mol_to_canonical_smiles(mol)
+                            elif not row.get("SMILES"):
+                                continue
                         writer.writerow({k: v for k, v in row.items() if k in csv_heads})
                         try:
                             self.signals.tool_progress.emit("Exporting…", done, tot)
@@ -73,7 +76,14 @@ class ExportWorker(QRunnable):
                         user_cancelled = True
                         break
                     row = self.table_data.get(oid, {})
-                    out_mol = Chem.Mol(mol)
+                    out_mol = mol
+                    if out_mol is None:
+                        smi = str(row.get("SMILES", "") or "").strip()
+                        if smi:
+                            out_mol = Chem.MolFromSmiles(smi)
+                    if out_mol is None:
+                        continue
+                    out_mol = Chem.Mol(out_mol)
                     for h in clean_headers:
                         out_mol.SetProp(h, str(row.get(h, "")))
                     writer.write(out_mol)

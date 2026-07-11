@@ -22,7 +22,8 @@ class WorkerSignals(QObject):
     """Signals from background workers to the main window (single QObject for simple wiring)."""
 
     # --- Load + 2D render pipeline ---
-    # mols_loaded: (list_of_mols, headers_or_empty, is_first_batch:bool, is_last_batch:bool)
+    # mols_loaded: (batch, headers_or_empty, is_first_batch, is_last_batch)
+    # batch entries are Chem.Mol (SDF/MOL) or dict[str,str] cell maps (text-first CSV/TSV).
     mols_loaded = pyqtSignal(list, list, bool, bool)
     # Emitted on the UI thread before bulk read when multiple structure columns exist; worker waits.
     structure_source_probe = pyqtSignal(list)

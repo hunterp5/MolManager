@@ -15,6 +15,7 @@ from PyQt5.QtWidgets import (
 
 
 from ...config import load_config
+from ...ingest_text import is_ingest_cell_batch
 from ...display_constants import STRUCTURE_ROW_DEFAULT_HEIGHT
 from ...structure_render_store import StructureRenderStore
 from ..structure_pixmap import pixmap_from_structure_render_png
@@ -79,6 +80,28 @@ class IngestRenderMixin:
         self._processing_batches = True
         QTimer.singleShot(0, self._process_next_chunk)
 
+    def _ingest_use_silent_model(self) -> bool:
+        return bool(load_config().ingest_silent_model_append)
+
+    def _ingest_begin_silent_if_needed(self) -> None:
+        if self._ingest_use_silent_model() and not self._table_model.silent_appending:
+            self._table_model.begin_silent_appends()
+
+    def _ingest_append_batch_items(self, items: list, new_rows: list[tuple[int, dict[str, str]]]) -> None:
+        """Convert one worker batch (mols or cell dicts) into pending table rows."""
+        if is_ingest_cell_batch(items):
+            for cells in items:
+                oid = self.next_oid
+                self.next_oid += 1
+                new_rows.append((oid, dict(cells)))
+            return
+        for m in items:
+            m = self._apply_structure_field_override(m)
+            oid = self.next_oid
+            self.next_oid += 1
+            self.mols[oid] = m
+            new_rows.append((oid, self._row_cells_from_mol(m)))
+
     def on_file_loaded(self, mols_list, headers, is_first, is_last):
         # Append batch to pending queue and schedule incremental processing
         if is_first:
@@ -94,10 +117,13 @@ class IngestRenderMixin:
                 self.table.setColumnHidden(0, True)
             if self._table_stack.currentIndex() == 0:
                 self._loading_detail.setText(LOADING_DETAIL_AFTER_FILE_READ)
+            self._ingest_begin_silent_if_needed()
         if mols_list:
             self._pending_batches.append((mols_list, is_last))
         if is_last:
             self._last_batch_received = True
+        if mols_list and not self._processing_batches:
+            self._ingest_begin_silent_if_needed()
         self._maybe_start_ingest_processing()
 
     def _process_next_chunk(self, chunk_size: int | None = None):
@@ -121,16 +147,11 @@ class IngestRenderMixin:
                     take = mols_list[:remain]
                     if take:
                         new_rows: list[tuple[int, dict[str, str]]] = []
-                        for m in take:
-                            m = self._apply_structure_field_override(m)
-                            oid = self.next_oid
-                            self.next_oid += 1
-                            self.mols[oid] = m
-                            new_rows.append((oid, self._row_cells_from_mol(m)))
+                        self._ingest_append_batch_items(take, new_rows)
                         self._table_model.append_rows_batch(new_rows, defer_color_cache=True)
                         processed += len(new_rows)
-                        n = len(self.mols)
-                        self.status_label.setText(f"Loaded {n} molecules — preparing table…")
+                        n = self._table_model.rowCount()
+                        self.status_label.setText(f"Loaded {n:,} molecules — preparing table…")
                         if self._table_stack.currentIndex() == 0:
                             self._loading_detail.setText(
                                 f"Building table…\n{n} molecule(s); 2D structures draw when ready"
@@ -160,6 +181,8 @@ class IngestRenderMixin:
 
     def _finalize_ingest_on_gui_thread(self) -> None:
         """Finish ingest on the loading page; reveal the table once filters are prepared."""
+        if self._table_model.silent_appending:
+            self._table_model.end_silent_appends()
         if getattr(self, "_sqlite_store", None) is not None:
             self._sqlite_store_dirty = True
         else:
