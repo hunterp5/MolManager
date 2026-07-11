@@ -18,6 +18,7 @@ from ..strings import (
     TOOL_RENDER_2D,
 )
 from ...workers import (
+    FastPrepareWorker,
     Render2DBatchProcessWorker,
     Render2DBatchHeldJob,
     WashWorker,
@@ -164,7 +165,7 @@ class PrepareStructuresMixin:
             self.status_label.setText(f"Protonate failed: {msg or 'Computation failed.'}")
 
     def run_fast_prepare(self) -> None:
-        if not self.headers or not self.mols:
+        if not self.headers or self._table_model.rowCount() == 0:
             return
         from ..dialogs import FastPrepareDialog
 
@@ -176,25 +177,182 @@ class PrepareStructuresMixin:
         dlg.accepted.connect(lambda *_, d=dlg: self._on_fast_prepare_dialog_accepted(d))
         dlg.show()
 
+    def _collect_fast_prepare_rows(
+        self,
+        src: str,
+        *,
+        only_selected: bool,
+    ) -> tuple[list[tuple], bool]:
+        """Build worker input rows in table order; returns ``(rows, is_smiles_column)``."""
+        allowed = self._selected_oids_set() if only_selected else None
+        is_smiles = src != "Structure"
+        data: list[tuple] = []
+        oids_walk = self._all_oids_in_table_order()
+        if allowed is not None:
+            oids_walk = [o for o in oids_walk if o in allowed]
+        if not is_smiles:
+            for oid in oids_walk:
+                mol = self._mol_for_structure_tool_oid(oid, src)
+                raw = self._disconnect_source_text_for_oid(oid, src)
+                if mol is None and not raw:
+                    continue
+                data.append((oid, mol, raw))
+            return data, False
+        col = self.headers.index(src)
+        for oid in oids_walk:
+            row = self.get_row_by_id(oid)
+            if row < 0:
+                continue
+            text = self._table_cell_text(row, col)
+            if not (text or "").strip():
+                continue
+            data.append((oid, text))
+        return data, True
+
     def _on_fast_prepare_dialog_accepted(self, dlg) -> None:
         src, update_target, largest_col, fragments_col, only_selected = dlg.config()
         allowed = self._selected_oids_set() if only_selected else None
         if self._abort_if_only_selected_but_empty(only_selected, allowed, "Fast Prepare"):
             return
         prepare_col = src if update_target else largest_col
-        self._fast_prepare_active = True
-        self._fast_prepare_source = prepare_col
-        self._fast_prepare_allowed_oids = allowed
-        self.status_label.setText("Fast prepare: disconnecting fragments…")
-        self._enqueue_disconnect_fragments(
-            src,
-            update_target=update_target,
-            largest_col=largest_col,
-            fragments_col=fragments_col,
-            only_selected=only_selected,
-            no_render_2d=True,
-            queue_title_prefix="Fast prepare: ",
+        rows, is_smiles = self._collect_fast_prepare_rows(src, only_selected=only_selected)
+        if not rows:
+            QMessageBox.information(
+                self,
+                "Fast Prepare",
+                "No rows match the current scope and structure field.",
+            )
+            self.status_label.setText("Ready.")
+            return
+        self._fast_prepare_ctx = {
+            "prepare_col": prepare_col,
+            "src": src,
+            "update_target": update_target,
+            "largest_col": largest_col,
+            "fragments_col": fragments_col,
+            "allowed_oids": allowed,
+        }
+        self.status_label.setText("Fast prepare: preparing structures…")
+        cfg = load_config()
+        batch_size = max(32, int(cfg.descriptor_process_pool_batch_size))
+        n = len(rows)
+        self.process_queue.enqueue(
+            f"Fast prepare ({n} rows)",
+            lambda ev, r=rows, sm=is_smiles, bs=batch_size: FastPrepareWorker(
+                r,
+                self.signals,
+                is_smiles=sm,
+                cancel_event=ev,
+                batch_size=bs,
+            ),
         )
+
+    def _apply_fast_prepare_table_updates(self, results: list[tuple[int, Chem.Mol, str]]) -> None:
+        """Write disconnect/neutralize outputs in one batched pass."""
+        ctx = getattr(self, "_fast_prepare_ctx", None) or {}
+        prepare_col = str(ctx.get("prepare_col") or "Structure")
+        fragments_col = str(ctx.get("fragments_col") or "Fragments")
+        update_target = bool(ctx.get("update_target", True))
+        largest_col = ctx.get("largest_col")
+        src = str(ctx.get("src") or "Structure")
+
+        self._ensure_disconnect_output_column(fragments_col)
+        if not update_target and largest_col:
+            self._ensure_disconnect_output_column(str(largest_col))
+            if str(largest_col) in self.headers:
+                self._table_model.register_pixmap_column(str(largest_col))
+
+        smiles_h = self._canonical_smiles_header_for_updates()
+        update_smiles_col = (
+            update_target
+            and smiles_h is not None
+            and src == smiles_h
+            and not self._table_model.is_pixmap_data_column(smiles_h)
+        )
+
+        self.table.setSortingEnabled(False)
+        for oid, mol, fragments in results:
+            if mol is None:
+                continue
+            smiles = mol_to_canonical_smiles(mol)
+            if prepare_col == "Structure":
+                self.mols[oid] = mol
+                self._table_model.set_structure_pixmap(oid, None)
+            elif prepare_col in self.headers:
+                if self._table_model.is_pixmap_data_column(prepare_col):
+                    self.mols[oid] = mol
+                    self._table_model.set_column_pixmap(oid, prepare_col, None)
+                else:
+                    self._table_model.set_cell_text(oid, prepare_col, smiles)
+            batch_cells: dict[str, str] = {}
+            if fragments_col in self.headers and fragments:
+                batch_cells[fragments_col] = fragments
+            if update_smiles_col and smiles_h is not None and smiles_h != prepare_col:
+                batch_cells[smiles_h] = smiles
+            if batch_cells:
+                self._table_model.set_cell_text_batch(oid, batch_cells)
+        self.table.setSortingEnabled(False)
+
+    def _build_render2d_tasks_from_mol_rows(
+        self,
+        mol_rows: list[tuple[int, Chem.Mol]],
+        allowed_oids: set[int] | frozenset[int] | None,
+        base_w: int,
+        base_h: int,
+    ) -> tuple[list, dict[int, int]]:
+        """Build render tasks from prepared mols without rescanning the table."""
+        renders: list = []
+        row_by_oid: dict[int, int] = {}
+        for oid, mol in mol_rows:
+            if mol is None:
+                continue
+            oid_i = int(oid)
+            if allowed_oids is not None and oid_i not in allowed_oids:
+                continue
+            row = self.get_row_by_id(oid_i)
+            if row < 0:
+                continue
+            self.mols[oid_i] = mol
+            rw, rh = (
+                (STRUCTURE_DEPICT_WIDTH * 2, STRUCTURE_DEPICT_HEIGHT * 2)
+                if oid_i in self.zoomed_ids
+                else (base_w, base_h)
+            )
+            renders.append((oid_i, mol, rw, rh))
+            row_by_oid[oid_i] = row
+        return renders, row_by_oid
+
+    def on_fast_prepare_finished(self, results: list) -> None:
+        ctx = getattr(self, "_fast_prepare_ctx", None) or {}
+        self._fast_prepare_ctx = None
+        self._clear_tool_progress()
+        if not results:
+            self.status_label.setText(
+                self._consume_partial_results_notice() or "Fast prepare: no structures prepared."
+            )
+            return
+
+        self._apply_fast_prepare_table_updates(results)
+        self.schedule_calculate_global_bounds()
+
+        prepare_col = str(ctx.get("prepare_col") or "Structure")
+        allowed_oids = ctx.get("allowed_oids")
+        mol_rows = [(int(oid), mol) for oid, mol, _frag in results if mol is not None]
+        base_w, base_h = STRUCTURE_DEPICT_WIDTH, STRUCTURE_DEPICT_HEIGHT
+        renders, row_by_oid = self._build_render2d_tasks_from_mol_rows(
+            mol_rows, allowed_oids, base_w, base_h
+        )
+        if renders and not getattr(self, "_render2d_batch_active", False):
+            self.status_label.setText("Fast prepare: rendering 2D…")
+            self._start_render_2d_batch(
+                renders,
+                row_by_oid,
+                prepare_col,
+                column_pixmap_mode=(prepare_col != "Structure"),
+                queue_title_prefix="Fast prepare: ",
+            )
+            return
+        self.status_label.setText(self._consume_partial_results_notice() or "Fast prepare done.")
 
     def run_disconnect_fragments(self) -> None:
         if not self.headers or not self.mols:
@@ -259,7 +417,6 @@ class PrepareStructuresMixin:
                     "No rows match the current scope and structure field.",
                 )
                 self.status_label.setText("Ready.")
-                self._fast_prepare_active = False
                 return
             title = f"{queue_title_prefix}disconnect largest fragments"
             self.process_queue.enqueue(
@@ -284,7 +441,6 @@ class PrepareStructuresMixin:
                     "No rows match the current scope and structure field.",
                 )
                 self.status_label.setText("Ready.")
-                self._fast_prepare_active = False
                 return
             title = f"{queue_title_prefix}disconnect largest fragments (column)"
             self.process_queue.enqueue(
@@ -503,10 +659,6 @@ class PrepareStructuresMixin:
         )
 
     def on_neutralize_finished(self, results) -> None:
-        fast_prepare = getattr(self, "_fast_prepare_active", False)
-        fast_src = getattr(self, "_fast_prepare_source", "Structure") if fast_prepare else "Structure"
-        fast_allowed = getattr(self, "_fast_prepare_allowed_oids", None) if fast_prepare else None
-
         src = getattr(self, "_neutralize_source", "Structure")
         no_render_2d = getattr(self, "_neutralize_no_render_2d", False)
         self._neutralize_source = "Structure"
@@ -536,29 +688,6 @@ class PrepareStructuresMixin:
 
         self.schedule_calculate_global_bounds()
         self._clear_tool_progress()
-        if fast_prepare:
-            self._fast_prepare_active = False
-            self._fast_prepare_source = "Structure"
-            self._fast_prepare_allowed_oids = None
-            render_src = fast_src
-            allowed_oids = fast_allowed
-            if results and not getattr(self, "_render2d_batch_active", False):
-                base_w, base_h = STRUCTURE_DEPICT_WIDTH, STRUCTURE_DEPICT_HEIGHT
-                renders, row_by_oid = self._build_render2d_tasks_in_table_order(
-                    render_src, base_w, base_h, allowed_oids
-                )
-                if renders:
-                    self.status_label.setText("Fast prepare: rendering 2D…")
-                    self._start_render_2d_batch(
-                        renders,
-                        row_by_oid,
-                        render_src,
-                        column_pixmap_mode=(render_src != "Structure"),
-                        queue_title_prefix="Fast prepare: ",
-                    )
-                    return
-            self.status_label.setText(self._consume_partial_results_notice() or "Fast prepare done.")
-            return
         if results and render_target and not no_render_2d and not getattr(
             self, "_render2d_batch_active", False
         ):
@@ -1207,26 +1336,6 @@ class PrepareStructuresMixin:
         self.schedule_calculate_global_bounds()
         self.table.setSortingEnabled(False)
         self._clear_tool_progress()
-
-        if getattr(self, "_fast_prepare_active", False):
-            fast_src = getattr(self, "_fast_prepare_source", src)
-            neutral_rows = [(oid, mol) for oid, mol, _frag in results if mol is not None]
-            if not neutral_rows:
-                self._fast_prepare_active = False
-                self._fast_prepare_source = "Structure"
-                self._fast_prepare_allowed_oids = None
-                self.status_label.setText(
-                    self._consume_partial_results_notice() or "Fast prepare: no structures to neutralize."
-                )
-                return
-            self.status_label.setText("Fast prepare: neutralizing…")
-            self._enqueue_neutralize(
-                fast_src,
-                no_render_2d=True,
-                rows=neutral_rows,
-                queue_title_prefix="Fast prepare: ",
-            )
-            return
 
         render_src = src if update_target else largest_col
         if results and render_largest and not no_render_2d and not getattr(
