@@ -33,6 +33,7 @@ class WorkerSignals(QObject):
     washed = pyqtSignal(list)
     neutralized = pyqtSignal(list)
     explicit_hydrogens_added = pyqtSignal(list)
+    explicit_hydrogens_removed = pyqtSignal(list)
     calculated = pyqtSignal(list, list)
     # list of (oid, mol_or_None, confs_cell_json_str)
     conformers_finished = pyqtSignal(list)

@@ -23,7 +23,12 @@ from PyQt5.QtWidgets import (
 
 from ...workers import ConformerGenParams, SuperposeParams
 from ..qt_widget_utils import make_window_minimizable
-from ..strings import TOOL_ADD_EXPLICIT_HYDROGENS, TOOL_CORE_DECOMP, TOOL_SINGLE_CONFORMATION
+from ..strings import (
+    TOOL_ADD_EXPLICIT_HYDROGENS,
+    TOOL_CORE_DECOMP,
+    TOOL_REMOVE_EXPLICIT_HYDROGENS,
+    TOOL_SINGLE_CONFORMATION,
+)
 from ...fragment_decomposition import detect_fragment_column_prefixes
 from .scope import selection_scope_checked
 
@@ -391,6 +396,46 @@ class AddExplicitHydrogensDialog(QDialog):
         root.addWidget(self.only_selected_cb)
         self.no_render_2d_cb = QCheckBox("No Render 2D")
         self.no_render_2d_cb.setToolTip("Skip redrawing 2D images after adding hydrogens.")
+        root.addWidget(self.no_render_2d_cb)
+        box = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        box.accepted.connect(self.accept)
+        box.rejected.connect(self.reject)
+        root.addWidget(box)
+        make_window_minimizable(self)
+
+    def config(self) -> tuple[str, bool, bool]:
+        """Returns ``(target_column, only_selected_rows, no_render_2d)``."""
+        return (
+            self.src_combo.currentText(),
+            selection_scope_checked(self),
+            self.no_render_2d_cb.isChecked(),
+        )
+
+
+class RemoveExplicitHydrogensDialog(QDialog):
+    """Remove explicit hydrogen atoms from structures in a chosen column."""
+
+    def __init__(self, source_labels: list[str], selected_row_count: int = 0, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle(TOOL_REMOVE_EXPLICIT_HYDROGENS)
+        self.resize(420, 140)
+        self._have_selection = selected_row_count > 0
+
+        root = QVBoxLayout(self)
+        f = QFormLayout()
+        self.src_combo = QComboBox()
+        self.src_combo.addItems(source_labels)
+        f.addRow("Target column:", self.src_combo)
+        root.addLayout(f)
+        self.only_selected_cb = QCheckBox("Only selected rows")
+        self._only_selected_scope_prefix = "Only selected rows"
+        if self._have_selection:
+            self.only_selected_cb.setText(f"{self._only_selected_scope_prefix} ({selected_row_count} row(s))")
+        else:
+            self.only_selected_cb.setEnabled(False)
+        root.addWidget(self.only_selected_cb)
+        self.no_render_2d_cb = QCheckBox("No Render 2D")
+        self.no_render_2d_cb.setToolTip("Skip redrawing 2D images after removing hydrogens.")
         root.addWidget(self.no_render_2d_cb)
         box = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
         box.accepted.connect(self.accept)

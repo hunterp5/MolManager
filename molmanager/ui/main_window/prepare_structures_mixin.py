@@ -378,6 +378,66 @@ class PrepareStructuresMixin:
             ),
         )
 
+    def run_remove_explicit_hydrogens(self) -> None:
+        if not self.headers or not self.mols:
+            return
+        from ..dialogs import RemoveExplicitHydrogensDialog
+
+        candidates = self.chemistry_tool_structure_sources()
+        n_sel = len(self._selected_logical_rows())
+        dlg = RemoveExplicitHydrogensDialog(candidates, n_sel, self)
+        self._prepare_tool_dialog(dlg)
+        dlg.setAttribute(Qt.WA_DeleteOnClose, True)
+        dlg.accepted.connect(lambda *_, d=dlg: self._on_remove_explicit_hydrogens_dialog_accepted(d))
+        dlg.show()
+
+    def _on_remove_explicit_hydrogens_dialog_accepted(self, dlg) -> None:
+        src, only_selected, no_render_2d = dlg.config()
+        allowed = self._selected_oids_set() if only_selected else None
+        if self._abort_if_only_selected_but_empty(only_selected, allowed, "Remove Explicit Hydrogens"):
+            return
+        self.status_label.setText("Removing explicit hydrogens…")
+        self._enqueue_remove_explicit_hydrogens(
+            src,
+            only_selected=only_selected,
+            no_render_2d=no_render_2d,
+        )
+
+    def _enqueue_remove_explicit_hydrogens(
+        self,
+        src: str,
+        *,
+        only_selected: bool = False,
+        no_render_2d: bool = False,
+    ) -> None:
+        from ...workers import RemoveExplicitHydrogensWorker
+
+        self._remove_explicit_hydrogens_source = src
+        self._remove_explicit_hydrogens_no_render_2d = no_render_2d
+        allowed = self._selected_oids_set() if only_selected else None
+        data: list[tuple[int, Chem.Mol]] = []
+        oids_walk = self._all_oids_in_table_order()
+        if allowed is not None:
+            oids_walk = [o for o in oids_walk if o in allowed]
+        for oid in oids_walk:
+            mol = self._mol_for_structure_tool_oid(oid, src)
+            if mol is not None:
+                data.append((oid, mol))
+        if not data:
+            QMessageBox.information(
+                self,
+                "Remove Explicit Hydrogens",
+                "No rows match the current scope and structure field.",
+            )
+            self.status_label.setText("Ready.")
+            return
+        self.process_queue.enqueue(
+            "Remove explicit hydrogens",
+            lambda ev, d=data, s=self.signals: RemoveExplicitHydrogensWorker(
+                d, s, is_smiles=False, cancel_event=ev
+            ),
+        )
+
     def run_neutralize(self) -> None:
         if not self.headers or not self.mols:
             return
@@ -531,6 +591,63 @@ class PrepareStructuresMixin:
         no_render_2d = getattr(self, "_add_explicit_hydrogens_no_render_2d", False)
         self._add_explicit_hydrogens_source = "Structure"
         self._add_explicit_hydrogens_no_render_2d = False
+
+        render_target = (
+            src == "Structure"
+            or (src in self.headers and self._table_model.is_pixmap_data_column(src))
+        )
+        smiles_h = self._canonical_smiles_header_for_updates()
+        update_smiles_col = smiles_h is not None and src == smiles_h
+
+        for oid, mol in results:
+            if mol is None:
+                continue
+            if src == "Structure":
+                self.mols[oid] = mol
+                self._table_model.set_structure_pixmap(oid, None)
+            elif src in self.headers:
+                if self._table_model.is_pixmap_data_column(src):
+                    self.mols[oid] = mol
+                    self._table_model.set_column_pixmap(oid, src, None)
+                else:
+                    self._table_model.set_cell_text(oid, src, mol_to_canonical_smiles(mol))
+            if update_smiles_col:
+                self._table_model.set_cell_text(oid, smiles_h, mol_to_canonical_smiles(mol))
+
+        self.schedule_calculate_global_bounds()
+        self._clear_tool_progress()
+        if results and render_target and not no_render_2d and not getattr(
+            self, "_render2d_batch_active", False
+        ):
+            base_w, base_h = STRUCTURE_DEPICT_WIDTH, STRUCTURE_DEPICT_HEIGHT
+            renders = []
+            row_by_oid: dict[int, int] = {}
+            for oid, mol in results:
+                if mol is None:
+                    continue
+                row = self.get_row_by_id(oid)
+                if row < 0:
+                    continue
+                rw, rh = (
+                    (STRUCTURE_DEPICT_WIDTH * 2, STRUCTURE_DEPICT_HEIGHT * 2)
+                    if oid in self.zoomed_ids
+                    else (base_w, base_h)
+                )
+                renders.append((oid, mol, rw, rh))
+                row_by_oid[oid] = row
+            if renders:
+                column_pixmap_mode = src != "Structure"
+                self._start_render_2d_batch(
+                    renders, row_by_oid, src, column_pixmap_mode=column_pixmap_mode
+                )
+                return
+        self.status_label.setText(self._consume_partial_results_notice() or "Done.")
+
+    def on_remove_explicit_hydrogens_finished(self, results) -> None:
+        src = getattr(self, "_remove_explicit_hydrogens_source", "Structure")
+        no_render_2d = getattr(self, "_remove_explicit_hydrogens_no_render_2d", False)
+        self._remove_explicit_hydrogens_source = "Structure"
+        self._remove_explicit_hydrogens_no_render_2d = False
 
         render_target = (
             src == "Structure"
