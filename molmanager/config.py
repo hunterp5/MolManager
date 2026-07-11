@@ -109,6 +109,8 @@ class MolManagerConfig:
     structure_render_lazy_min_rows: int
     structure_render_pixmap_lru: int
     tool_progress_poll_ms: int
+    status_memory_enabled: bool
+    status_memory_poll_ms: int
     table_selection_oid_override_min: int
     table_selection_chunk_rows: int
     table_delete_batch_min: int
@@ -210,6 +212,8 @@ def load_config() -> MolManagerConfig:
             "MOLMANAGER_STRUCTURE_RENDER_PIXMAP_LRU", 384, lo=32, hi=4096
         ),
         tool_progress_poll_ms=_env_int("MOLMANAGER_TOOL_PROGRESS_POLL_MS", 200, lo=50, hi=2000),
+        status_memory_enabled=_env_bool("MOLMANAGER_STATUS_MEMORY", True),
+        status_memory_poll_ms=_env_int("MOLMANAGER_STATUS_MEMORY_POLL_MS", 2000, lo=500, hi=60_000),
         table_selection_oid_override_min=_env_int(
             "MOLMANAGER_TABLE_SELECTION_OID_OVERRIDE_MIN", 2500, lo=100, hi=10_000_000
         ),

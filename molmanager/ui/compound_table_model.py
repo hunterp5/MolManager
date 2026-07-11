@@ -1509,7 +1509,18 @@ class StructureDelegate(QStyledItemDelegate):
         """Cell fill color; ``None`` falls back to white for legacy callers."""
         self._cell_background = color
 
-    def _fill_cell_background(self, painter, opt: QStyleOptionViewItem, index) -> None:
+    def _cell_has_structure_pixmap(self, index) -> bool:
+        pix = index.data(Qt.DecorationRole)
+        return isinstance(pix, QPixmap) and not pix.isNull()
+
+    def _fill_cell_background(
+        self,
+        painter,
+        opt: QStyleOptionViewItem,
+        index,
+        *,
+        has_rendered_structure: bool = False,
+    ) -> None:
         from .table_selection_delegate import source_row_for_view_index
 
         row = source_row_for_view_index(index, self._compound_model) if self._compound_model else -1
@@ -1517,15 +1528,19 @@ class StructureDelegate(QStyledItemDelegate):
             pal = QApplication.palette() if QApplication.instance() else opt.palette
             painter.fillRect(opt.rect, pal.color(QPalette.Highlight))
             return
+        if has_rendered_structure:
+            painter.fillRect(opt.rect, QColor(255, 255, 255))
+            return
         bg = self._cell_background if self._cell_background is not None else QColor(255, 255, 255)
         painter.fillRect(opt.rect, bg)
 
     def paint(self, painter, option, index):  # noqa: N802
         opt = QStyleOptionViewItem(option)
         self.initStyleOption(opt, index)
-        self._fill_cell_background(painter, opt, index)
-        pix = index.data(Qt.DecorationRole)
-        if isinstance(pix, QPixmap) and not pix.isNull():
+        has_pix = self._cell_has_structure_pixmap(index)
+        self._fill_cell_background(painter, opt, index, has_rendered_structure=has_pix)
+        pix = index.data(Qt.DecorationRole) if has_pix else None
+        if has_pix:
             r = opt.rect
             x = r.x() + (r.width() - pix.width()) // 2
             y = r.y() + (r.height() - pix.height()) // 2

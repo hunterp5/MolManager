@@ -160,11 +160,16 @@ class GuiSettingsMixin:
                     refresh()
 
     def _refresh_structure_delegate_theme(self) -> None:
-        """Structure column cell background follows ``QPalette.Base`` (Fusion in both themes)."""
+        """Structure column uses theme base for placeholders; rendered cells stay white."""
         if not hasattr(self, "table") or self._table_model is None:
             return
         from .compound_table_model import CompoundTableModel, StructureDelegate
 
-        delg = StructureDelegate(self.table)
+        delg = getattr(self, "_structure_delegate", None)
+        if not isinstance(delg, StructureDelegate):
+            delg = StructureDelegate(self.table, self._table_model)
+            self._structure_delegate = delg
+        else:
+            delg.set_compound_model(self._table_model)
         delg.set_cell_background(self.palette().color(QPalette.Base))
         self.table.setItemDelegateForColumn(CompoundTableModel.STRUCTURE_COL, delg)

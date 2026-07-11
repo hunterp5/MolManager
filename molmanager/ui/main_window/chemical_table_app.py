@@ -26,6 +26,7 @@ from PyQt5.QtWidgets import (
 )
 
 from ...config import load_config
+from ...memory_usage import format_process_memory_status
 from ...performance import PerformanceTracker
 from ...tool_progress import ToolProgressState
 from ...storage import SqliteTableStore
@@ -279,6 +280,28 @@ class ChemicalTableApp(
         self._tool_progress_poll_timer.timeout.connect(self._poll_tool_progress_state)
         self._background_job_ui_depth = 0
         self._last_tool_progress_status = ""
+        self._init_status_memory_tracker(cfg)
+
+    def _init_status_memory_tracker(self, cfg) -> None:
+        self._memory_status_timer = QTimer(self)
+        self._memory_status_timer.timeout.connect(self._refresh_status_memory_label)
+        if cfg.status_memory_enabled:
+            self._memory_status_timer.setInterval(int(cfg.status_memory_poll_ms))
+            self._memory_status_timer.start()
+            self._refresh_status_memory_label()
+        else:
+            self._memory_status_label.hide()
+
+    def _refresh_status_memory_label(self) -> None:
+        label = getattr(self, "_memory_status_label", None)
+        if label is None or not label.isVisible():
+            return
+        text = format_process_memory_status()
+        if text is None:
+            label.setText("")
+            label.setToolTip("Process memory unavailable on this platform.")
+            return
+        label.setText(text)
 
     def _begin_tool_progress(self, message: str, total: int) -> None:
         """Start polled status updates for a long-running queued tool."""
@@ -557,8 +580,22 @@ class ChemicalTableApp(
         content_h.addWidget(self._plot_panel)
         content_h.addWidget(self.f_panel)
         main_v.addLayout(content_h)
+        status_row = QHBoxLayout()
+        status_row.setContentsMargins(0, 0, 0, 0)
+        status_row.setSpacing(8)
         self.status_label = QLabel("Ready")
-        main_v.addWidget(self.status_label)
+        self.status_label.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
+        self._memory_status_label = QLabel("")
+        self._memory_status_label.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+        self._memory_status_label.setToolTip(
+            "MolManager process resident memory (working set). "
+            "Background render worker processes are not included."
+        )
+        status_row.addWidget(self.status_label, 1)
+        status_row.addWidget(self._memory_status_label, 0)
+        status_host = QWidget()
+        status_host.setLayout(status_row)
+        main_v.addWidget(status_host)
 
     def init_menubar(self):
         mb = self.menuBar()
@@ -1073,6 +1110,9 @@ class ChemicalTableApp(
         t = getattr(self, "_apply_filters_timer", None)
         if t is not None:
             t.stop()
+        mem_t = getattr(self, "_memory_status_timer", None)
+        if mem_t is not None:
+            mem_t.stop()
 
         self.background_activity.prepare_for_quit()
 
