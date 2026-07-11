@@ -85,9 +85,6 @@ class MolManagerConfig:
     ingest_gui_chunk_size: int
     ingest_gui_time_budget_ms: int
     ingest_worker_batch_size: int
-    ingest_sdf_parallel_min_bytes: int
-    ingest_sdf_parallel_workers: int
-    ingest_sdf_parse_chunk: int
     structure_render_lazy_after_ingest_min_rows: int
     perf_metrics_enabled: bool
     perf_log_every: int
@@ -98,17 +95,11 @@ class MolManagerConfig:
     structure_render_png_ram_rows: int
     mols_live_max: int
     sort_async_min_rows: int
-    row_store_disk_min_rows: int
-    row_store_cache_rows: int
     tool_progress_poll_ms: int
     table_selection_oid_override_min: int
     table_selection_chunk_rows: int
     table_delete_batch_min: int
     table_delete_chunk_rows: int
-    prepare_structures_process_pool_min_rows: int
-    post_ingest_chunked_work_min_rows: int
-    post_ingest_color_chunk_rows: int
-    post_ingest_bounds_chunk_rows: int
 
 
 def _migrate_chemmanager_env_aliases() -> None:
@@ -179,11 +170,6 @@ def load_config() -> MolManagerConfig:
         ingest_gui_chunk_size=_env_int("MOLMANAGER_INGEST_GUI_CHUNK", 256, lo=16, hi=10_000),
         ingest_gui_time_budget_ms=_env_int("MOLMANAGER_INGEST_GUI_TIME_MS", 25, lo=5, hi=200),
         ingest_worker_batch_size=_env_int("MOLMANAGER_INGEST_WORKER_BATCH", 800, lo=64, hi=20_000),
-        ingest_sdf_parallel_min_bytes=_env_int(
-            "MOLMANAGER_INGEST_SDF_PARALLEL_MIN_BYTES", 1_000_000, lo=0, hi=10_000_000_000
-        ),
-        ingest_sdf_parallel_workers=_env_int("MOLMANAGER_INGEST_SDF_PARALLEL_WORKERS", 6, lo=1, hi=16),
-        ingest_sdf_parse_chunk=_env_int("MOLMANAGER_INGEST_SDF_PARSE_CHUNK", 32, lo=4, hi=512),
         structure_render_lazy_after_ingest_min_rows=_env_int(
             "MOLMANAGER_STRUCTURE_RENDER_LAZY_AFTER_INGEST", 200, lo=0, hi=10_000_000
         ),
@@ -208,12 +194,6 @@ def load_config() -> MolManagerConfig:
         sort_async_min_rows=_env_int(
             "MOLMANAGER_SORT_ASYNC_MIN_ROWS", 50_000, lo=1000, hi=50_000_000
         ),
-        row_store_disk_min_rows=_env_int(
-            "MOLMANAGER_ROW_STORE_DISK_MIN_ROWS", 300_000, lo=0, hi=50_000_000
-        ),
-        row_store_cache_rows=_env_int(
-            "MOLMANAGER_ROW_STORE_CACHE_ROWS", 20_000, lo=0, hi=10_000_000
-        ),
         tool_progress_poll_ms=_env_int("MOLMANAGER_TOOL_PROGRESS_POLL_MS", 200, lo=50, hi=2000),
         table_selection_oid_override_min=_env_int(
             "MOLMANAGER_TABLE_SELECTION_OID_OVERRIDE_MIN", 2500, lo=100, hi=10_000_000
@@ -226,17 +206,5 @@ def load_config() -> MolManagerConfig:
         ),
         table_delete_chunk_rows=_env_int(
             "MOLMANAGER_TABLE_DELETE_CHUNK_ROWS", 2000, lo=64, hi=100_000
-        ),
-        prepare_structures_process_pool_min_rows=_env_int(
-            "MOLMANAGER_PREPARE_STRUCTURES_PROCESS_POOL_MIN_ROWS", 64, lo=2, hi=10_000_000
-        ),
-        post_ingest_chunked_work_min_rows=_env_int(
-            "MOLMANAGER_POST_INGEST_CHUNKED_WORK_MIN_ROWS", 5000, lo=0, hi=10_000_000
-        ),
-        post_ingest_color_chunk_rows=_env_int(
-            "MOLMANAGER_POST_INGEST_COLOR_CHUNK_ROWS", 2000, lo=64, hi=500_000
-        ),
-        post_ingest_bounds_chunk_rows=_env_int(
-            "MOLMANAGER_POST_INGEST_BOUNDS_CHUNK_ROWS", 4000, lo=64, hi=500_000
         ),
     )

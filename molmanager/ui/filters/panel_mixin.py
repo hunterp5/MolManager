@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import logging
-import time
 from contextlib import nullcontext
 
 from PyQt5.QtCore import QTimer
@@ -132,16 +131,6 @@ class FilterPanelMixin:
 
     def calculate_global_bounds(self) -> None:
         """Scan all numeric columns and refresh filter/plot axis bounds (synchronous)."""
-        n_rows = self._table_model.rowCount()
-        cfg = load_config()
-        if int(cfg.post_ingest_chunked_work_min_rows) > 0 and n_rows >= int(
-            cfg.post_ingest_chunked_work_min_rows
-        ):
-            self._start_chunked_global_bounds()
-            return
-        self._apply_global_bounds_from_model()
-
-    def _apply_global_bounds_from_model(self) -> None:
         self.global_bounds = self._table_model.numeric_bounds_by_column()
         data_cols = self._filterable_data_column_names()
         for f in self.filters:
@@ -152,62 +141,6 @@ class FilterPanelMixin:
         refresh_plot_axes = getattr(self, "_refresh_active_plot_axis_columns", None)
         if callable(refresh_plot_axes):
             refresh_plot_axes()
-
-    def _start_chunked_global_bounds(self) -> None:
-        if getattr(self, "_bounds_chunk_active", False):
-            return
-        headers = self._table_model.bounds_data_headers()
-        if not headers:
-            self._apply_global_bounds_from_model()
-            return
-        self._bounds_chunk_active = True
-        self._bounds_chunk_headers = headers
-        self._bounds_chunk_header_idx = 0
-        self._bounds_chunk_row = 0
-        self._bounds_chunk_acc: dict | None = None
-        self._bounds_partial: dict[str, dict] = {}
-        from PyQt5.QtCore import QTimer
-
-        QTimer.singleShot(0, self._chunked_global_bounds_step)
-
-    def _chunked_global_bounds_step(self) -> None:
-        from PyQt5.QtCore import QEventLoop, QTimer
-        from PyQt5.QtWidgets import QApplication
-
-        if not getattr(self, "_bounds_chunk_active", False):
-            return
-        headers = getattr(self, "_bounds_chunk_headers", None) or []
-        idx = int(getattr(self, "_bounds_chunk_header_idx", 0))
-        if idx >= len(headers):
-            self._bounds_chunk_active = False
-            self._bounds_chunk_headers = []
-            self._table_model.commit_numeric_bounds_cache(self._bounds_partial)
-            self._apply_global_bounds_from_model()
-            return
-        header = headers[idx]
-        n_rows = self._table_model.rowCount()
-        row = int(getattr(self, "_bounds_chunk_row", 0))
-        cfg = load_config()
-        chunk_rows = int(cfg.post_ingest_bounds_chunk_rows)
-        budget_s = max(0.005, int(cfg.ingest_gui_time_budget_ms) / 1000.0)
-        deadline = time.monotonic() + budget_s
-        acc = getattr(self, "_bounds_chunk_acc", None)
-        while row < n_rows and time.monotonic() < deadline:
-            end = min(n_rows, row + chunk_rows)
-            acc = self._table_model.scan_numeric_column_chunk(header, row, end, acc=acc)
-            row = end
-        self._bounds_chunk_acc = acc
-        self._bounds_chunk_row = row
-        if row >= n_rows:
-            if acc is not None:
-                self._bounds_partial[header] = acc
-            self._bounds_chunk_header_idx = idx + 1
-            self._bounds_chunk_row = 0
-            self._bounds_chunk_acc = None
-        app = QApplication.instance()
-        if app is not None:
-            app.processEvents(QEventLoop.ExcludeUserInputEvents)
-        QTimer.singleShot(0, self._chunked_global_bounds_step)
 
     def schedule_calculate_global_bounds(self, *, delay_ms: int | None = None) -> None:
         """Debounce full-table bounds scans after bulk load/ingest (keeps UI responsive)."""
