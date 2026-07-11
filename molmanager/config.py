@@ -105,6 +105,10 @@ class MolManagerConfig:
     table_selection_chunk_rows: int
     table_delete_batch_min: int
     table_delete_chunk_rows: int
+    prepare_structures_process_pool_min_rows: int
+    post_ingest_chunked_work_min_rows: int
+    post_ingest_color_chunk_rows: int
+    post_ingest_bounds_chunk_rows: int
 
 
 def _migrate_chemmanager_env_aliases() -> None:
@@ -222,5 +226,17 @@ def load_config() -> MolManagerConfig:
         ),
         table_delete_chunk_rows=_env_int(
             "MOLMANAGER_TABLE_DELETE_CHUNK_ROWS", 2000, lo=64, hi=100_000
+        ),
+        prepare_structures_process_pool_min_rows=_env_int(
+            "MOLMANAGER_PREPARE_STRUCTURES_PROCESS_POOL_MIN_ROWS", 64, lo=2, hi=10_000_000
+        ),
+        post_ingest_chunked_work_min_rows=_env_int(
+            "MOLMANAGER_POST_INGEST_CHUNKED_WORK_MIN_ROWS", 5000, lo=0, hi=10_000_000
+        ),
+        post_ingest_color_chunk_rows=_env_int(
+            "MOLMANAGER_POST_INGEST_COLOR_CHUNK_ROWS", 2000, lo=64, hi=500_000
+        ),
+        post_ingest_bounds_chunk_rows=_env_int(
+            "MOLMANAGER_POST_INGEST_BOUNDS_CHUNK_ROWS", 4000, lo=64, hi=500_000
         ),
     )
