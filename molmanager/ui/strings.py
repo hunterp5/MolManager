@@ -10,6 +10,7 @@ TOOL_RECAP_RECOMP = "RECAP Recomposition"
 TOOL_CALCULATOR = "Calculator"
 TOOL_SINGLE_CONFORMATION = "Generate Single Conformation"
 TOOL_ADD_EXPLICIT_HYDROGENS = "Add Explicit Hydrogens"
+TOOL_REMOVE_EXPLICIT_HYDROGENS = "Remove Explicit Hydrogens"
 
 # Column header when importing similarity hits (PubChem, ChEMBL, SureChEMBL) or adding FP similarity scores.
 COLUMN_TANIMOTO_SIMILARITY = "Tanimoto Similarity"

@@ -52,6 +52,7 @@ from .fingerprint_similarity import (
 from .load_render import (
     AddExplicitHydrogensWorker,
     NeutralizeWorker,
+    RemoveExplicitHydrogensWorker,
     Render2DBatchHeldJob,
     Render2DBatchProcessWorker,
     RenderWorker,
@@ -114,6 +115,7 @@ __all__ = [
     "SubstructureFilterSignals",
     "SubstructureFilterWorker",
     "AddExplicitHydrogensWorker",
+    "RemoveExplicitHydrogensWorker",
     "NeutralizeWorker",
     "UniversalLoadWorker",
     "WashWorker",

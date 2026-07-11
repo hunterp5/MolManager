@@ -366,6 +366,7 @@ do not match. Combine substructure, numeric slider, text, and category filters.<
 <li><b>Disconnect Largest Fragments</b> — split salts; keep the largest piece.</li>
 <li><b>Neutralize</b> — adjust protonation toward net charge 0.</li>
 <li><b>Add Explicit Hydrogens</b> — expand implicit H atoms to explicit hydrogens (RDKit AddHs).</li>
+<li><b>Remove Explicit Hydrogens</b> — strip explicit H atoms from structures (RDKit RemoveHs).</li>
 <li><b>Render 2D</b> — draw structures into a column; optional “show implicit hydrogens”.</li>
 <li><b>Protonate</b> — dominant protomer at a chosen pH; optional 2D render and <b>% Protomer</b> column.</li>
 </ul>

@@ -21,7 +21,7 @@ from ..display_constants import STRUCTURE_DEPICT_HEIGHT, STRUCTURE_DEPICT_WIDTH
 from ..import_structure import needs_structure_source_picker
 from ..fragment_disconnect import largest_fragment_and_rest
 from ..structure_neutralize import neutralize_mol
-from ..structure_hydrogens import add_explicit_hydrogens
+from ..structure_hydrogens import add_explicit_hydrogens, remove_explicit_hydrogens
 from ..utils import parse_molecule_from_cell_text, safe_mol_prop_string
 from .signals import WorkerSignals, emit_partial_results_if_cancelled
 
@@ -478,4 +478,48 @@ class AddExplicitHydrogensWorker(QRunnable):
             self.signals, "Add explicit hydrogens", done_count, total, cancelled
         )
         self.signals.explicit_hydrogens_added.emit(res)
+
+
+class RemoveExplicitHydrogensWorker(QRunnable):
+    """Remove explicit hydrogen atoms from each structure in ``mols_data``."""
+
+    def __init__(self, mols_data, signals, is_smiles: bool = False, cancel_event: threading.Event | None = None):
+        super().__init__()
+        self.mols_data, self.signals, self.is_smiles = mols_data, signals, is_smiles
+        self.cancel_event = cancel_event
+
+    def run(self):
+        items = list(self.mols_data)
+        total = max(len(items), 1)
+        res: list[tuple[int, object]] = []
+        done_count = 0
+        cancelled = False
+        for done, row in enumerate(items, start=1):
+            if self.cancel_event is not None and self.cancel_event.is_set():
+                cancelled = True
+                break
+            done_count = done
+            oid = row[0]
+            if self.is_smiles:
+                raw = str(row[1] or "").strip()
+                mol = parse_molecule_from_cell_text(raw) if raw else None
+            else:
+                mol = row[1]
+            if mol is None:
+                try:
+                    self.signals.tool_progress.emit("Remove explicit hydrogens…", done, total)
+                except Exception:
+                    pass
+                continue
+            stripped = remove_explicit_hydrogens(mol)
+            if stripped is not None:
+                res.append((oid, stripped))
+            try:
+                self.signals.tool_progress.emit("Remove explicit hydrogens…", done, total)
+            except Exception:
+                pass
+        emit_partial_results_if_cancelled(
+            self.signals, "Remove explicit hydrogens", done_count, total, cancelled
+        )
+        self.signals.explicit_hydrogens_removed.emit(res)
 

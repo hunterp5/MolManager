@@ -21,3 +21,18 @@ def add_explicit_hydrogens(mol: Chem.Mol) -> Chem.Mol | None:
         return Chem.AddHs(m)
     except Exception:
         return None
+
+
+def remove_explicit_hydrogens(mol: Chem.Mol) -> Chem.Mol | None:
+    """Return a copy of *mol* with explicit hydrogen atoms removed (RDKit RemoveHs)."""
+    if mol is None or mol.GetNumAtoms() == 0:
+        return None
+    try:
+        m = Chem.Mol(mol)
+        Chem.SanitizeMol(m)
+        out = Chem.RemoveHs(m)
+        if out is None or out.GetNumAtoms() == 0:
+            return None
+        return out
+    except Exception:
+        return None

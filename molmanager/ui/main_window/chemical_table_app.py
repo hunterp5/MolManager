@@ -138,6 +138,7 @@ class ChemicalTableApp(
         self.signals.washed.connect(self.on_wash_finished, _qc)
         self.signals.neutralized.connect(self.on_neutralize_finished, _qc)
         self.signals.explicit_hydrogens_added.connect(self.on_add_explicit_hydrogens_finished, _qc)
+        self.signals.explicit_hydrogens_removed.connect(self.on_remove_explicit_hydrogens_finished, _qc)
         self.signals.calculated.connect(self.on_calc_finished, _qc)
         self.signals.conformers_finished.connect(self.on_conformers_finished, _qc)
         self.signals.superpose_finished.connect(self.on_superpose_finished, _qc)
@@ -659,6 +660,12 @@ class ChemicalTableApp(
                 "Add Explicit Hydrogens…",
                 self.run_add_explicit_hydrogens,
                 "Expand implicit hydrogens to explicit H atoms in the target column (RDKit AddHs).",
+                None,
+            ),
+            (
+                "Remove Explicit Hydrogens…",
+                self.run_remove_explicit_hydrogens,
+                "Remove explicit H atoms from structures in the target column (RDKit RemoveHs).",
                 None,
             ),
             (
