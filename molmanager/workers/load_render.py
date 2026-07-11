@@ -16,7 +16,9 @@ from PyQt5.QtCore import QRunnable
 from rdkit import Chem
 
 from ..display_constants import STRUCTURE_DEPICT_HEIGHT, STRUCTURE_DEPICT_WIDTH
+from ..config import load_config
 from ..import_structure import needs_structure_source_picker
+from ..ingest_text import csv_row_to_cells, smi_line_to_cells
 from ..fragment_disconnect import largest_fragment_and_rest
 from ..structure_draw import render_molecule_png
 from ..structure_neutralize import neutralize_mol
@@ -200,6 +202,8 @@ class UniversalLoadWorker(QRunnable):
             pass
         ext = os.path.splitext(self.path)[1].lower()
         batch_size = self.batch_size
+        cfg = load_config()
+        text_first = bool(cfg.ingest_csv_text_first)
         try:
             headers = ["ID_HIDDEN", "Structure"]
             first_emit = True
@@ -222,31 +226,60 @@ class UniversalLoadWorker(QRunnable):
             elif ext in [".smi", ".txt", ".csv"]:
                 delim = "," if ext == ".csv" else "\t"
                 with open(self.path, "r", encoding="utf-8", errors="replace") as f:
-                    reader = csv.DictReader(f, delimiter=delim)
-                    fieldnames = reader.fieldnames or []
-                    smi_col = next(
-                        (fn for fn in fieldnames if fn.lower() in ["smiles", "smi", "structure", "mol"]),
-                        fieldnames[0] if fieldnames else None,
-                    )
-                    if smi_col:
+                    if ext == ".smi" and text_first:
                         headers.append("SMILES")
-                        headers.extend([h for h in fieldnames if h != smi_col])
-                        if not self._wait_for_structure_source_choice(headers):
-                            smi_col = None
-                    for row in reader:
-                        if self._cancelled():
-                            break
-                        if smi_col is None:
-                            continue
-                        m = Chem.MolFromSmiles(row[smi_col])
-                        if m:
-                            m.SetProp("SMILES", row[smi_col])
-                            for h in fieldnames:
-                                if h != smi_col:
-                                    m.SetProp(h, str(row[h]))
-                            batch.append(m)
+                        if self._wait_for_structure_source_choice(headers):
+                            for line in f:
+                                if self._cancelled():
+                                    break
+                                cells = smi_line_to_cells(line)
+                                if cells is None:
+                                    continue
+                                batch.append(cells)
+                                if len(batch) >= batch_size:
+                                    self.signals.mols_loaded.emit(
+                                        batch, headers if first_emit else [], first_emit, False
+                                    )
+                                    first_emit = False
+                                    batch = []
+                    else:
+                        reader = csv.DictReader(f, delimiter=delim)
+                        fieldnames = list(reader.fieldnames or [])
+                        smi_col = next(
+                            (
+                                fn
+                                for fn in fieldnames
+                                if fn.lower() in ["smiles", "smi", "structure", "mol"]
+                            ),
+                            fieldnames[0] if fieldnames else None,
+                        )
+                        if smi_col:
+                            headers.append("SMILES")
+                            headers.extend([h for h in fieldnames if h != smi_col])
+                            if not self._wait_for_structure_source_choice(headers):
+                                smi_col = None
+                        for row in reader:
+                            if self._cancelled():
+                                break
+                            if smi_col is None:
+                                continue
+                            if text_first:
+                                cells = csv_row_to_cells(row, smi_col=smi_col, fieldnames=fieldnames)
+                                if cells is None:
+                                    continue
+                                batch.append(cells)
+                            else:
+                                m = Chem.MolFromSmiles(row[smi_col])
+                                if m:
+                                    m.SetProp("SMILES", row[smi_col])
+                                    for h in fieldnames:
+                                        if h != smi_col:
+                                            m.SetProp(h, str(row[h]))
+                                    batch.append(m)
                             if len(batch) >= batch_size:
-                                self.signals.mols_loaded.emit(batch, headers if first_emit else [], first_emit, False)
+                                self.signals.mols_loaded.emit(
+                                    batch, headers if first_emit else [], first_emit, False
+                                )
                                 first_emit = False
                                 batch = []
             elif ext == ".tdt":

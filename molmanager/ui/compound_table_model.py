@@ -94,6 +94,31 @@ class CompoundTableModel(QAbstractTableModel):
         self._rgb_qcolor_cache: dict[int, QColor] = {}
         # Logical row selection (OID set) for large selections — painted by delegates, not QItemSelection.
         self._highlighted_oids: frozenset[int] | None = None
+        self._silent_append_depth = 0
+        self._silent_append_start_row = 0
+
+    def begin_silent_appends(self) -> None:
+        """Defer ``beginInsertRows`` until :meth:`end_silent_appends` (bulk file ingest)."""
+        if self._silent_append_depth == 0:
+            self._silent_append_start_row = len(self._rows)
+        self._silent_append_depth += 1
+
+    def end_silent_appends(self) -> None:
+        """Emit one insert notification for rows appended since :meth:`begin_silent_appends`."""
+        if self._silent_append_depth <= 0:
+            return
+        self._silent_append_depth -= 1
+        if self._silent_append_depth != 0:
+            return
+        start = int(self._silent_append_start_row)
+        end = len(self._rows) - 1
+        if end >= start:
+            self.beginInsertRows(QModelIndex(), start, end)
+            self.endInsertRows()
+
+    @property
+    def silent_appending(self) -> bool:
+        return self._silent_append_depth > 0
 
     def set_headers(self, headers: list[str]) -> None:
         self.beginResetModel()
@@ -108,6 +133,8 @@ class CompoundTableModel(QAbstractTableModel):
 
     def clear_rows(self) -> None:
         """Drop all rows and cached structure pixmaps; keep column headers."""
+        self._silent_append_depth = 0
+        self._silent_append_start_row = 0
         self.beginResetModel()
         self._rows.clear()
         self._pixmaps.clear()
@@ -139,6 +166,8 @@ class CompoundTableModel(QAbstractTableModel):
 
     def clear(self) -> None:
         """Remove rows and clear the header list (empty table)."""
+        self._silent_append_depth = 0
+        self._silent_append_start_row = 0
         self.beginResetModel()
         self._rows.clear()
         self._pixmaps.clear()
@@ -171,17 +200,17 @@ class CompoundTableModel(QAbstractTableModel):
         entries: list[tuple[int, dict[str, str]]],
         *,
         defer_color_cache: bool = False,
+        silent: bool | None = None,
     ) -> None:
         """Append many rows with a single insert-range notification."""
         if not entries:
             return
-        start = len(self._rows)
-        end = start + len(entries) - 1
-        self.beginInsertRows(QModelIndex(), start, end)
+        use_silent = bool(silent) if silent is not None else self.silent_appending
         bh = self._bounds_data_headers()
         dirty_cols: set[str] = set()
-        row_idx = start
         refresh_color = bool(self._column_color_rules) and not defer_color_cache
+        start = len(self._rows)
+        row_idx = start
         for oid, cells in entries:
             row_cells = dict(cells)
             row_obj = _Row(oid=int(oid), values=row_cells)
@@ -192,9 +221,13 @@ class CompoundTableModel(QAbstractTableModel):
                 self._refresh_color_cache_for_row(row_obj, row_cells)
             if bh:
                 dirty_cols |= {k for k in row_cells if k in bh}
-        self.endInsertRows()
         if dirty_cols:
             self._mark_numeric_bounds_dirty(dirty_cols)
+        if use_silent:
+            return
+        end = start + len(entries) - 1
+        self.beginInsertRows(QModelIndex(), start, end)
+        self.endInsertRows()
 
     def rebuild_column_color_caches_after_bulk_load(self) -> None:
         """Refresh conditional-format caches after a large append (skipped per row during ingest)."""

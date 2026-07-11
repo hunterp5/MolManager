@@ -37,6 +37,17 @@ def _env_truthy(name: str) -> bool:
     return (os.environ.get(name) or "").strip().lower() in ("1", "true", "yes", "on")
 
 
+def _env_bool(name: str, default: bool) -> bool:
+    raw = (os.environ.get(name) or "").strip().lower()
+    if not raw:
+        return default
+    if raw in ("0", "false", "no", "off"):
+        return False
+    if raw in ("1", "true", "yes", "on"):
+        return True
+    return default
+
+
 def _env_float(name: str, default: float, *, lo: float) -> float:
     try:
         v = float((os.environ.get(name) or "").strip() or str(default))
@@ -87,6 +98,8 @@ class MolManagerConfig:
     ingest_gui_chunk_size: int
     ingest_gui_time_budget_ms: int
     ingest_worker_batch_size: int
+    ingest_csv_text_first: bool
+    ingest_silent_model_append: bool
     structure_render_lazy_after_ingest_min_rows: int
     perf_metrics_enabled: bool
     perf_log_every: int
@@ -174,9 +187,11 @@ def load_config() -> MolManagerConfig:
         bounds_chunk_rows=_env_int(
             "MOLMANAGER_BOUNDS_CHUNK_ROWS", 2000, lo=64, hi=100_000
         ),
-        ingest_gui_chunk_size=_env_int("MOLMANAGER_INGEST_GUI_CHUNK", 256, lo=16, hi=10_000),
-        ingest_gui_time_budget_ms=_env_int("MOLMANAGER_INGEST_GUI_TIME_MS", 25, lo=5, hi=200),
-        ingest_worker_batch_size=_env_int("MOLMANAGER_INGEST_WORKER_BATCH", 800, lo=64, hi=20_000),
+        ingest_gui_chunk_size=_env_int("MOLMANAGER_INGEST_GUI_CHUNK", 512, lo=16, hi=10_000),
+        ingest_gui_time_budget_ms=_env_int("MOLMANAGER_INGEST_GUI_TIME_MS", 30, lo=5, hi=200),
+        ingest_worker_batch_size=_env_int("MOLMANAGER_INGEST_WORKER_BATCH", 2000, lo=64, hi=20_000),
+        ingest_csv_text_first=_env_bool("MOLMANAGER_INGEST_CSV_TEXT_FIRST", True),
+        ingest_silent_model_append=_env_bool("MOLMANAGER_INGEST_SILENT_MODEL_APPEND", True),
         structure_render_lazy_after_ingest_min_rows=_env_int(
             "MOLMANAGER_STRUCTURE_RENDER_LAZY_AFTER_INGEST", 200, lo=0, hi=10_000_000
         ),
