@@ -135,6 +135,8 @@ class ChemicalTableApp(
         self.signals = WorkerSignals()
         _qc = Qt.QueuedConnection
         self.signals.mols_loaded.connect(self.on_file_loaded, _qc)
+        self.signals.sql_rows_loaded.connect(self.on_sql_rows_loaded, _qc)
+        self.signals.sql_load_failed.connect(self.on_sql_load_failed, _qc)
         self.signals.structure_source_probe.connect(self._on_structure_source_probe, _qc)
         self.signals.rendered.connect(self.on_row_ready, _qc)
         self.signals.washed.connect(self.on_wash_finished, _qc)
