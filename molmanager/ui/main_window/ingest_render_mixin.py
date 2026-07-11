@@ -7,7 +7,7 @@ import time
 from contextlib import nullcontext
 
 from PyQt5.QtCore import QEventLoop, Qt, QTimer
-from PyQt5.QtGui import QImage, QPixmap
+from PyQt5.QtGui import QPixmap
 from PyQt5.QtWidgets import (
     QApplication,
     QMessageBox,
@@ -17,6 +17,7 @@ from PyQt5.QtWidgets import (
 from ...config import load_config
 from ...display_constants import STRUCTURE_ROW_DEFAULT_HEIGHT
 from ...structure_render_store import StructureRenderStore
+from ..structure_pixmap import pixmap_from_structure_render_png
 from ..strings import (
     LOADING_DETAIL_AFTER_FILE_READ,
     STATUS_READY_RENDER_2D,
@@ -166,6 +167,10 @@ class IngestRenderMixin:
         self.table.setSortingEnabled(False)
         self._ingest_loading = False
         self._structures_queued = 0
+        try:
+            self.table.setUpdatesEnabled(False)
+        except Exception:
+            pass
         self._table_stack.setCurrentIndex(1)
         self._import_progress_active = False
         self._clear_tool_progress(status_message=None)
@@ -180,13 +185,40 @@ class IngestRenderMixin:
         QTimer.singleShot(0, self._deferred_post_ingest_follow_up)
 
     def _deferred_post_ingest_follow_up(self) -> None:
-        """Runs after the table is visible: bounds, column colors, then optional auto 2D render."""
-        self._table_model.rebuild_column_color_caches_after_bulk_load()
-        self.schedule_calculate_global_bounds(delay_ms=500)
+        """Runs after the table is visible: color caches, bounds, then optional auto 2D render."""
+        headers = self._table_model.pending_color_cache_headers()
+        if headers:
+            self._post_ingest_color_headers = headers
+            self._post_ingest_color_idx = 0
+            QTimer.singleShot(0, self._post_ingest_color_cache_step)
+            return
+        self._post_ingest_after_color_caches()
+
+    def _post_ingest_color_cache_step(self) -> None:
+        headers = getattr(self, "_post_ingest_color_headers", None) or []
+        idx = int(getattr(self, "_post_ingest_color_idx", 0))
+        if idx < len(headers):
+            self._table_model._rebuild_column_color_cache(headers[idx])
+            self._post_ingest_color_idx = idx + 1
+            QTimer.singleShot(0, self._post_ingest_color_cache_step)
+            return
+        self._post_ingest_color_headers = []
+        self._post_ingest_after_color_caches()
+
+    def _post_ingest_after_color_caches(self) -> None:
         started_render = self._try_auto_render_all_structures_after_ingest()
-        if not started_render:
-            n = self._table_model.rowCount()
-            self.status_label.setText(STATUS_READY_RENDER_2D if n else "Ready.")
+        self.schedule_calculate_global_bounds(delay_ms=0)
+        try:
+            self.table.setUpdatesEnabled(True)
+        except Exception:
+            pass
+        if started_render:
+            return
+        n = self._table_model.rowCount()
+        cfg = load_config()
+        if n >= int(cfg.bounds_async_min_rows):
+            return
+        self.status_label.setText(STATUS_READY_RENDER_2D if n else "Ready.")
 
     def _rebuild_sqlite_store_from_model(self) -> None:
         """Synchronous rebuild (clear table, tests). Large tables use ``_schedule_sqlite_rebuild``."""
@@ -410,7 +442,7 @@ class IngestRenderMixin:
             if batch:
                 self._render2d_pending[oid] = (bytes(img), True, int(w), int(h))
             else:
-                pm = QPixmap.fromImage(QImage.fromData(img))
+                pm = pixmap_from_structure_render_png(img, w, h)
                 if pix_target:
                     if getattr(self, "_render2d_column_pixmap_mode", True):
                         self._table_model.register_pixmap_column(pix_target)
@@ -580,7 +612,7 @@ class IngestRenderMixin:
                         else:
                             eager.append((int(oid), None))
                         continue
-                    pm = QPixmap.fromImage(QImage.fromData(img_b))
+                    pm = pixmap_from_structure_render_png(img_b, rw, rh)
                     if pix_target:
                         set_pixmap(oid, pix_target, pm)
                     else:

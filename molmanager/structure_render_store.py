@@ -4,7 +4,10 @@ from __future__ import annotations
 
 from collections import OrderedDict
 
+from PyQt5.QtCore import Qt
 from PyQt5.QtGui import QImage, QPixmap
+
+from .display_constants import STRUCTURE_DEPICT_HEIGHT, STRUCTURE_DEPICT_WIDTH
 
 
 class StructureRenderStore:
@@ -55,6 +58,9 @@ class StructureRenderStore:
         pm = QPixmap.fromImage(QImage.fromData(raw))
         if pm.isNull():
             return None
+        dw, dh = int(STRUCTURE_DEPICT_WIDTH), int(STRUCTURE_DEPICT_HEIGHT)
+        if pm.width() > dw or pm.height() > dh:
+            pm = pm.scaled(dw, dh, Qt.KeepAspectRatio, Qt.SmoothTransformation)
         self._lru[oid_i] = pm
         self._lru.move_to_end(oid_i)
         while len(self._lru) > self._max_decoded:
