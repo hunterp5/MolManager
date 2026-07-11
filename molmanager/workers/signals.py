@@ -50,6 +50,9 @@ class WorkerSignals(QObject):
     # BRICS / RECAP: (rows, headers, tool_title)
     fragment_decomp_finished = pyqtSignal(list, list, str)
     fragment_decomp_failed = pyqtSignal(str, str)
+    # Reaction-based enumeration: ReactionEnumerationJobResult
+    reaction_enum_finished = pyqtSignal(object)
+    reaction_enum_failed = pyqtSignal(str, str)
     cluster_failed = pyqtSignal(str)
     # Exploratory clustering: list of dict rows (method, params, settings, metrics, notes)
     cluster_explore_finished = pyqtSignal(list)

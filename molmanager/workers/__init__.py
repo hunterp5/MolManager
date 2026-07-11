@@ -66,6 +66,7 @@ from .protonate_worker import ProtonateSignals, ProtonateWorker
 from .pdbqt_generator import PdbqtGenSignals, PdbqtGenRequest, PdbqtGeneratorWorker
 from .fragment_decomposition import FragmentDecompositionWorker
 from .fragment_recomposition import FragmentRecompositionWorker
+from .reaction_enumeration import ReactionEnumerationWorker
 from .rgroup_decomposition import RGroupDecompositionWorker
 from .signals import (
     BulkSimilaritySignals,
@@ -100,6 +101,7 @@ __all__ = [
     "FilterApplyWorker",
     "FragmentDecompositionWorker",
     "FragmentRecompositionWorker",
+    "ReactionEnumerationWorker",
     "FPSimilaritySignals",
     "FPSimilarityWorker",
     "SIMILARITY_FP_TYPE_LABELS",
