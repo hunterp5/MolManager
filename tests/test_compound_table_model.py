@@ -7,6 +7,7 @@ from PyQt5.QtCore import Qt
 from PyQt5.QtGui import QColor
 
 from molmanager.ui.compound_table_model import CompoundTableModel
+from molmanager.ui.row_store import InMemoryRowStore, SqliteRowStore
 
 
 @pytest.fixture()
@@ -264,3 +265,28 @@ def test_insert_rows_batch_restores_order(model: CompoundTableModel):
     assert model.row_oid(0) == 10
     assert model.row_oid(1) == 30
     assert model.cell_text(0, model._headers.index("SMILES")) == "A"
+
+
+def test_model_upgrades_to_disk_store_past_threshold(model: CompoundTableModel, monkeypatch):
+    """Large loads migrate to the disk-backed store transparently; reads stay correct."""
+    monkeypatch.setenv("MOLMANAGER_ROW_STORE_DISK_MIN_ROWS", "5")
+    assert isinstance(model._store, InMemoryRowStore)
+    model.append_rows_batch([(i, {"SMILES": "C", "MW": str(i)}) for i in range(3)])
+    assert isinstance(model._store, InMemoryRowStore)  # below threshold
+    model.append_rows_batch([(i, {"SMILES": "C", "MW": str(i)}) for i in range(3, 10)])
+    assert isinstance(model._store, SqliteRowStore)  # crossed threshold
+    assert model.rowCount() == 10
+    mw = model._headers.index("MW")
+    assert model.cell_text(0, mw) == "0"
+    assert model.cell_text(9, mw) == "9"
+    model.set_cell_text(0, "MW", "999")
+    assert model.cell_text(0, mw) == "999"
+
+
+def test_clear_rows_resets_to_in_memory_store(model: CompoundTableModel, monkeypatch):
+    monkeypatch.setenv("MOLMANAGER_ROW_STORE_DISK_MIN_ROWS", "2")
+    model.append_rows_batch([(i, {"SMILES": "C", "MW": str(i)}) for i in range(5)])
+    assert isinstance(model._store, SqliteRowStore)
+    model.clear_rows()
+    assert isinstance(model._store, InMemoryRowStore)
+    assert model.rowCount() == 0

@@ -1542,20 +1542,16 @@ class TableUIMixin(TableSearchMixin, FilterPanelMixin):
         light = bool(ctx["light"])
         data_headers = [h for h in self.headers[2:] if h != "Structure"]
         model = self._table_model
-        rows = model._rows  # noqa: SLF001
-        total_rows = len(rows)
+        total_rows = model.rowCount()
         total_delete = len(kill)
         idx = int(ctx["row_idx"])
         chunk = max(2000, load_config().table_delete_chunk_rows)
         end = min(idx + chunk, total_rows)
         snapshots: list[DeleteRowSnapshot] = ctx["snapshots"]
         found_before = len(snapshots)
-        for j in range(idx, end):
-            row = rows[j]
-            oid = int(row.oid)
+        for j, oid, cells in model.row_snapshots(data_headers, idx, end):
             if oid not in kill:
                 continue
-            cells = {h: str(row.values.get(h, "") or "") for h in data_headers}
             if light:
                 snapshots.append(DeleteRowSnapshot(orig_row=j, oid=oid, cells=cells, light=True))
             else:

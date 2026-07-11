@@ -54,11 +54,9 @@ def collect_delete_row_snapshots(
     data_headers = [h for h in app.headers[2:] if h != "Structure"]
     out: list[DeleteRowSnapshot] = []
     model = app._table_model
-    for r, row in enumerate(model._rows):  # noqa: SLF001 — bulk path; model owns rows
-        oid = int(row.oid)
+    for r, oid, cells in model.row_snapshots(data_headers):
         if oid not in kill:
             continue
-        cells = {h: str(row.values.get(h, "") or "") for h in data_headers}
         if light:
             out.append(DeleteRowSnapshot(orig_row=r, oid=oid, cells=cells, light=True))
             continue
