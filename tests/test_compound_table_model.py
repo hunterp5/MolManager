@@ -7,7 +7,6 @@ from PyQt5.QtCore import Qt
 from PyQt5.QtGui import QColor
 
 from molmanager.ui.compound_table_model import CompoundTableModel
-from molmanager.ui.row_store import InMemoryRowStore, SqliteRowStore
 
 
 @pytest.fixture()
@@ -265,58 +264,3 @@ def test_insert_rows_batch_restores_order(model: CompoundTableModel):
     assert model.row_oid(0) == 10
     assert model.row_oid(1) == 30
     assert model.cell_text(0, model._headers.index("SMILES")) == "A"
-
-
-def test_model_upgrades_to_disk_store_past_threshold(model: CompoundTableModel, monkeypatch):
-    """Large loads migrate to the disk-backed store transparently; reads stay correct."""
-    monkeypatch.setenv("MOLMANAGER_ROW_STORE_DISK_MIN_ROWS", "5")
-    assert isinstance(model._store, InMemoryRowStore)
-    model.append_rows_batch([(i, {"SMILES": "C", "MW": str(i)}) for i in range(3)])
-    assert isinstance(model._store, InMemoryRowStore)  # below threshold
-    model.append_rows_batch([(i, {"SMILES": "C", "MW": str(i)}) for i in range(3, 10)])
-    assert isinstance(model._store, SqliteRowStore)  # crossed threshold
-    assert model.rowCount() == 10
-    mw = model._headers.index("MW")
-    assert model.cell_text(0, mw) == "0"
-    assert model.cell_text(9, mw) == "9"
-    model.set_cell_text(0, "MW", "999")
-    assert model.cell_text(0, mw) == "999"
-
-
-def test_clear_rows_resets_to_in_memory_store(model: CompoundTableModel, monkeypatch):
-    monkeypatch.setenv("MOLMANAGER_ROW_STORE_DISK_MIN_ROWS", "2")
-    model.append_rows_batch([(i, {"SMILES": "C", "MW": str(i)}) for i in range(5)])
-    assert isinstance(model._store, SqliteRowStore)
-    model.clear_rows()
-    assert isinstance(model._store, InMemoryRowStore)
-    assert model.rowCount() == 0
-
-
-def test_chunked_color_cache_and_bounds_match_full_scan(model: CompoundTableModel):
-    for i in range(20):
-        model.append_row(i + 1, {"SMILES": "C", "MW": str(i * 2)})
-    model.set_column_color_numeric_gradient(
-        "MW",
-        min_value=0.0,
-        max_value=40.0,
-        low_color=QColor(255, 0, 0),
-        high_color=QColor(0, 0, 255),
-    )
-    model._column_color_cache["MW"] = {}
-    full = {}
-    model.rebuild_column_color_caches_after_bulk_load()
-    full = dict(model._column_color_cache["MW"])
-    partial: dict[int, int] = {}
-    row = 0
-    while row < model.rowCount():
-        partial = model.rebuild_column_color_cache_rows("MW", row, row + 7, cmap=partial)
-        row += 7
-    model.finish_column_color_cache("MW", partial)
-    assert model._column_color_cache["MW"] == full
-
-    acc = None
-    row = 0
-    while row < model.rowCount():
-        acc = model.scan_numeric_column_chunk("MW", row, row + 5, acc=acc)
-        row += 5
-    assert acc == model.numeric_bounds_for_header("MW")

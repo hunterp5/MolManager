@@ -23,6 +23,9 @@ from ..strings import (
     loaded_session_status,
 )
 from ...storage import SqliteTableStore
+from ...workers import (
+    SqliteRebuildWorker,
+)
 from ..compound_table_model import (
     CompoundTableModel,
     STRUCTURE_COLUMN_HORIZONTAL_PADDING,
@@ -63,9 +66,6 @@ class IngestRenderMixin:
                 self._structure_field_override = picked
             elif not ok:
                 self._structure_field_override = None
-        holder = getattr(self, "_structure_override_holder", None)
-        if holder is not None:
-            holder[0] = self._structure_field_override
         ev = getattr(self, "_structure_choice_event", None)
         if ev is not None:
             ev.set()
@@ -120,25 +120,20 @@ class IngestRenderMixin:
                     take = mols_list[:remain]
                     if take:
                         new_rows: list[tuple[int, dict[str, str]]] = []
-                        for item in take:
-                            if isinstance(item, tuple) and len(item) == 2:
-                                m, cells = item
-                            else:
-                                m = self._apply_structure_field_override(item)
-                                cells = self._row_cells_from_mol(m)
+                        for m in take:
+                            m = self._apply_structure_field_override(m)
                             oid = self.next_oid
                             self.next_oid += 1
                             self.mols[oid] = m
-                            new_rows.append((oid, cells))
+                            new_rows.append((oid, self._row_cells_from_mol(m)))
                         self._table_model.append_rows_batch(new_rows, defer_color_cache=True)
                         processed += len(new_rows)
-                        n = self.next_oid
-                        if processed == len(new_rows) or n % 2000 < len(new_rows):
-                            self.status_label.setText(f"Loaded {n:,} molecules — preparing table…")
-                            if self._table_stack.currentIndex() == 0:
-                                self._loading_detail.setText(
-                                    f"Building table…\n{n:,} molecule(s); 2D structures draw when ready"
-                                )
+                        n = len(self.mols)
+                        self.status_label.setText(f"Loaded {n} molecules — preparing table…")
+                        if self._table_stack.currentIndex() == 0:
+                            self._loading_detail.setText(
+                                f"Building table…\n{n} molecule(s); 2D structures draw when ready"
+                            )
                         if getattr(self, "_ingest_loading", False):
                             if not self._import_building_progress_shown:
                                 self._import_building_progress_shown = True
@@ -177,116 +172,21 @@ class IngestRenderMixin:
         self._ingest_append_mode = False
         self._last_batch_received = False
         self._processing_batches = False
-        try:
-            self.table.setUpdatesEnabled(True)
-        except Exception:
-            pass
-        n = self._table_model.rowCount()
-        if n:
-            self.status_label.setText(f"Loaded {n:,} rows — finishing setup…")
+        app = QApplication.instance()
+        if app is not None:
+            app.processEvents(QEventLoop.ExcludeUserInputEvents)
         if "confs" in self.headers or "superpose" in self.headers:
             QTimer.singleShot(0, self._migrate_legacy_confs_cells_to_sidecar)
         QTimer.singleShot(0, self._deferred_post_ingest_follow_up)
 
     def _deferred_post_ingest_follow_up(self) -> None:
-        """Runs after the table is visible: color caches, then bounds, then optional auto 2D render."""
-        self._begin_deferred_post_load_follow_up()
-
-    def _begin_deferred_post_load_follow_up(self) -> None:
-        """Shared post-load pipeline for file ingest and SQL load."""
-        headers = self._table_model.column_color_rule_headers()
-        n_rows = self._table_model.rowCount()
-        cfg = load_config()
-        defer_rows = int(cfg.bulk_update_defer_color_cache_rows)
-        if headers and defer_rows > 0 and n_rows >= defer_rows:
-            self._post_load_color_ctx = {
-                "headers": headers,
-                "header_idx": 0,
-                "row": 0,
-                "cmap": {},
-            }
-            QTimer.singleShot(0, self._deferred_post_load_color_step)
-            return
-        if headers:
-            self._table_model.rebuild_column_color_caches_after_bulk_load()
-        self._deferred_post_load_bounds_phase()
-
-    def _deferred_post_load_color_step(self) -> None:
-        ctx = getattr(self, "_post_load_color_ctx", None)
-        if not ctx:
-            self._deferred_post_load_bounds_phase()
-            return
-        cfg = load_config()
-        chunk_rows = int(cfg.post_ingest_color_chunk_rows)
-        budget_s = max(0.005, int(cfg.ingest_gui_time_budget_ms) / 1000.0)
-        deadline = time.monotonic() + budget_s
-        headers = ctx["headers"]
-        header_idx = int(ctx["header_idx"])
-        if header_idx >= len(headers):
-            self._post_load_color_ctx = None
-            self._deferred_post_load_bounds_phase()
-            return
-        header = headers[header_idx]
-        row = int(ctx["row"])
-        n_rows = self._table_model.rowCount()
-        cmap = ctx["cmap"]
-        while row < n_rows and time.monotonic() < deadline:
-            end = min(n_rows, row + chunk_rows)
-            cmap = self._table_model.rebuild_column_color_cache_rows(header, row, end, cmap=cmap)
-            row = end
-        ctx["row"] = row
-        ctx["cmap"] = cmap
-        if row >= n_rows:
-            self._table_model.finish_column_color_cache(header, cmap)
-            ctx["header_idx"] = header_idx + 1
-            ctx["row"] = 0
-            ctx["cmap"] = {}
-        app = QApplication.instance()
-        if app is not None:
-            app.processEvents(QEventLoop.ExcludeUserInputEvents)
-        QTimer.singleShot(0, self._deferred_post_load_color_step)
-
-    def _deferred_post_load_bounds_phase(self) -> None:
-        n_rows = self._table_model.rowCount()
-        cfg = load_config()
-        delay_ms = 200 if n_rows >= int(cfg.post_ingest_chunked_work_min_rows) else 500
-        self.schedule_calculate_global_bounds(delay_ms=delay_ms)
-        self._complete_deferred_post_load_follow_up()
-
-    def _complete_deferred_post_load_follow_up(self) -> None:
-        self._post_load_color_ctx = None
-        self._post_ingest_color_headers_pending = []
-        sql_meta = getattr(self, "_post_load_sql_meta", None)
-        self._post_load_sql_meta = None
-        smiles_loaded = True if sql_meta is None else bool(sql_meta[1])
-        started_render = smiles_loaded and self._try_auto_render_all_structures_after_ingest()
-        self._maybe_schedule_post_load_sqlite_index()
-        if sql_meta is not None:
-            nrows, smiles_loaded = sql_meta
-            if started_render:
-                self.status_label.setText(f"Loaded {nrows:,} row(s) from SQL — drawing 2D structures…")
-            elif smiles_loaded:
-                self.status_label.setText(loaded_sql_status(nrows))
-            else:
-                self.status_label.setText(f"Loaded {nrows:,} row(s) from SQL (no SMILES column).")
-            return
+        """Runs after the table is visible: bounds, column colors, then optional auto 2D render."""
+        self._table_model.rebuild_column_color_caches_after_bulk_load()
+        self.schedule_calculate_global_bounds(delay_ms=500)
+        started_render = self._try_auto_render_all_structures_after_ingest()
         if not started_render:
             n = self._table_model.rowCount()
             self.status_label.setText(STATUS_READY_RENDER_2D if n else "Ready.")
-
-    def _maybe_schedule_post_load_sqlite_index(self) -> None:
-        """Start chunked SQLite mirror rebuild after large ingest (filters/search pushdown)."""
-        store = getattr(self, "_sqlite_store", None)
-        if store is None or not getattr(self, "_sqlite_store_dirty", False):
-            return
-        if getattr(self, "_sqlite_rebuild_in_progress", False):
-            return
-        n_rows = self._table_model.rowCount()
-        if n_rows < 10_000:
-            return
-        schedule = getattr(self, "_schedule_sqlite_rebuild", None)
-        if callable(schedule):
-            schedule()
 
     def _rebuild_sqlite_store_from_model(self) -> None:
         """Synchronous rebuild (clear table, tests). Large tables use ``_schedule_sqlite_rebuild``."""
@@ -306,9 +206,14 @@ class IngestRenderMixin:
             self._sqlite_rebuild_in_progress = False
 
     def _schedule_sqlite_rebuild(self) -> None:
-        """Export the model to a temp SQLite file in UI chunks (bounded RAM), then swap the mirror."""
+        """Export in UI chunks, then rebuild the SQLite mirror in a background worker."""
         store = getattr(self, "_sqlite_store", None)
         if store is None or self._sqlite_rebuild_in_progress:
+            return
+        sigs = getattr(self, "_sqlite_rebuild_signals", None)
+        pool = getattr(self, "threadpool", None)
+        if sigs is None or pool is None:
+            self._rebuild_sqlite_store_from_model()
             return
         self._sqlite_rebuild_gen = int(getattr(self, "_sqlite_rebuild_gen", 0)) + 1
         gen = self._sqlite_rebuild_gen
@@ -334,11 +239,12 @@ class IngestRenderMixin:
         self._sqlite_export_ctx = {
             "gen": gen,
             "data_headers": data_headers,
+            "entries": [],
             "row_idx": 0,
             "n_rows": n_rows,
             "chunk": chunk,
             "db_path": str(db_path),
-            "store": None,
+            "signals": sigs,
         }
         self.status_label.setText(f"Indexing table… (0/{n_rows:,} rows)")
         QTimer.singleShot(0, self._sqlite_export_chunk_step)
@@ -355,51 +261,22 @@ class IngestRenderMixin:
         n_rows = int(ctx["n_rows"])
         chunk = int(ctx["chunk"])
         end = min(row_idx + chunk, n_rows)
-        slice_entries = self._table_model.export_rows_for_sqlite_slice(data_headers, row_idx, end)
-        store = ctx.get("store")
-        if store is None:
-            store = SqliteTableStore(ctx["db_path"])
-            store.begin_rebuild(list(self.headers))
-            ctx["store"] = store
-        store.append_chunk(slice_entries)
+        ctx["entries"].extend(self._table_model.export_rows_for_sqlite_slice(data_headers, row_idx, end))
         ctx["row_idx"] = end
         self.status_label.setText(f"Indexing table… ({end:,}/{n_rows:,} rows)")
         if end < n_rows:
             QTimer.singleShot(0, self._sqlite_export_chunk_step)
             return
         gen = int(ctx["gen"])
+        entries = ctx["entries"]
         db_path = ctx["db_path"]
+        sigs = ctx["signals"]
         self._sqlite_export_ctx = None
-        try:
-            store.finish_rebuild()
-            store.close()
-            new_store = SqliteTableStore(db_path)
-            old = getattr(self, "_sqlite_store", None)
-            self._sqlite_store = new_store
-            if old is not None:
-                try:
-                    old.close()
-                except Exception:
-                    pass
-            self._sqlite_store_dirty = False
+        pool = getattr(self, "threadpool", None)
+        if pool is None:
             self._sqlite_rebuild_in_progress = False
-            self._sqlite_rebuild_pending_path = None
-            self._unregister_sqlite_rebuild_background_job(gen)
-            if getattr(self, "_sqlite_rebuild_stale", False):
-                self._sqlite_rebuild_stale = False
-                self._sqlite_store_dirty = True
-                self._schedule_sqlite_rebuild()
-                return
-            if getattr(self, "_sqlite_rebuild_pending_filters", False):
-                self._sqlite_rebuild_pending_filters = False
-                self.apply_filters()
-            elif n_rows:
-                self.status_label.setText(loaded_session_status(n_rows))
-        except Exception:
-            logger.exception("Failed to finalize streamed SQLite rebuild")
-            self._sqlite_rebuild_in_progress = False
-            self._sqlite_rebuild_pending_path = None
-            self._unregister_sqlite_rebuild_background_job(gen)
+            return
+        pool.start(SqliteRebuildWorker(gen, list(self.headers), entries, db_path, sigs))
 
     def _unregister_sqlite_rebuild_background_job(self, job_gen: int) -> None:
         from ..background_jobs import unregister_background_job

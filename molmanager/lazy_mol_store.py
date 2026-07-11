@@ -161,16 +161,6 @@ class LazyMolStore:
         except KeyError:
             return default
 
-    def get_blob(self, oid: int) -> bytes | None:
-        """Return serialized mol bytes without promoting spilled entries into RAM."""
-        oid = int(oid)
-        live = self._live.get(oid)
-        if live is not None:
-            return _mol_to_blob(live)
-        if oid in self._disk_oids:
-            return self._disk_read(oid)
-        return None
-
     def pop(self, oid, default=_MISSING):
         oid = int(oid)
         found = _MISSING

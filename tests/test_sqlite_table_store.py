@@ -15,24 +15,6 @@ def test_sqlite_table_store_distinct_values():
     assert vals == ["100", "200"]
 
 
-def test_sqlite_table_store_streaming_rebuild_matches_bulk():
-    store = SqliteTableStore()
-    try:
-        rows = [
-            (1, {"SMILES": "C", "MW": "16"}),
-            (2, {"SMILES": "CC", "MW": "30"}),
-        ]
-        store.begin_rebuild(["ID_HIDDEN", "Structure", "SMILES", "MW"])
-        store.append_chunk(rows[:1])
-        store.append_chunk(rows[1:])
-        store.finish_rebuild()
-        assert store.count() == 2
-        page = store.fetch_page(limit=10, sort_by="MW")
-        assert [oid for oid, _ in page] == [1, 2]
-    finally:
-        store.close()
-
-
 def test_sqlite_table_store_rebuild_and_filter_page():
     store = SqliteTableStore()
     try:

@@ -835,7 +835,12 @@ class TableUIMixin(TableSearchMixin, FilterPanelMixin):
 
     def _all_oids_in_table_order(self) -> list[int]:
         """Every row OID top-to-bottom (only rows with a numeric hidden id)."""
-        return self._table_model.all_oids_in_order()
+        out: list[int] = []
+        for r in range(self._table_model.rowCount()):
+            t0 = self._table_model.cell_text(r, 0)
+            if t0.isdigit():
+                out.append(int(t0))
+        return out
 
     def _row_cells_dict(self, row: int) -> dict[str, str]:
         out: dict[str, str] = {}
@@ -1011,10 +1016,22 @@ class TableUIMixin(TableSearchMixin, FilterPanelMixin):
 
     def _row_cells_from_mol(self, mol: Chem.Mol | None) -> dict[str, str]:
         """Build row cell values for all data columns from one molecule."""
-        from ...ingest_cells import row_cells_from_mol
-
-        data_headers = self.headers[2:] if len(self.headers) > 2 else []
-        return row_cells_from_mol(mol, data_headers)
+        values: dict[str, str] = {}
+        for _c, name in enumerate(self.headers[2:], start=2):
+            if mol is None:
+                txt = ""
+            elif name == "SMILES":
+                if mol.HasProp("SMILES"):
+                    txt = (safe_mol_prop_string(mol, "SMILES") or "").strip()
+                else:
+                    try:
+                        txt = mol_to_canonical_smiles(mol)
+                    except Exception:
+                        txt = ""
+            else:
+                txt = safe_mol_prop_string(mol, name)
+            values[name] = txt
+        return values
 
     def _mol_for_structure_row(self, row: int) -> Chem.Mol | None:
         """Best-effort RDKit mol: in-memory store, then any parseable chemistry in table columns."""
@@ -1525,16 +1542,20 @@ class TableUIMixin(TableSearchMixin, FilterPanelMixin):
         light = bool(ctx["light"])
         data_headers = [h for h in self.headers[2:] if h != "Structure"]
         model = self._table_model
-        total_rows = model.rowCount()
+        rows = model._rows  # noqa: SLF001
+        total_rows = len(rows)
         total_delete = len(kill)
         idx = int(ctx["row_idx"])
         chunk = max(2000, load_config().table_delete_chunk_rows)
         end = min(idx + chunk, total_rows)
         snapshots: list[DeleteRowSnapshot] = ctx["snapshots"]
         found_before = len(snapshots)
-        for j, oid, cells in model.row_snapshots(data_headers, idx, end):
+        for j in range(idx, end):
+            row = rows[j]
+            oid = int(row.oid)
             if oid not in kill:
                 continue
+            cells = {h: str(row.values.get(h, "") or "") for h in data_headers}
             if light:
                 snapshots.append(DeleteRowSnapshot(orig_row=j, oid=oid, cells=cells, light=True))
             else:
@@ -1821,9 +1842,6 @@ class TableUIMixin(TableSearchMixin, FilterPanelMixin):
         self.mols.clear()
         self.next_oid = 0
         self._structure_field_override = None
-        holder = getattr(self, "_structure_override_holder", None)
-        if holder is not None:
-            holder[0] = None
         self._export_prep = None
         self._export_busy = False
         self._render2d_queue = None

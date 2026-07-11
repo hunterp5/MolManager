@@ -4,9 +4,10 @@ from __future__ import annotations
 
 import logging
 import re
+from contextlib import nullcontext
 
-from PyQt5.QtCore import Qt, QTimer
-from PyQt5.QtWidgets import QMessageBox
+from PyQt5.QtCore import QEventLoop, Qt, QTimer
+from PyQt5.QtWidgets import QApplication, QMessageBox
 
 from rdkit import Chem
 
@@ -19,9 +20,7 @@ from ..strings import (
 )
 from ...workers import (
     CustomCalcWorker,
-    SqlLoadWorker,
 )
-from ...workers.sql_load import build_sql_statement
 
 logger = logging.getLogger(__name__)
 
@@ -367,10 +366,10 @@ class ToolsSqlPredictMixin:
         apply_limit: bool = True,
         clear_first: bool = True,
     ) -> None:
-        """Load a SQL query/table into the main table (fetch runs on the process-queue thread).
+        """Load a SQL query/table into the main table.
 
-        If a 'SMILES' column exists (case-insensitive), molecules are created on the worker and
-        2D structure images are drawn automatically after load (same as opening a structure file).
+        If a 'SMILES' column exists (case-insensitive), molecules will be created and
+        2D structure images are drawn automatically (same as after opening a structure file).
         """
         try:
             from sqlalchemy import create_engine, text
@@ -399,7 +398,6 @@ class ToolsSqlPredictMixin:
             li = hard_cap
         if li < 0:
             li = 0
-        limit_eff = int(li) if apply_limit and li else 0
 
         logger.debug("load_from_sql url=%s", redact_sqlalchemy_url(url))
 
@@ -412,13 +410,19 @@ class ToolsSqlPredictMixin:
             ct = sql_cfg.pg_connect_timeout
             connect_args["connect_timeout"] = max(1, min(ct, 120))
 
-        eng_kw: dict = {}
+        eng_kw = {}
         if connect_args:
             eng_kw["connect_args"] = connect_args
+        eng = create_engine(url, **eng_kw)
+        page_size = max(128, int(sql_cfg.sqlite_backend_page_size))
+        sql = ""
+        cols: list[str] = []
+        nrows = 0
+        rows_hit_limit = False
+        with eng.connect() as conn:
+            limit_eff = int(li) if apply_limit and li else 0
 
-        if apply_limit and limit_eff > 0 and precowarn > 0:
-            eng = create_engine(url, **eng_kw)
-            with eng.connect() as conn:
+            if apply_limit and limit_eff > 0 and precowarn > 0:
                 est = None
                 try:
                     if table:
@@ -433,115 +437,95 @@ class ToolsSqlPredictMixin:
                             est = int(crow["c"]) if crow and crow.get("c") is not None else None
                 except Exception:
                     est = None
-            if est is not None and est >= precowarn:
-                r = QMessageBox.question(
-                    self,
-                    "Large SQL result",
-                    f"The data source reports about {est:,} row(s). Up to {limit_eff:,} row(s) will be fetched, "
-                    "which may use significant time and memory.\n\nContinue?",
-                    QMessageBox.Yes | QMessageBox.No,
-                    QMessageBox.No,
-                )
-                if r != QMessageBox.Yes:
-                    return
+                if est is not None and est >= precowarn:
+                    r = QMessageBox.question(
+                        self,
+                        "Large SQL result",
+                        f"The data source reports about {est:,} row(s). Up to {limit_eff:,} row(s) will be fetched, "
+                        "which may use significant time and memory.\n\nContinue?",
+                        QMessageBox.Yes | QMessageBox.No,
+                        QMessageBox.No,
+                    )
+                    if r != QMessageBox.Yes:
+                        return
 
-        sql = build_sql_statement(query=query, table=table, limit=limit_eff, apply_limit=apply_limit)
+            if table:
+                sql = f"SELECT * FROM {table}"
+                if apply_limit and limit_eff:
+                    sql += f" LIMIT {int(limit_eff)}"
+            else:
+                sql = query or ""
+                if apply_limit and limit_eff:
+                    # If the query already includes a LIMIT, leave it alone.
+                    if re.search(r"\blimit\b", sql, flags=re.IGNORECASE) is None:
+                        sql = f"SELECT * FROM ({sql}) AS subq LIMIT {int(limit_eff)}"
+            perf = getattr(self, "_perf", None)
+            scope = perf.track if perf is not None else (lambda *_args, **_kwargs: nullcontext())
+            with scope("sql.load_rows"):
+                try:
+                    self.table.setUpdatesEnabled(False)
+                except Exception:
+                    pass
+                rs = conn.execution_options(stream_results=True).execute(text(sql))
+                cols = [str(c) for c in rs.keys()]
+                if not cols:
+                    rs.close()
+                    raise RuntimeError("Query returned 0 rows.")
 
-        if clear_first:
-            self.clear_all()
+                if clear_first:
+                    self.clear_all()
 
-        self._sql_load_ctx = {
-            "limit_eff": limit_eff,
-            "nrows": 0,
-            "rows_hit_limit": False,
-            "smiles_col": None,
-            "table_prepared": False,
-        }
-        self._ingest_loading = True
-        self._import_building_progress_shown = False
-        self._table_stack.setCurrentIndex(0)
-        self.status_label.setText("Loading from SQL…")
-        self._on_tool_progress("Loading from SQL…", -1, -1)
+                # Build headers: keep the app's first two columns.
+                self.headers = ["ID_HIDDEN", "Structure"] + cols
+                self.table.setSortingEnabled(False)
+                self._table_model.clear_rows()
+                self._table_model.set_headers(list(self.headers))
+                self.table.setColumnHidden(0, True)
 
-        page_size = max(128, int(sql_cfg.sqlite_backend_page_size))
-        self.process_queue.enqueue(
-            "SQL load",
-            lambda ev, u=url, s=sql, ps=page_size, lim=limit_eff, kw=eng_kw, sig=self.signals: SqlLoadWorker(
-                u,
-                s,
-                page_size=ps,
-                row_limit=lim,
-                engine_kwargs=kw,
-                signals=sig,
-                cancel_event=ev,
-            ),
-        )
+                smiles_col = next((c for c in cols if c.lower() == "smiles"), None)
 
-    def on_sql_rows_loaded(self, batch, cols, is_first: bool, is_last: bool) -> None:
-        """Apply a worker batch of SQL rows on the GUI thread."""
-        ctx = getattr(self, "_sql_load_ctx", None)
-        if ctx is None:
-            return
-        if is_first and cols and not ctx.get("table_prepared"):
-            self.headers = ["ID_HIDDEN", "Structure"] + list(cols)
-            self.table.setSortingEnabled(False)
-            self._table_model.clear_rows()
-            self._table_model.set_headers(list(self.headers))
-            self.table.setColumnHidden(0, True)
-            self.mols.clear()
-            self._clear_filter_target_smiles_cache()
-            self.global_bounds = {}
-            self.next_oid = 0
-            ctx["table_prepared"] = True
-            ctx["smiles_col"] = next((c for c in cols if str(c).lower() == "smiles"), None)
+                # Reset molecule store.
+                self.mols.clear()
+                self._clear_filter_target_smiles_cache()
+                self.global_bounds = {}
+                self.next_oid = 0
 
-        if batch:
-            try:
-                self.table.setUpdatesEnabled(False)
-            except Exception:
-                pass
-            rows_batch: list[tuple[int, dict[str, str]]] = []
-            for row_cells, mol in batch:
-                oid = self.next_oid
-                self.next_oid += 1
-                if mol is not None:
-                    self.mols[oid] = mol
-                rows_batch.append((oid, row_cells))
-            self._table_model.append_rows_batch(rows_batch, defer_color_cache=True)
-            ctx["nrows"] = int(ctx.get("nrows", 0)) + len(rows_batch)
-            limit_eff = int(ctx.get("limit_eff", 0))
-            if limit_eff and ctx["nrows"] >= limit_eff:
-                ctx["rows_hit_limit"] = True
-            self.status_label.setText(f"Loaded {ctx['nrows']:,} row(s) from SQL…")
-            try:
-                self.table.setUpdatesEnabled(True)
-            except Exception:
-                pass
-
-        if is_last:
-            self._finalize_sql_load()
-
-    def on_sql_load_failed(self, message: str) -> None:
-        self._sql_load_ctx = None
-        self._ingest_loading = False
-        self._table_stack.setCurrentIndex(1)
-        self._clear_tool_progress()
-        QMessageBox.critical(self, "SQL load", message)
-
-    def _finalize_sql_load(self) -> None:
-        ctx = getattr(self, "_sql_load_ctx", None) or {}
-        nrows = int(ctx.get("nrows", 0))
-        self._sql_load_ctx = None
-        self._ingest_loading = False
-        self._table_stack.setCurrentIndex(1)
-        self._clear_tool_progress()
+                while True:
+                    chunk = rs.fetchmany(page_size)
+                    if not chunk:
+                        break
+                    batch: list[tuple[int, dict[str, str]]] = []
+                    for rec in chunk:
+                        oid = self.next_oid
+                        self.next_oid += 1
+                        row_cells: dict[str, str] = {}
+                        for c in cols:
+                            v = rec._mapping.get(c)
+                            row_cells[c] = "" if v is None else str(v)
+                        batch.append((oid, row_cells))
+                        if smiles_col is not None:
+                            smi = (row_cells.get(smiles_col, "") or "").strip()
+                            mol = Chem.MolFromSmiles(smi) if smi else None
+                            if mol is not None:
+                                self.mols[oid] = mol
+                    if batch:
+                        self._table_model.append_rows_batch(batch, defer_color_cache=True)
+                        nrows += len(batch)
+                        if apply_limit and limit_eff and nrows >= limit_eff:
+                            rows_hit_limit = True
+                    app = QApplication.instance()
+                    if app is not None:
+                        app.processEvents(QEventLoop.ExcludeUserInputEvents)
+                rs.close()
+                try:
+                    self.table.setUpdatesEnabled(True)
+                except Exception:
+                    pass
 
         if nrows <= 0:
-            QMessageBox.critical(self, "SQL load", "Query returned 0 rows.")
-            return
+            raise RuntimeError("Query returned 0 rows.")
 
-        if ctx.get("rows_hit_limit"):
-            limit_eff = int(ctx.get("limit_eff", 0))
+        if rows_hit_limit:
             QMessageBox.information(
                 self,
                 "SQL load",
@@ -550,16 +534,23 @@ class ToolsSqlPredictMixin:
             )
 
         if self._sqlite_store is not None:
+            # Rebuild lazily on demand (filter/search) to keep ingest fast and memory flatter.
             self._sqlite_store_dirty = True
 
         self.table.setSortingEnabled(False)
-        smiles_loaded = ctx.get("smiles_col") is not None
+        smiles_loaded = "SMILES" in self.headers
         QTimer.singleShot(0, lambda: self._deferred_sql_post_load_follow_up(nrows, smiles_loaded))
 
     def _deferred_sql_post_load_follow_up(self, nrows: int, smiles_loaded: bool) -> None:
         """Defer bounds scan and 2D batch so the SQL load dialog can close and the table can paint."""
-        self._post_load_sql_meta = (int(nrows), bool(smiles_loaded))
-        self._begin_deferred_post_load_follow_up()
+        self._table_model.rebuild_column_color_caches_after_bulk_load()
+        self.schedule_calculate_global_bounds(delay_ms=500)
+        if smiles_loaded and self._try_auto_render_all_structures_after_ingest():
+            self.status_label.setText(f"Loaded {nrows:,} row(s) from SQL — drawing 2D structures…")
+        else:
+            self.status_label.setText(
+                loaded_sql_status(nrows) if smiles_loaded else f"Loaded {nrows:,} row(s) from SQL (no SMILES column)."
+            )
 
     def open_fp_similarity(self):
         if not self.headers:

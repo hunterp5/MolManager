@@ -31,12 +31,6 @@ class SqliteTableStore:
         self._conn.close()
 
     def rebuild(self, headers: list[str], rows: list[tuple[int, dict[str, str]]]) -> None:
-        self.begin_rebuild(headers)
-        self.append_chunk(rows)
-        self.finish_rebuild()
-
-    def begin_rebuild(self, headers: list[str]) -> None:
-        """Start a fresh table; call ``append_chunk`` then ``finish_rebuild`` for streaming loads."""
         cols = [h for h in headers if h not in ("ID_HIDDEN", "Structure")]
         self._headers = list(cols)
         cur = self._conn.cursor()
@@ -46,25 +40,17 @@ class SqliteTableStore:
             cur.execute(f"CREATE TABLE table_rows (oid INTEGER PRIMARY KEY, {col_sql})")
         else:
             cur.execute("CREATE TABLE table_rows (oid INTEGER PRIMARY KEY)")
-
-    def append_chunk(self, rows: list[tuple[int, dict[str, str]]]) -> None:
-        """Insert a slice of rows during a chunked rebuild (no commit until ``finish_rebuild``)."""
-        if not rows:
-            return
-        cols = self._headers
-        names = ["oid"] + cols
-        placeholders = ", ".join(["?"] * len(names))
-        insert_sql = (
-            f"INSERT INTO table_rows ({', '.join(_quoted_ident(n) for n in names)}) VALUES ({placeholders})"
-        )
-        payload = []
-        for oid, cells in rows:
-            vals = [int(oid)] + [str(cells.get(h, "") or "") for h in cols]
-            payload.append(vals)
-        self._conn.cursor().executemany(insert_sql, payload)
-
-    def finish_rebuild(self) -> None:
-        cur = self._conn.cursor()
+        if rows:
+            names = ["oid"] + cols
+            placeholders = ", ".join(["?"] * len(names))
+            insert_sql = (
+                f"INSERT INTO table_rows ({', '.join(_quoted_ident(n) for n in names)}) VALUES ({placeholders})"
+            )
+            payload = []
+            for oid, cells in rows:
+                vals = [int(oid)] + [str(cells.get(h, "") or "") for h in cols]
+                payload.append(vals)
+            cur.executemany(insert_sql, payload)
         cur.execute("CREATE INDEX IF NOT EXISTS idx_table_rows_oid ON table_rows(oid)")
         self._conn.commit()
 

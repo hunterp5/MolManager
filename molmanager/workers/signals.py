@@ -24,9 +24,6 @@ class WorkerSignals(QObject):
     # --- Load + 2D render pipeline ---
     # mols_loaded: (list_of_mols, headers_or_empty, is_first_batch:bool, is_last_batch:bool)
     mols_loaded = pyqtSignal(list, list, bool, bool)
-    # sql_rows_loaded: (batch, cols, is_first, is_last) — batch items are (row_cells, mol|None)
-    sql_rows_loaded = pyqtSignal(list, list, bool, bool)
-    sql_load_failed = pyqtSignal(str)
     # Emitted on the UI thread before bulk read when multiple structure columns exist; worker waits.
     structure_source_probe = pyqtSignal(list)
     # Last int: render_batch_session (0 = single / non-batch; non-zero must match app accept id)

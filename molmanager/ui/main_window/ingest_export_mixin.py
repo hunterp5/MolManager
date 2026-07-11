@@ -37,11 +37,10 @@ class IngestExportMixin:
         self.status_label.setText("Reading file…")
         self._ensure_structure_choice_event().set()
         batch_size = load_config().ingest_worker_batch_size
-        holder = getattr(self, "_structure_override_holder", None)
         self.process_queue.enqueue(
             f"Open file: {path}",
-            lambda ev, p=path, s=self.signals, sce=self._structure_choice_event, bs=batch_size, h=holder: UniversalLoadWorker(
-                p, s, batch_size=bs, cancel_event=ev, structure_choice_event=sce, structure_override_holder=h
+            lambda ev, p=path, s=self.signals, sce=self._structure_choice_event, bs=batch_size: UniversalLoadWorker(
+                p, s, batch_size=bs, cancel_event=ev, structure_choice_event=sce
             ),
         )
 
@@ -62,11 +61,10 @@ class IngestExportMixin:
         self.status_label.setText("Importing…")
         self._ensure_structure_choice_event().set()
         batch_size = load_config().ingest_worker_batch_size
-        holder = getattr(self, "_structure_override_holder", None)
         self.process_queue.enqueue(
             f"Import data: {path}",
-            lambda ev, p=path, s=self.signals, sce=self._structure_choice_event, bs=batch_size, h=holder: UniversalLoadWorker(
-                p, s, batch_size=bs, cancel_event=ev, structure_choice_event=sce, structure_override_holder=h
+            lambda ev, p=path, s=self.signals, sce=self._structure_choice_event, bs=batch_size: UniversalLoadWorker(
+                p, s, batch_size=bs, cancel_event=ev, structure_choice_event=sce
             ),
         )
 

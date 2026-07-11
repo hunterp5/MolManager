@@ -79,10 +79,6 @@ class ProcessQueueManager(QObject):
 
     def enqueue(self, title: str, factory: Callable[[threading.Event], QRunnable]) -> str:
         """Queue a job; returns job id. ``factory`` receives a fresh cancel event for this run."""
-        from molmanager.workers.process_pool_utils import application_is_shutting_down
-
-        if application_is_shutting_down():
-            return ""
         job_id = str(uuid.uuid4())[:8]
         self._queue.append(
             _QueuedJob(
@@ -98,10 +94,6 @@ class ProcessQueueManager(QObject):
 
     def enqueue_fast(self, title: str, factory: Callable[[threading.Event], QRunnable]) -> str:
         """Start an interactive job on a separate small pool (does not block heavy queue)."""
-        from molmanager.workers.process_pool_utils import application_is_shutting_down
-
-        if application_is_shutting_down():
-            return ""
         if self.has_running_job() or self.has_pending_jobs() or self.is_blocked_by_external_activity():
             return self.enqueue(title, factory)
         job_id = str(uuid.uuid4())[:8]
@@ -155,8 +147,6 @@ class ProcessQueueManager(QObject):
 
     def shutdown_for_exit(self) -> None:
         """Cancel queued/running jobs and kill any active process-pool children (window close)."""
-        from PyQt5.QtWidgets import QApplication
-
         from molmanager.workers.process_pool_utils import (
             shutdown_all_process_pools,
             signal_application_shutdown,
@@ -171,26 +161,9 @@ class ProcessQueueManager(QObject):
         ev = self._running_cancel
         if ev is not None and not ev.is_set():
             ev.set()
-        app = self._app
-        done_ev = getattr(app, "_render2d_batch_done_event", None)
-        if done_ev is not None:
-            done_ev.set()
         shutdown_all_process_pools(kill_workers=True)
         self._pool.clear()
         self._fast_pool.clear()
-        deadline = time.monotonic() + 3.0
-        while time.monotonic() < deadline:
-            QApplication.processEvents()
-            heavy_idle = self._pool.waitForDone(50)
-            fast_idle = self._fast_pool.waitForDone(50)
-            if heavy_idle and fast_idle and not self._busy and not self._fast_running:
-                break
-        self._busy = False
-        self._current_job_id = None
-        self._current_title = None
-        self._current_started_at = None
-        self._running_cancel = None
-        self._fast_running.clear()
 
     def clear_queued(self) -> int:
         """Remove all jobs waiting in the queue (not the running job). Returns number removed."""
