@@ -4,6 +4,7 @@ import csv
 import logging
 import os
 import threading
+from collections import deque
 from concurrent.futures import FIRST_COMPLETED, ProcessPoolExecutor, wait
 
 from .process_pool_utils import (
@@ -17,10 +18,12 @@ from rdkit import Chem
 
 from rdkit.Chem.Draw import rdMolDraw2D
 
+from ..config import load_config
 from ..display_constants import STRUCTURE_DEPICT_HEIGHT, STRUCTURE_DEPICT_WIDTH
 from ..import_structure import needs_structure_source_picker
 from ..ingest_cells import prepare_mol_row
 from ..fragment_disconnect import largest_fragment_and_rest
+from ..sdf_parallel import iter_sdf_molblocks, mp_parse_sdf_molblocks
 from ..structure_neutralize import neutralize_mol
 from ..structure_hydrogens import add_explicit_hydrogens
 from ..utils import parse_molecule_from_cell_text, safe_mol_prop_string
@@ -199,6 +202,121 @@ class UniversalLoadWorker(QRunnable):
     def _cancelled(self) -> bool:
         return self.cancel_event is not None and self.cancel_event.is_set()
 
+    def _should_parallel_sdf(self, path: str) -> bool:
+        cfg = load_config()
+        if cfg.ingest_sdf_parallel_min_bytes <= 0:
+            return False
+        if (os.cpu_count() or 1) <= 1:
+            return False
+        try:
+            return os.path.getsize(path) >= int(cfg.ingest_sdf_parallel_min_bytes)
+        except OSError:
+            return False
+
+    def _extend_headers_from_mol(self, mol, headers: list[str]) -> bool:
+        """Add SD-tag headers from the first parsed mol; wait for structure-column choice."""
+        if not mol:
+            return True
+        existing = set(headers)
+        for prop in sorted(mol.GetPropNames(), key=str):
+            name = str(prop)
+            if name not in existing:
+                headers.append(name)
+                existing.add(name)
+        return self._wait_for_structure_source_choice(headers)
+
+    def _append_parsed_mols(
+        self,
+        blobs: list[bytes | None],
+        batch: list,
+        headers: list[str],
+        first_emit: bool,
+        batch_size: int,
+    ) -> tuple[list, bool, bool]:
+        """Hydrate pickled mols, extend *batch*, and emit when full."""
+        for blob in blobs:
+            if self._cancelled():
+                return batch, first_emit, True
+            if not blob:
+                continue
+            try:
+                mol = Chem.Mol(blob)
+            except Exception:
+                continue
+            if first_emit and not batch:
+                if not self._extend_headers_from_mol(mol, headers):
+                    return batch, first_emit, True
+            batch.append(mol)
+            if len(batch) >= batch_size:
+                self._emit_batch(batch, headers, first_emit, False)
+                first_emit = False
+                batch = []
+        return batch, first_emit, False
+
+    def _load_sdf_parallel(self, path: str, batch_size: int) -> tuple[list, list[str], bool]:
+        cfg = load_config()
+        parse_chunk = int(cfg.ingest_sdf_parse_chunk)
+        ncpu = os.cpu_count() or 4
+        proc_workers = min(int(cfg.ingest_sdf_parallel_workers), max(2, ncpu - 1))
+        max_inflight = max(proc_workers * 2, proc_workers + 1)
+
+        headers = ["ID_HIDDEN", "Structure"]
+        first_emit = True
+        batch: list = []
+        block_buf: list[str] = []
+        futures: deque = deque()
+        ex = register_process_pool(ProcessPoolExecutor(max_workers=proc_workers))
+        stopped = False
+        try:
+            for block in iter_sdf_molblocks(path):
+                if self._cancelled():
+                    stopped = True
+                    break
+                block_buf.append(block)
+                if len(block_buf) < parse_chunk:
+                    continue
+                futures.append(ex.submit(mp_parse_sdf_molblocks, block_buf))
+                block_buf = []
+                while len(futures) >= max_inflight:
+                    batch, first_emit, stopped = self._append_parsed_mols(
+                        futures.popleft().result(), batch, headers, first_emit, batch_size
+                    )
+                    if stopped:
+                        break
+                if stopped:
+                    break
+            if not stopped and block_buf:
+                futures.append(ex.submit(mp_parse_sdf_molblocks, block_buf))
+            while not stopped and futures:
+                batch, first_emit, stopped = self._append_parsed_mols(
+                    futures.popleft().result(), batch, headers, first_emit, batch_size
+                )
+        finally:
+            shutdown_process_pool_executor(
+                ex, kill_workers=should_terminate_process_pool(self.cancel_event)
+            )
+        return batch, headers, first_emit
+
+    def _load_sdf_sequential(self, path: str, batch_size: int) -> tuple[list, list[str], bool]:
+        headers = ["ID_HIDDEN", "Structure"]
+        first_emit = True
+        batch: list = []
+        suppl = Chem.SDMolSupplier(path)
+        for mol in suppl:
+            if self._cancelled():
+                break
+            if not mol:
+                continue
+            if first_emit and not batch:
+                if not self._extend_headers_from_mol(mol, headers):
+                    break
+            batch.append(mol)
+            if len(batch) >= batch_size:
+                self._emit_batch(batch, headers, first_emit, False)
+                first_emit = False
+                batch = []
+        return batch, headers, first_emit
+
     def _wait_for_structure_source_choice(self, headers: list[str]) -> bool:
         """Pause the reader until the UI picks a structure column (or load is cancelled)."""
         ev = self.structure_choice_event
@@ -230,20 +348,10 @@ class UniversalLoadWorker(QRunnable):
             first_emit = True
             batch = []
             if ext in [".sdf", ".mol"]:
-                suppl = Chem.SDMolSupplier(self.path)
-                for mol in suppl:
-                    if self._cancelled():
-                        break
-                    if mol:
-                        if first_emit and len(batch) == 0:
-                            headers.extend(sorted([str(p) for p in mol.GetPropNames()]))
-                            if not self._wait_for_structure_source_choice(headers):
-                                break
-                        batch.append(mol)
-                        if len(batch) >= batch_size:
-                            self._emit_batch(batch, headers, first_emit, False)
-                            first_emit = False
-                            batch = []
+                if ext == ".sdf" and self._should_parallel_sdf(self.path):
+                    batch, headers, first_emit = self._load_sdf_parallel(self.path, batch_size)
+                else:
+                    batch, headers, first_emit = self._load_sdf_sequential(self.path, batch_size)
             elif ext in [".smi", ".txt", ".csv"]:
                 delim = "," if ext == ".csv" else "\t"
                 with open(self.path, "r", encoding="utf-8", errors="replace") as f:
