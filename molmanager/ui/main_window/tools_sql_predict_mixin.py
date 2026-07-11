@@ -558,14 +558,8 @@ class ToolsSqlPredictMixin:
 
     def _deferred_sql_post_load_follow_up(self, nrows: int, smiles_loaded: bool) -> None:
         """Defer bounds scan and 2D batch so the SQL load dialog can close and the table can paint."""
-        self._table_model.rebuild_column_color_caches_after_bulk_load()
-        self.schedule_calculate_global_bounds(delay_ms=500)
-        if smiles_loaded and self._try_auto_render_all_structures_after_ingest():
-            self.status_label.setText(f"Loaded {nrows:,} row(s) from SQL — drawing 2D structures…")
-        else:
-            self.status_label.setText(
-                loaded_sql_status(nrows) if smiles_loaded else f"Loaded {nrows:,} row(s) from SQL (no SMILES column)."
-            )
+        self._post_load_sql_meta = (int(nrows), bool(smiles_loaded))
+        self._begin_deferred_post_load_follow_up()
 
     def open_fp_similarity(self):
         if not self.headers:

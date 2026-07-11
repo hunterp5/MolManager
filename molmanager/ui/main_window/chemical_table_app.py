@@ -330,18 +330,23 @@ class ChemicalTableApp(
     @pyqtSlot()
     def _begin_render2d_batch_from_queue(self) -> None:
         """GUI-thread entry for :class:`Render2DBatchHeldJob` (see ``_render2d_queue_payload``)."""
-        payload = getattr(self, "_render2d_queue_payload", None)
-        cancel_event = getattr(self, "_render2d_queue_cancel_event", None)
-        if not payload:
-            return
-        renders, row_by_oid, src, column_pixmap_mode = payload
-        self._begin_render2d_batch_impl(
-            renders,
-            row_by_oid,
-            src,
-            column_pixmap_mode=column_pixmap_mode,
-            cancel_event=cancel_event,
-        )
+        prep_done = getattr(self, "_render2d_queue_prep_done", None)
+        try:
+            payload = getattr(self, "_render2d_queue_payload", None)
+            cancel_event = getattr(self, "_render2d_queue_cancel_event", None)
+            if not payload:
+                return
+            renders, row_by_oid, src, column_pixmap_mode = payload
+            self._begin_render2d_batch_impl(
+                renders,
+                row_by_oid,
+                src,
+                column_pixmap_mode=column_pixmap_mode,
+                cancel_event=cancel_event,
+            )
+        finally:
+            if prep_done is not None:
+                prep_done.set()
 
     def smina_dock_active(self) -> bool:
         """True while Tools → Dock has a ``smina`` subprocess running."""
@@ -1041,6 +1046,10 @@ class ChemicalTableApp(
 
     def _prepare_application_shutdown(self) -> None:
         """Stop timers, cancel background work, close modeless dialogs, drain thread pools."""
+        from molmanager.workers.process_pool_utils import signal_application_shutdown
+
+        signal_application_shutdown()
+
         t = getattr(self, "_apply_filters_timer", None)
         if t is not None:
             t.stop()
@@ -1089,14 +1098,21 @@ class ChemicalTableApp(
 
         QApplication.processEvents()
 
-        # Brief drain after cancel/kill; this should be near-instant on app close.
-        shutdown_wait_ms = 750
+        # Brief drain after cancel/kill so the queue runner can exit before Qt tears down.
+        shutdown_wait_ms = 3500
         deadline = time.monotonic() + shutdown_wait_ms / 1000.0
         while time.monotonic() < deadline:
             QApplication.processEvents()
             if pq is None or (not pq.has_running_job() and not pq.snapshot().get("fast_running")):
                 break
             time.sleep(0.05)
+
+        if pq is not None:
+            try:
+                pq._pool.waitForDone(500)
+                pq._fast_pool.waitForDone(500)
+            except Exception:
+                pass
 
         tp = getattr(self, "threadpool", None)
         if tp is not None:
@@ -1109,6 +1125,11 @@ class ChemicalTableApp(
             clear = getattr(rtp, "clear", None)
             if callable(clear):
                 clear()
+            render_deadline = time.monotonic() + 1.5
+            while time.monotonic() < render_deadline:
+                QApplication.processEvents()
+                if rtp.waitForDone(50):
+                    break
 
         # Avoid blocking on shutdown; cooperative cancel + pool termination should be enough.
         store = getattr(self, "_sqlite_store", None)

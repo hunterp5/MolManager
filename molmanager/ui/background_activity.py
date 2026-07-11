@@ -158,11 +158,12 @@ class BackgroundActivityHub(QObject):
             app.cancel_render_2d_batch()
         if hasattr(app, "cancel_smina_dock"):
             app.cancel_smina_dock()
+        app._fast_prepare_active = False
         pq = getattr(app, "process_queue", None)
         if pq is not None:
-            shutdown = getattr(pq, "shutdown_for_exit", None)
-            if callable(shutdown):
-                shutdown()
-            else:
-                pq.clear_queued()
-                pq.cancel_running()
+            pq.clear_queued()
+            pq.cancel_running()
+            for info in list(pq._fast_running.values()):
+                ev = info.get("cancel")
+                if isinstance(ev, threading.Event):
+                    ev.set()

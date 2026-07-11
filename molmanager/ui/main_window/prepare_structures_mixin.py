@@ -30,6 +30,24 @@ from ..compound_table_model import (
 logger = logging.getLogger(__name__)
 
 class PrepareStructuresMixin:
+    def _oids_for_structure_tool(self, only_selected: bool) -> list[int]:
+        allowed = self._selected_oids_set() if only_selected else None
+        oids = self._table_model.all_oids_in_order()
+        if allowed is not None:
+            oids = [o for o in oids if o in allowed]
+        return oids
+
+    def _structure_tool_row_payload(self, oid: int, src: str) -> Chem.Mol | bytes | None:
+        """Molecule bytes or object for a prepare-structures worker (bytes avoid LazyMolStore rehydrate)."""
+        if src == "Structure":
+            get_blob = getattr(self.mols, "get_blob", None)
+            if get_blob is not None:
+                blob = get_blob(int(oid))
+                if blob:
+                    return blob
+            return self.mols.get(int(oid))
+        return self._mol_for_structure_tool_oid(oid, src)
+
     def run_protonate(self) -> None:
         """Generate dominant protomer into a new column and optionally render it."""
         if not self.headers or self._table_model.rowCount() == 0:
@@ -73,15 +91,21 @@ class PrepareStructuresMixin:
             self.headers.append(pct_col)
             self._table_model.insert_column_at(nc, pct_col, None)
 
-        data: list[tuple[int, Chem.Mol | None]] = []
-        oids_walk = self._all_oids_in_table_order()
-        if allowed is not None:
-            oids_walk = [o for o in oids_walk if o in allowed]
-        for oid in oids_walk:
-            mol = self._mol_for_structure_tool_oid(oid, src)
-            data.append((int(oid), mol))
+        data: list[tuple[int, Chem.Mol | bytes]] = []
+        for oid in self._oids_for_structure_tool(only_selected):
+            payload = self._structure_tool_row_payload(oid, src)
+            if payload is None:
+                continue
+            if isinstance(payload, bytes):
+                try:
+                    mol = Chem.Mol(payload)
+                except Exception:
+                    mol = None
+            else:
+                mol = payload
+            if mol is not None:
+                data.append((int(oid), mol))
 
-        data = [(oid, mol) for oid, mol in data if mol is not None]
         if not data:
             QMessageBox.information(
                 self,
@@ -235,7 +259,11 @@ class PrepareStructuresMixin:
         no_render_2d: bool,
         queue_title_prefix: str = "",
     ) -> None:
-        allowed = self._selected_oids_set() if only_selected else None
+        from ...workers.process_pool_utils import application_is_shutting_down
+
+        if application_is_shutting_down():
+            self._fast_prepare_active = False
+            return
         self._disconnect_source = src
         self._disconnect_update_target = update_target
         self._disconnect_largest_col = src if update_target else largest_col
@@ -243,15 +271,12 @@ class PrepareStructuresMixin:
         self._disconnect_no_render_2d = no_render_2d
         if src == "Structure":
             data = []
-            oids_walk = self._all_oids_in_table_order()
-            if allowed is not None:
-                oids_walk = [o for o in oids_walk if o in allowed]
-            for oid in oids_walk:
-                mol = self.mols.get(oid)
-                if mol is None:
+            for oid in self._oids_for_structure_tool(only_selected):
+                payload = self._structure_tool_row_payload(oid, src)
+                if payload is None:
                     continue
                 raw = self._disconnect_source_text_for_oid(oid, src)
-                data.append((oid, mol, raw))
+                data.append((oid, payload, raw))
             if not data:
                 QMessageBox.information(
                     self,
@@ -269,14 +294,13 @@ class PrepareStructuresMixin:
         else:
             col = self.headers.index(src)
             data = []
-            oids_walk = self._all_oids_in_table_order()
-            if allowed is not None:
-                oids_walk = [o for o in oids_walk if o in allowed]
-            for oid in oids_walk:
-                r = self.get_row_by_id(oid)
-                if r == -1:
-                    continue
-                data.append((oid, self._table_cell_text(r, col)))
+            for oid in self._oids_for_structure_tool(only_selected):
+                raw = self._table_model.value_for_oid_header(oid, src)
+                if not raw and col >= 0:
+                    row = self._table_model.logical_row_for_oid(oid)
+                    if row >= 0:
+                        raw = self._table_cell_text(row, col)
+                data.append((oid, raw))
             if not data:
                 QMessageBox.information(
                     self,
@@ -294,14 +318,17 @@ class PrepareStructuresMixin:
 
     def _mol_for_structure_tool_oid(self, oid: int, src: str) -> Chem.Mol | None:
         """Molecule for a prepare-structures tool row and source column."""
-        row = self.get_row_by_id(oid)
+        if src == "Structure":
+            payload = self._structure_tool_row_payload(oid, src)
+            if isinstance(payload, bytes):
+                try:
+                    return Chem.Mol(payload)
+                except Exception:
+                    return None
+            return payload
+        row = self._table_model.logical_row_for_oid(int(oid))
         if row < 0:
             return None
-        if src == "Structure":
-            mol = self.mols.get(oid)
-            if mol is not None:
-                return mol
-            return self._mol_for_structure_row(row)
         if src not in self.headers:
             return None
         col = self.headers.index(src)
@@ -354,15 +381,11 @@ class PrepareStructuresMixin:
 
         self._add_explicit_hydrogens_source = src
         self._add_explicit_hydrogens_no_render_2d = no_render_2d
-        allowed = self._selected_oids_set() if only_selected else None
-        data: list[tuple[int, Chem.Mol]] = []
-        oids_walk = self._all_oids_in_table_order()
-        if allowed is not None:
-            oids_walk = [o for o in oids_walk if o in allowed]
-        for oid in oids_walk:
-            mol = self._mol_for_structure_tool_oid(oid, src)
-            if mol is not None:
-                data.append((oid, mol))
+        data: list[tuple[int, Chem.Mol | bytes]] = []
+        for oid in self._oids_for_structure_tool(only_selected):
+            payload = self._structure_tool_row_payload(oid, src)
+            if payload is not None:
+                data.append((oid, payload))
         if not data:
             QMessageBox.information(
                 self,
@@ -413,19 +436,19 @@ class PrepareStructuresMixin:
         queue_title_prefix: str = "",
     ) -> None:
         from ...workers import NeutralizeWorker
+        from ...workers.process_pool_utils import application_is_shutting_down
 
+        if application_is_shutting_down():
+            self._fast_prepare_active = False
+            return
         self._neutralize_source = src
         self._neutralize_no_render_2d = no_render_2d
         if rows is None:
-            allowed = self._selected_oids_set() if only_selected else None
-            data: list[tuple[int, Chem.Mol]] = []
-            oids_walk = self._all_oids_in_table_order()
-            if allowed is not None:
-                oids_walk = [o for o in oids_walk if o in allowed]
-            for oid in oids_walk:
-                mol = self._mol_for_structure_tool_oid(oid, src)
-                if mol is not None:
-                    data.append((oid, mol))
+            data: list[tuple[int, Chem.Mol | bytes]] = []
+            for oid in self._oids_for_structure_tool(only_selected):
+                payload = self._structure_tool_row_payload(oid, src)
+                if payload is not None:
+                    data.append((oid, payload))
         else:
             data = list(rows)
         if not data:
@@ -443,6 +466,11 @@ class PrepareStructuresMixin:
         )
 
     def on_neutralize_finished(self, results) -> None:
+        from ...workers.process_pool_utils import application_is_shutting_down
+
+        if application_is_shutting_down():
+            self._fast_prepare_active = False
+            return
         fast_prepare = getattr(self, "_fast_prepare_active", False)
         fast_src = getattr(self, "_fast_prepare_source", "Structure") if fast_prepare else "Structure"
         fast_allowed = getattr(self, "_fast_prepare_allowed_oids", None) if fast_prepare else None
@@ -484,8 +512,9 @@ class PrepareStructuresMixin:
             allowed_oids = fast_allowed
             if results and not getattr(self, "_render2d_batch_active", False):
                 base_w, base_h = STRUCTURE_DEPICT_WIDTH, STRUCTURE_DEPICT_HEIGHT
-                renders, row_by_oid = self._build_render2d_tasks_in_table_order(
-                    render_src, base_w, base_h, allowed_oids
+                mol_results = [(oid, mol) for oid, mol in results if mol is not None]
+                renders, row_by_oid = self._build_render2d_tasks_from_result_mols(
+                    mol_results, base_w, base_h, allowed_oids
                 )
                 if renders:
                     self.status_label.setText("Fast prepare: rendering 2D…")
@@ -503,21 +532,10 @@ class PrepareStructuresMixin:
             self, "_render2d_batch_active", False
         ):
             base_w, base_h = STRUCTURE_DEPICT_WIDTH, STRUCTURE_DEPICT_HEIGHT
-            renders = []
-            row_by_oid: dict[int, int] = {}
-            for oid, mol in results:
-                if mol is None:
-                    continue
-                row = self.get_row_by_id(oid)
-                if row < 0:
-                    continue
-                rw, rh = (
-                    (STRUCTURE_DEPICT_WIDTH * 2, STRUCTURE_DEPICT_HEIGHT * 2)
-                    if oid in self.zoomed_ids
-                    else (base_w, base_h)
-                )
-                renders.append((oid, mol, rw, rh))
-                row_by_oid[oid] = row
+            mol_results = [(oid, mol) for oid, mol in results if mol is not None]
+            renders, row_by_oid = self._build_render2d_tasks_from_result_mols(
+                mol_results, base_w, base_h, None
+            )
             if renders:
                 column_pixmap_mode = src != "Structure"
                 self._start_render_2d_batch(
@@ -560,21 +578,10 @@ class PrepareStructuresMixin:
             self, "_render2d_batch_active", False
         ):
             base_w, base_h = STRUCTURE_DEPICT_WIDTH, STRUCTURE_DEPICT_HEIGHT
-            renders = []
-            row_by_oid: dict[int, int] = {}
-            for oid, mol in results:
-                if mol is None:
-                    continue
-                row = self.get_row_by_id(oid)
-                if row < 0:
-                    continue
-                rw, rh = (
-                    (STRUCTURE_DEPICT_WIDTH * 2, STRUCTURE_DEPICT_HEIGHT * 2)
-                    if oid in self.zoomed_ids
-                    else (base_w, base_h)
-                )
-                renders.append((oid, mol, rw, rh))
-                row_by_oid[oid] = row
+            mol_results = [(oid, mol) for oid, mol in results if mol is not None]
+            renders, row_by_oid = self._build_render2d_tasks_from_result_mols(
+                mol_results, base_w, base_h, None
+            )
             if renders:
                 column_pixmap_mode = src != "Structure"
                 self._start_render_2d_batch(
@@ -609,6 +616,33 @@ class PrepareStructuresMixin:
             row_by_oid[int(oid)] = row
         return renders, row_by_oid
 
+    def _build_render2d_tasks_from_result_mols(
+        self,
+        results: list[tuple[int, Chem.Mol | None]],
+        base_w: int,
+        base_h: int,
+        allowed_oids: set[int] | None = None,
+    ) -> tuple[list, dict[int, int]]:
+        """Build render tasks from worker results without scanning the full table."""
+        renders: list = []
+        row_by_oid: dict[int, int] = {}
+        for oid, mol in results:
+            if mol is None:
+                continue
+            if allowed_oids is not None and int(oid) not in allowed_oids:
+                continue
+            row = self._table_model.logical_row_for_oid(int(oid))
+            if row < 0:
+                continue
+            rw, rh = (
+                (STRUCTURE_DEPICT_WIDTH * 2, STRUCTURE_DEPICT_HEIGHT * 2)
+                if int(oid) in self.zoomed_ids
+                else (base_w, base_h)
+            )
+            renders.append((int(oid), mol, rw, rh))
+            row_by_oid[int(oid)] = row
+        return renders, row_by_oid
+
     def _build_render2d_tasks_in_table_order(
         self,
         src: str,
@@ -617,6 +651,8 @@ class PrepareStructuresMixin:
         allowed_oids: set[int] | None = None,
     ) -> tuple[list, dict[int, int]]:
         """Collect (oid, mol, w, h) tasks in current visual row order (top to bottom) and oid→row map."""
+        if src == "Structure":
+            return self._build_render2d_tasks_from_mols(base_w, base_h, allowed_oids)
         renders = []
         row_by_oid: dict[int, int] = {}
         col = None if src == "Structure" else self.headers.index(src)
@@ -805,6 +841,10 @@ class PrepareStructuresMixin:
         queue_title_prefix: str = "",
     ) -> None:
         """Queue batch 2D renders on the serial process queue (waits behind other tools)."""
+        from ...workers.process_pool_utils import application_is_shutting_down
+
+        if application_is_shutting_down():
+            return
         if getattr(self, "_render2d_batch_active", False):
             return
         title = f"{queue_title_prefix}render 2D ({len(renders)} rows)".strip()
@@ -824,6 +864,10 @@ class PrepareStructuresMixin:
         cancel_event: threading.Event | None = None,
     ) -> None:
         """Start batch 2D rendering on the GUI thread (called from :class:`Render2DBatchHeldJob`)."""
+        from ...workers.process_pool_utils import application_is_shutting_down
+
+        if application_is_shutting_down():
+            return
         if cancel_event is not None and cancel_event.is_set():
             return
         self._render2d_session_id += 1
@@ -966,19 +1010,15 @@ class PrepareStructuresMixin:
 
     def _disconnect_source_text_for_oid(self, oid: int, src: str) -> str | None:
         """Original cell text for the disconnect target column (for multi-component SMILES)."""
-        row = self.get_row_by_id(oid)
-        if row < 0:
-            return None
         if src == "Structure":
-            raw = (self._table_model.backing_value_for_row_header(row, "Structure") or "").strip()
+            raw = (self._table_model.backing_value_for_oid(oid, "Structure") or "").strip()
             if raw:
                 return raw
             smiles_h = self._canonical_smiles_header_for_updates()
             if smiles_h is not None:
-                return (self._table_cell_text(row, self.headers.index(smiles_h)) or "").strip() or None
+                return (self._table_model.value_for_oid_header(oid, smiles_h) or "").strip() or None
             return None
-        col = self.headers.index(src)
-        return (self._table_cell_text(row, col) or "").strip() or None
+        return (self._table_model.value_for_oid_header(oid, src) or "").strip() or None
 
     def _ensure_disconnect_output_column(self, header_name: str) -> None:
         """Insert a data column if the disconnect dialog named one that is not present yet."""
@@ -994,6 +1034,11 @@ class PrepareStructuresMixin:
         self._table_model.insert_column_at(nc, header_name, None)
 
     def on_wash_finished(self, results):
+        from ...workers.process_pool_utils import application_is_shutting_down
+
+        if application_is_shutting_down():
+            self._fast_prepare_active = False
+            return
         self.table.setSortingEnabled(False)
         src = getattr(self, "_disconnect_source", "Structure")
         update_target = getattr(self, "_disconnect_update_target", True)
@@ -1088,21 +1133,10 @@ class PrepareStructuresMixin:
             self, "_render2d_batch_active", False
         ):
             base_w, base_h = STRUCTURE_DEPICT_WIDTH, STRUCTURE_DEPICT_HEIGHT
-            renders = []
-            row_by_oid: dict[int, int] = {}
-            for oid, mol, _frag in results:
-                if mol is None:
-                    continue
-                row = self.get_row_by_id(oid)
-                if row < 0:
-                    continue
-                rw, rh = (
-                    (STRUCTURE_DEPICT_WIDTH * 2, STRUCTURE_DEPICT_HEIGHT * 2)
-                    if oid in self.zoomed_ids
-                    else (base_w, base_h)
-                )
-                renders.append((oid, mol, rw, rh))
-                row_by_oid[oid] = row
+            mol_results = [(oid, mol) for oid, mol, _frag in results if mol is not None]
+            renders, row_by_oid = self._build_render2d_tasks_from_result_mols(
+                mol_results, base_w, base_h, None
+            )
             if renders:
                 column_pixmap_mode = render_src != "Structure"
                 self._start_render_2d_batch(

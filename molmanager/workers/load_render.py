@@ -23,6 +23,17 @@ from ..display_constants import STRUCTURE_DEPICT_HEIGHT, STRUCTURE_DEPICT_WIDTH
 from ..import_structure import needs_structure_source_picker
 from ..ingest_cells import prepare_mol_row
 from ..fragment_disconnect import largest_fragment_and_rest
+from ..prepare_structures_parallel import (
+    _mp_add_explicit_h_row,
+    _mp_add_explicit_h_smiles_row,
+    _mp_neutralize_mol_row,
+    _mp_neutralize_smiles_row,
+    _mp_wash_mol_row,
+    _mp_wash_smiles_row,
+    mol_from_bytes,
+    run_prepare_tasks_parallel_ordered,
+    should_use_prepare_structures_process_pool,
+)
 from ..sdf_parallel import iter_sdf_molblocks, mp_parse_sdf_molblocks
 from ..structure_neutralize import neutralize_mol
 from ..structure_hydrogens import add_explicit_hydrogens
@@ -30,6 +41,12 @@ from ..utils import parse_molecule_from_cell_text, safe_mol_prop_string
 from .signals import WorkerSignals, emit_partial_results_if_cancelled
 
 logger = logging.getLogger(__name__)
+
+
+def _prepare_row_mol(payload) -> Chem.Mol | None:
+    if isinstance(payload, bytes):
+        return mol_from_bytes(payload)
+    return payload
 
 
 def _mp_render_structure_row(args: tuple):
@@ -69,29 +86,54 @@ class Render2DBatchHeldJob(QRunnable):
     def run(self) -> None:
         if self._cancel_event is not None and self._cancel_event.is_set():
             return
+        from ..workers.process_pool_utils import application_is_shutting_down
+
+        if application_is_shutting_down():
+            return
         done_ev = getattr(self._app, "_render2d_batch_done_event", None)
         if done_ev is not None:
             done_ev.clear()
+        prep_done = threading.Event()
         try:
             from PyQt5.QtCore import QMetaObject, Qt
 
             self._app._render2d_queue_payload = self._payload
             self._app._render2d_queue_cancel_event = self._cancel_event
+            self._app._render2d_queue_prep_done = prep_done
+            if application_is_shutting_down():
+                return
+            # QueuedConnection avoids closeEvent deadlocks (GUI blocked in shutdown wait).
             QMetaObject.invokeMethod(
                 self._app,
                 "_begin_render2d_batch_from_queue",
-                Qt.BlockingQueuedConnection,
+                Qt.QueuedConnection,
             )
+            while not prep_done.is_set():
+                if prep_done.wait(timeout=0.25):
+                    break
+                if self._cancel_event is not None and self._cancel_event.is_set():
+                    break
+                if application_is_shutting_down():
+                    break
         except Exception:
             logger.exception("Render2D batch UI prepare failed")
             if done_ev is not None:
                 done_ev.set()
             return
+        finally:
+            self._app._render2d_queue_prep_done = None
         if done_ev is not None:
             if not getattr(self._app, "render2d_batch_active", lambda: False)():
                 done_ev.set()
             else:
-                done_ev.wait()
+                while not done_ev.is_set():
+                    if done_ev.wait(timeout=0.25):
+                        break
+                    if self._cancel_event is not None and self._cancel_event.is_set():
+                        break
+                    if application_is_shutting_down():
+                        break
+                done_ev.set()
 
 
 class Render2DBatchProcessWorker(QRunnable):
@@ -477,45 +519,92 @@ class WashWorker(QRunnable):
     def run(self):
         items = list(self.mols_data)
         total = max(len(items), 1)
+        cfg = load_config()
+        min_rows = int(cfg.prepare_structures_process_pool_min_rows)
+        use_mp = should_use_prepare_structures_process_pool(total, min_rows=min_rows)
         res = []
         done_count = 0
         cancelled = False
-        for done, row in enumerate(items, start=1):
-            if self.cancel_event is not None and self.cancel_event.is_set():
-                cancelled = True
-                break
-            done_count = done
-            mol = None
-            source_text: str | None = None
-            i = row[0]
-            if self.is_smiles:
-                source_text = str(row[1] or "").strip()
-                mol = parse_molecule_from_cell_text(source_text) if source_text else None
-            elif len(row) >= 3:
-                mol = row[1]
-                source_text = (str(row[2]).strip() if row[2] else None) or None
-            else:
-                mol = row[1]
-            if mol is None and source_text:
-                mol = parse_molecule_from_cell_text(source_text)
-            if mol is None:
-                try:
-                    self.signals.tool_progress.emit("Disconnect fragments…", done, total)
-                except Exception:
-                    pass
-                continue
-            parent, fragments = largest_fragment_and_rest(mol, source_text)
-            if parent is None:
-                try:
-                    self.signals.tool_progress.emit("Disconnect fragments…", done, total)
-                except Exception:
-                    pass
-                continue
-            res.append((i, parent, fragments))
+
+        def _emit_progress(done: int, _total: int = 0) -> None:
             try:
                 self.signals.tool_progress.emit("Disconnect fragments…", done, total)
             except Exception:
                 pass
+
+        if use_mp:
+            if self.is_smiles:
+                tasks = [(int(row[0]), str(row[1] or "")) for row in items]
+                mp_rows = run_prepare_tasks_parallel_ordered(
+                    tasks,
+                    _mp_wash_smiles_row,
+                    cancel_event=self.cancel_event,
+                    on_progress=_emit_progress,
+                )
+                for oid, parent_bytes, fragments in mp_rows:
+                    parent = mol_from_bytes(parent_bytes)
+                    if parent is not None:
+                        res.append((oid, parent, fragments))
+                done_count = len(items)
+                cancelled = should_terminate_process_pool(self.cancel_event)
+            else:
+                tasks = []
+                for row in items:
+                    oid = int(row[0])
+                    payload = row[1]
+                    source_text = (str(row[2]).strip() if len(row) >= 3 and row[2] else None) or None
+                    if isinstance(payload, bytes):
+                        blob = payload
+                    else:
+                        mol = payload
+                        if mol is None:
+                            continue
+                        try:
+                            blob = mol.ToBinary()
+                        except Exception:
+                            blob = None
+                    if blob:
+                        tasks.append((oid, blob, source_text))
+                mp_rows = run_prepare_tasks_parallel_ordered(
+                    tasks,
+                    _mp_wash_mol_row,
+                    cancel_event=self.cancel_event,
+                    on_progress=_emit_progress,
+                )
+                for oid, parent_bytes, fragments in mp_rows:
+                    parent = mol_from_bytes(parent_bytes)
+                    if parent is not None:
+                        res.append((oid, parent, fragments))
+                done_count = len(items)
+                cancelled = should_terminate_process_pool(self.cancel_event)
+        else:
+            for done, row in enumerate(items, start=1):
+                if should_terminate_process_pool(self.cancel_event):
+                    cancelled = True
+                    break
+                done_count = done
+                mol = None
+                source_text: str | None = None
+                i = row[0]
+                if self.is_smiles:
+                    source_text = str(row[1] or "").strip()
+                    mol = parse_molecule_from_cell_text(source_text) if source_text else None
+                elif len(row) >= 3:
+                    mol = _prepare_row_mol(row[1])
+                    source_text = (str(row[2]).strip() if row[2] else None) or None
+                else:
+                    mol = _prepare_row_mol(row[1])
+                if mol is None and source_text:
+                    mol = parse_molecule_from_cell_text(source_text)
+                if mol is None:
+                    _emit_progress(done)
+                    continue
+                parent, fragments = largest_fragment_and_rest(mol, source_text)
+                if parent is None:
+                    _emit_progress(done)
+                    continue
+                res.append((i, parent, fragments))
+                _emit_progress(done)
         emit_partial_results_if_cancelled(
             self.signals, "Disconnect fragments", done_count, total, cancelled
         )
@@ -533,33 +622,75 @@ class NeutralizeWorker(QRunnable):
     def run(self):
         items = list(self.mols_data)
         total = max(len(items), 1)
+        cfg = load_config()
+        min_rows = int(cfg.prepare_structures_process_pool_min_rows)
+        use_mp = should_use_prepare_structures_process_pool(total, min_rows=min_rows)
         res: list[tuple[int, object]] = []
         done_count = 0
         cancelled = False
-        for done, row in enumerate(items, start=1):
-            if self.cancel_event is not None and self.cancel_event.is_set():
-                cancelled = True
-                break
-            done_count = done
-            oid = row[0]
-            if self.is_smiles:
-                raw = str(row[1] or "").strip()
-                mol = parse_molecule_from_cell_text(raw) if raw else None
-            else:
-                mol = row[1]
-            if mol is None:
-                try:
-                    self.signals.tool_progress.emit("Neutralize…", done, total)
-                except Exception:
-                    pass
-                continue
-            neutral = neutralize_mol(mol)
-            if neutral is not None:
-                res.append((oid, neutral))
+
+        def _emit_progress(done: int, _total: int = 0) -> None:
             try:
                 self.signals.tool_progress.emit("Neutralize…", done, total)
             except Exception:
                 pass
+
+        if use_mp:
+            if self.is_smiles:
+                tasks = [(int(row[0]), str(row[1] or "")) for row in items]
+                mp_rows = run_prepare_tasks_parallel_ordered(
+                    tasks,
+                    _mp_neutralize_smiles_row,
+                    cancel_event=self.cancel_event,
+                    on_progress=_emit_progress,
+                )
+            else:
+                tasks = []
+                for row in items:
+                    payload = row[1]
+                    if isinstance(payload, bytes):
+                        blob = payload
+                    else:
+                        mol = payload
+                        if mol is None:
+                            continue
+                        try:
+                            blob = mol.ToBinary()
+                        except Exception:
+                            blob = None
+                    if blob:
+                        tasks.append((int(row[0]), blob))
+                mp_rows = run_prepare_tasks_parallel_ordered(
+                    tasks,
+                    _mp_neutralize_mol_row,
+                    cancel_event=self.cancel_event,
+                    on_progress=_emit_progress,
+                )
+            for oid, out_bytes in mp_rows:
+                mol = mol_from_bytes(out_bytes)
+                if mol is not None:
+                    res.append((oid, mol))
+            done_count = len(items)
+            cancelled = should_terminate_process_pool(self.cancel_event)
+        else:
+            for done, row in enumerate(items, start=1):
+                if should_terminate_process_pool(self.cancel_event):
+                    cancelled = True
+                    break
+                done_count = done
+                oid = row[0]
+                if self.is_smiles:
+                    raw = str(row[1] or "").strip()
+                    mol = parse_molecule_from_cell_text(raw) if raw else None
+                else:
+                    mol = _prepare_row_mol(row[1])
+                if mol is None:
+                    _emit_progress(done)
+                    continue
+                neutral = neutralize_mol(mol)
+                if neutral is not None:
+                    res.append((oid, neutral))
+                _emit_progress(done)
         emit_partial_results_if_cancelled(
             self.signals, "Neutralize", done_count, total, cancelled
         )
@@ -577,33 +708,75 @@ class AddExplicitHydrogensWorker(QRunnable):
     def run(self):
         items = list(self.mols_data)
         total = max(len(items), 1)
+        cfg = load_config()
+        min_rows = int(cfg.prepare_structures_process_pool_min_rows)
+        use_mp = should_use_prepare_structures_process_pool(total, min_rows=min_rows)
         res: list[tuple[int, object]] = []
         done_count = 0
         cancelled = False
-        for done, row in enumerate(items, start=1):
-            if self.cancel_event is not None and self.cancel_event.is_set():
-                cancelled = True
-                break
-            done_count = done
-            oid = row[0]
-            if self.is_smiles:
-                raw = str(row[1] or "").strip()
-                mol = parse_molecule_from_cell_text(raw) if raw else None
-            else:
-                mol = row[1]
-            if mol is None:
-                try:
-                    self.signals.tool_progress.emit("Add explicit hydrogens…", done, total)
-                except Exception:
-                    pass
-                continue
-            with_h = add_explicit_hydrogens(mol)
-            if with_h is not None:
-                res.append((oid, with_h))
+
+        def _emit_progress(done: int, _total: int = 0) -> None:
             try:
                 self.signals.tool_progress.emit("Add explicit hydrogens…", done, total)
             except Exception:
                 pass
+
+        if use_mp:
+            if self.is_smiles:
+                tasks = [(int(row[0]), str(row[1] or "")) for row in items]
+                mp_rows = run_prepare_tasks_parallel_ordered(
+                    tasks,
+                    _mp_add_explicit_h_smiles_row,
+                    cancel_event=self.cancel_event,
+                    on_progress=_emit_progress,
+                )
+            else:
+                tasks = []
+                for row in items:
+                    payload = row[1]
+                    if isinstance(payload, bytes):
+                        blob = payload
+                    else:
+                        mol = payload
+                        if mol is None:
+                            continue
+                        try:
+                            blob = mol.ToBinary()
+                        except Exception:
+                            blob = None
+                    if blob:
+                        tasks.append((int(row[0]), blob))
+                mp_rows = run_prepare_tasks_parallel_ordered(
+                    tasks,
+                    _mp_add_explicit_h_row,
+                    cancel_event=self.cancel_event,
+                    on_progress=_emit_progress,
+                )
+            for oid, out_bytes in mp_rows:
+                mol = mol_from_bytes(out_bytes)
+                if mol is not None:
+                    res.append((oid, mol))
+            done_count = len(items)
+            cancelled = should_terminate_process_pool(self.cancel_event)
+        else:
+            for done, row in enumerate(items, start=1):
+                if should_terminate_process_pool(self.cancel_event):
+                    cancelled = True
+                    break
+                done_count = done
+                oid = row[0]
+                if self.is_smiles:
+                    raw = str(row[1] or "").strip()
+                    mol = parse_molecule_from_cell_text(raw) if raw else None
+                else:
+                    mol = _prepare_row_mol(row[1])
+                if mol is None:
+                    _emit_progress(done)
+                    continue
+                with_h = add_explicit_hydrogens(mol)
+                if with_h is not None:
+                    res.append((oid, with_h))
+                _emit_progress(done)
         emit_partial_results_if_cancelled(
             self.signals, "Add explicit hydrogens", done_count, total, cancelled
         )

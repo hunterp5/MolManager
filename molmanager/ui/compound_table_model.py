@@ -237,6 +237,82 @@ class CompoundTableModel(QAbstractTableModel):
             self._rebuild_column_color_cache(header_name)
         return headers[limit_headers:]
 
+    def column_color_rule_headers(self) -> list[str]:
+        return list(self._column_color_rules.keys())
+
+    def rebuild_column_color_cache_rows(
+        self,
+        header_name: str,
+        row_lo: int,
+        row_hi: int,
+        *,
+        cmap: dict[int, int] | None = None,
+    ) -> dict[int, int]:
+        """Merge conditional-format cache entries for rows ``[row_lo, row_hi)``."""
+        rule = self._column_color_rules.get(header_name)
+        out = dict(cmap) if cmap is not None else {}
+        if rule is None:
+            return out
+        n = len(self._store)
+        lo = max(0, int(row_lo))
+        hi = min(n, int(row_hi))
+        for row in range(lo, hi):
+            oid = int(self._store.oid_at(row))
+            val = self._store.value_at(row, header_name, "")
+            rgb = self._color_rgb_for_value(rule, val)
+            if rgb is None:
+                out.pop(oid, None)
+            else:
+                out[oid] = rgb
+        return out
+
+    def finish_column_color_cache(self, header_name: str, cmap: dict[int, int]) -> None:
+        self._column_color_cache[header_name] = dict(cmap)
+
+    def bounds_data_headers(self) -> list[str]:
+        return self._sorted_bounds_data_headers()
+
+    def scan_numeric_column_chunk(
+        self,
+        header: str,
+        row_lo: int,
+        row_hi: int,
+        *,
+        acc: dict | None = None,
+    ) -> dict | None:
+        """Accumulate numeric min/max for rows ``[row_lo, row_hi)``."""
+        if header not in self._bounds_data_headers():
+            return acc
+        lo_v = acc.get("min") if acc else None
+        hi_v = acc.get("max") if acc else None
+        int_ok = bool(acc.get("is_int", True)) if acc else True
+        n = len(self._store)
+        lo_r = max(0, int(row_lo))
+        hi_r = min(n, int(row_hi))
+        for row in range(lo_r, hi_r):
+            f = safe_float(self._store.value_at(row, header, ""))
+            if f is None:
+                continue
+            fv = float(f)
+            if lo_v is None:
+                lo_v = hi_v = fv
+                int_ok = f.is_integer()
+            else:
+                if fv < lo_v:
+                    lo_v = fv
+                if fv > hi_v:
+                    hi_v = fv
+                if not f.is_integer():
+                    int_ok = False
+        if lo_v is None:
+            return None
+        return {"min": lo_v, "max": hi_v, "is_int": int_ok}
+
+    def commit_numeric_bounds_cache(self, cache: dict[str, dict]) -> None:
+        self._numeric_bounds_cache = dict(cache)
+        self._numeric_bounds_key = tuple(self._sorted_bounds_data_headers())
+        self._numeric_bounds_dirty_cols = set()
+
     def rebuild_column_color_cache_for_header(self, header_name: str) -> None:
         """Rebuild the conditional-format cache for a single column."""
         self._rebuild_column_color_cache(header_name)
@@ -711,6 +787,16 @@ class CompoundTableModel(QAbstractTableModel):
         if row < 0 or row >= len(self._store):
             return ""
         return (self._store.value_at(row, header_name, "") or "").strip()
+
+    def backing_value_for_oid(self, oid: int, header_name: str) -> str:
+        """Like ``backing_value_for_row_header`` but keyed by OID (avoids row-index lookup)."""
+        return (self._store.value_by_oid(int(oid), header_name, "") or "").strip()
+
+    def value_for_oid_header(self, oid: int, header_name: str) -> str:
+        """Cell text for a data column by OID."""
+        if header_name in self._pixmap_columns:
+            return ""
+        return (self._store.value_by_oid(int(oid), header_name, "") or "").strip()
 
     def structure_pixmap_copy(self, oid: int) -> QPixmap | None:
         """Detached copy of the main structure pixmap for this molecule id, if any."""

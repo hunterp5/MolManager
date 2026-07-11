@@ -171,61 +171,122 @@ class IngestRenderMixin:
         self.table.setSortingEnabled(False)
         self._ingest_loading = False
         self._structures_queued = 0
-        try:
-            self.table.setUpdatesEnabled(False)
-        except Exception:
-            pass
         self._table_stack.setCurrentIndex(1)
         self._import_progress_active = False
         self._clear_tool_progress(status_message=None)
         self._ingest_append_mode = False
         self._last_batch_received = False
         self._processing_batches = False
+        try:
+            self.table.setUpdatesEnabled(True)
+        except Exception:
+            pass
+        n = self._table_model.rowCount()
+        if n:
+            self.status_label.setText(f"Loaded {n:,} rows — finishing setup…")
         if "confs" in self.headers or "superpose" in self.headers:
             QTimer.singleShot(0, self._migrate_legacy_confs_cells_to_sidecar)
         QTimer.singleShot(0, self._deferred_post_ingest_follow_up)
 
     def _deferred_post_ingest_follow_up(self) -> None:
-        """Runs after the table is visible: bounds, column colors, then optional auto 2D render."""
+        """Runs after the table is visible: color caches, then bounds, then optional auto 2D render."""
+        self._begin_deferred_post_load_follow_up()
+
+    def _begin_deferred_post_load_follow_up(self) -> None:
+        """Shared post-load pipeline for file ingest and SQL load."""
+        headers = self._table_model.column_color_rule_headers()
         n_rows = self._table_model.rowCount()
         cfg = load_config()
         defer_rows = int(cfg.bulk_update_defer_color_cache_rows)
-        pending = self._table_model.rebuild_column_color_caches_after_bulk_load(
-            limit_headers=1 if defer_rows > 0 and n_rows >= defer_rows else None
-        )
-        if pending:
-            self._post_ingest_color_headers_pending = list(pending)
-            QTimer.singleShot(0, self._deferred_post_ingest_color_cache_step)
-        else:
-            self._finish_deferred_post_ingest_follow_up()
-
-    def _deferred_post_ingest_color_cache_step(self) -> None:
-        pending = list(getattr(self, "_post_ingest_color_headers_pending", []) or [])
-        if not pending:
-            self._finish_deferred_post_ingest_follow_up()
+        if headers and defer_rows > 0 and n_rows >= defer_rows:
+            self._post_load_color_ctx = {
+                "headers": headers,
+                "header_idx": 0,
+                "row": 0,
+                "cmap": {},
+            }
+            QTimer.singleShot(0, self._deferred_post_load_color_step)
             return
-        header = pending.pop(0)
-        self._table_model.rebuild_column_color_cache_for_header(header)
-        self._post_ingest_color_headers_pending = pending
-        if pending:
-            QTimer.singleShot(0, self._deferred_post_ingest_color_cache_step)
-        else:
-            self._finish_deferred_post_ingest_follow_up()
+        if headers:
+            self._table_model.rebuild_column_color_caches_after_bulk_load()
+        self._deferred_post_load_bounds_phase()
 
-    def _finish_deferred_post_ingest_follow_up(self) -> None:
-        self._post_ingest_color_headers_pending = []
-        self.schedule_calculate_global_bounds(delay_ms=500)
-        started_render = self._try_auto_render_all_structures_after_ingest()
-        try:
-            self.table.setUpdatesEnabled(True)
-        except Exception:
-            pass
+    def _deferred_post_load_color_step(self) -> None:
+        ctx = getattr(self, "_post_load_color_ctx", None)
+        if not ctx:
+            self._deferred_post_load_bounds_phase()
+            return
+        cfg = load_config()
+        chunk_rows = int(cfg.post_ingest_color_chunk_rows)
+        budget_s = max(0.005, int(cfg.ingest_gui_time_budget_ms) / 1000.0)
+        deadline = time.monotonic() + budget_s
+        headers = ctx["headers"]
+        header_idx = int(ctx["header_idx"])
+        if header_idx >= len(headers):
+            self._post_load_color_ctx = None
+            self._deferred_post_load_bounds_phase()
+            return
+        header = headers[header_idx]
+        row = int(ctx["row"])
+        n_rows = self._table_model.rowCount()
+        cmap = ctx["cmap"]
+        while row < n_rows and time.monotonic() < deadline:
+            end = min(n_rows, row + chunk_rows)
+            cmap = self._table_model.rebuild_column_color_cache_rows(header, row, end, cmap=cmap)
+            row = end
+        ctx["row"] = row
+        ctx["cmap"] = cmap
+        if row >= n_rows:
+            self._table_model.finish_column_color_cache(header, cmap)
+            ctx["header_idx"] = header_idx + 1
+            ctx["row"] = 0
+            ctx["cmap"] = {}
         app = QApplication.instance()
         if app is not None:
             app.processEvents(QEventLoop.ExcludeUserInputEvents)
+        QTimer.singleShot(0, self._deferred_post_load_color_step)
+
+    def _deferred_post_load_bounds_phase(self) -> None:
+        n_rows = self._table_model.rowCount()
+        cfg = load_config()
+        delay_ms = 200 if n_rows >= int(cfg.post_ingest_chunked_work_min_rows) else 500
+        self.schedule_calculate_global_bounds(delay_ms=delay_ms)
+        self._complete_deferred_post_load_follow_up()
+
+    def _complete_deferred_post_load_follow_up(self) -> None:
+        self._post_load_color_ctx = None
+        self._post_ingest_color_headers_pending = []
+        sql_meta = getattr(self, "_post_load_sql_meta", None)
+        self._post_load_sql_meta = None
+        smiles_loaded = True if sql_meta is None else bool(sql_meta[1])
+        started_render = smiles_loaded and self._try_auto_render_all_structures_after_ingest()
+        self._maybe_schedule_post_load_sqlite_index()
+        if sql_meta is not None:
+            nrows, smiles_loaded = sql_meta
+            if started_render:
+                self.status_label.setText(f"Loaded {nrows:,} row(s) from SQL — drawing 2D structures…")
+            elif smiles_loaded:
+                self.status_label.setText(loaded_sql_status(nrows))
+            else:
+                self.status_label.setText(f"Loaded {nrows:,} row(s) from SQL (no SMILES column).")
+            return
         if not started_render:
             n = self._table_model.rowCount()
             self.status_label.setText(STATUS_READY_RENDER_2D if n else "Ready.")
+
+    def _maybe_schedule_post_load_sqlite_index(self) -> None:
+        """Start chunked SQLite mirror rebuild after large ingest (filters/search pushdown)."""
+        store = getattr(self, "_sqlite_store", None)
+        if store is None or not getattr(self, "_sqlite_store_dirty", False):
+            return
+        if getattr(self, "_sqlite_rebuild_in_progress", False):
+            return
+        n_rows = self._table_model.rowCount()
+        if n_rows < 10_000:
+            return
+        schedule = getattr(self, "_schedule_sqlite_rebuild", None)
+        if callable(schedule):
+            schedule()
 
     def _rebuild_sqlite_store_from_model(self) -> None:
         """Synchronous rebuild (clear table, tests). Large tables use ``_schedule_sqlite_rebuild``."""

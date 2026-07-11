@@ -835,12 +835,7 @@ class TableUIMixin(TableSearchMixin, FilterPanelMixin):
 
     def _all_oids_in_table_order(self) -> list[int]:
         """Every row OID top-to-bottom (only rows with a numeric hidden id)."""
-        out: list[int] = []
-        for r in range(self._table_model.rowCount()):
-            t0 = self._table_model.cell_text(r, 0)
-            if t0.isdigit():
-                out.append(int(t0))
-        return out
+        return self._table_model.all_oids_in_order()
 
     def _row_cells_dict(self, row: int) -> dict[str, str]:
         out: dict[str, str] = {}

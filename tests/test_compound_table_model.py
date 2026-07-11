@@ -290,3 +290,33 @@ def test_clear_rows_resets_to_in_memory_store(model: CompoundTableModel, monkeyp
     model.clear_rows()
     assert isinstance(model._store, InMemoryRowStore)
     assert model.rowCount() == 0
+
+
+def test_chunked_color_cache_and_bounds_match_full_scan(model: CompoundTableModel):
+    for i in range(20):
+        model.append_row(i + 1, {"SMILES": "C", "MW": str(i * 2)})
+    model.set_column_color_numeric_gradient(
+        "MW",
+        min_value=0.0,
+        max_value=40.0,
+        low_color=QColor(255, 0, 0),
+        high_color=QColor(0, 0, 255),
+    )
+    model._column_color_cache["MW"] = {}
+    full = {}
+    model.rebuild_column_color_caches_after_bulk_load()
+    full = dict(model._column_color_cache["MW"])
+    partial: dict[int, int] = {}
+    row = 0
+    while row < model.rowCount():
+        partial = model.rebuild_column_color_cache_rows("MW", row, row + 7, cmap=partial)
+        row += 7
+    model.finish_column_color_cache("MW", partial)
+    assert model._column_color_cache["MW"] == full
+
+    acc = None
+    row = 0
+    while row < model.rowCount():
+        acc = model.scan_numeric_column_chunk("MW", row, row + 5, acc=acc)
+        row += 5
+    assert acc == model.numeric_bounds_for_header("MW")
