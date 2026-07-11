@@ -171,6 +171,9 @@ class ChemicalTableApp(
         self._partial_results_notice = None
         self._ingest_loading = False
         self._ingest_prep_before_reveal = False
+        self._ingest_sqlite_bulk_active = False
+        self._ingest_sqlite_paused_dirty = False
+        self._ingest_sqlite_bulk_headers = None
         self._structures_queued = 0
         self._import_progress_active = False
         self._import_render_done = 0
@@ -1040,6 +1043,8 @@ class ChemicalTableApp(
         model.layoutChanged.connect(lambda *_args: mark())
 
     def _mark_sqlite_store_dirty(self) -> None:
+        if getattr(self, "_ingest_sqlite_paused_dirty", False):
+            return
         if self._sqlite_store is None:
             return
         self._sqlite_store_dirty = True

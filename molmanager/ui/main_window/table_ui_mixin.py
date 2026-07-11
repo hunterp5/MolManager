@@ -1858,6 +1858,9 @@ class TableUIMixin(TableSearchMixin, FilterPanelMixin):
         self._processing_batches = False
         self._last_batch_received = False
         self._ingest_loading = False
+        self._ingest_sqlite_bulk_active = False
+        self._ingest_sqlite_paused_dirty = False
+        self._ingest_sqlite_bulk_headers = None
         if getattr(self, "_sqlite_store", None) is not None:
             try:
                 self._sqlite_rebuild_in_progress = True
