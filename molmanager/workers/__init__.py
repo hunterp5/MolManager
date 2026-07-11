@@ -70,12 +70,14 @@ from .rgroup_decomposition import RGroupDecompositionWorker
 from .signals import (
     BulkSimilaritySignals,
     DiverseSubsetSignals,
+    FilterApplySignals,
     FPSimilaritySignals,
     SqliteRebuildSignals,
     SubstructureFilterSignals,
     WorkerSignals,
 )
 from .sqlite_rebuild import SqliteRebuildWorker
+from .filter_apply import FilterApplyWorker
 from .substructure_filter import SubstructureFilterWorker
 
 __all__ = [
@@ -94,6 +96,8 @@ __all__ = [
     "DiverseSubsetWorker",
     "build_diverse_subset_pool",
     "ExportWorker",
+    "FilterApplySignals",
+    "FilterApplyWorker",
     "FragmentDecompositionWorker",
     "FragmentRecompositionWorker",
     "FPSimilaritySignals",

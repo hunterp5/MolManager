@@ -29,7 +29,7 @@ from ...config import load_config
 from ...performance import PerformanceTracker
 from ...tool_progress import ToolProgressState
 from ...storage import SqliteTableStore
-from ...workers import RenderWorker, SqliteRebuildSignals, SubstructureFilterSignals, WorkerSignals
+from ...workers import FilterApplySignals, RenderWorker, SqliteRebuildSignals, SubstructureFilterSignals, WorkerSignals
 from ..background_activity import BackgroundActivityHub
 from ..compound_table_model import (
     CompoundTableModel,
@@ -157,7 +157,13 @@ class ChemicalTableApp(
         self._substructure_filter_signals = SubstructureFilterSignals()
         self._substructure_filter_signals.finished.connect(self._on_substructure_filter_finished)
         self._substructure_filter_signals.failed.connect(self._on_substructure_filter_failed)
+        self._filter_apply_signals = FilterApplySignals()
+        self._filter_apply_signals.finished.connect(self._on_filter_apply_finished)
+        self._filter_apply_signals.failed.connect(self._on_filter_apply_failed)
         self._substructure_job_gen = 0
+        self._filter_job_gen = 0
+        self._filter_pending_substructure = None
+        self._filter_bg_job_id = None
         self._substructure_job_smarts = None
         self._substructure_target_mol_cache = {}
         self._partial_results_notice = None
@@ -174,6 +180,10 @@ class ChemicalTableApp(
         self._apply_filters_timer = QTimer(self)
         self._apply_filters_timer.setSingleShot(True)
         self._apply_filters_timer.timeout.connect(self._apply_filters_impl)
+        self._chunked_filter_timer = QTimer(self)
+        self._chunked_filter_timer.setSingleShot(True)
+        self._chunked_filter_timer.timeout.connect(self._chunked_filter_step)
+        self._chunked_filter_state = None
         self._bounds_recalc_timer = QTimer(self)
         self._bounds_recalc_timer.setSingleShot(True)
         self._bounds_recalc_timer.timeout.connect(self.calculate_global_bounds)

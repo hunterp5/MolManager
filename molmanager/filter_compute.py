@@ -1,0 +1,129 @@
+"""Filter OID computation helpers (no Qt)."""
+
+from __future__ import annotations
+
+import sqlite3
+from collections.abc import Callable
+from pathlib import Path
+
+from .ui.search_query import sqlite_text_match_clause
+
+
+def build_sqlite_where(
+    filter_specs: list[dict],
+    *,
+    headers: list[str],
+) -> tuple[str, tuple] | None:
+    """Build SQL WHERE clause for simple enabled filters; None when unsupported."""
+    header_set = set(headers)
+    where_parts: list[str] = []
+    args: list[object] = []
+    for spec in filter_specs:
+        kind = str(spec.get("kind") or "")
+        if kind == "substructure":
+            if spec.get("enabled", True):
+                return None
+            continue
+        if not spec.get("enabled", True):
+            continue
+        if kind == "category":
+            prop = str(spec.get("column") or "")
+            if not prop or prop not in header_set:
+                continue
+            checked = list(spec.get("values") or [])
+            qp = prop.replace('"', '""')
+            if not checked:
+                where_parts.append("0")
+            else:
+                placeholders = ", ".join(["?"] * len(checked))
+                where_parts.append(f'"{qp}" IN ({placeholders})')
+                args.extend(sorted(checked))
+            continue
+        if kind == "numeric":
+            prop = str(spec.get("column") or "")
+            if not prop or prop not in header_set:
+                continue
+            qp = prop.replace('"', '""')
+            lo = float(spec.get("min", 0.0))
+            hi = float(spec.get("max", 0.0))
+            if spec.get("inverted", False):
+                where_parts.append(f'(CAST("{qp}" AS REAL) < ? OR CAST("{qp}" AS REAL) > ?)')
+            else:
+                where_parts.append(f'(CAST("{qp}" AS REAL) >= ? AND CAST("{qp}" AS REAL) <= ?)')
+            args.extend([lo, hi])
+            continue
+        if kind == "text":
+            prop = str(spec.get("column") or "")
+            needle = str(spec.get("text", "") or "").strip()
+            if not prop or not needle:
+                continue
+            qp = prop.replace('"', '""')
+            expr, match_args = sqlite_text_match_clause(
+                qp,
+                needle,
+                partial=bool(spec.get("partial_match", True)),
+                case_sensitive=bool(spec.get("case_sensitive", False)),
+            )
+            if spec.get("inverted", False):
+                where_parts.append(f"(NOT ({expr}))")
+            else:
+                where_parts.append(f"({expr})")
+            args.extend(match_args)
+            continue
+        return None
+    if not where_parts:
+        return None
+    return " AND ".join(where_parts), tuple(args)
+
+
+def sqlite_count_matching(db_path: str | Path, where_sql: str, args: tuple) -> int:
+    uri = f"file:{Path(db_path).resolve()}?mode=ro"
+    conn = sqlite3.connect(uri, uri=True)
+    try:
+        row = conn.execute(
+            f"SELECT COUNT(*) AS c FROM table_rows WHERE {where_sql}",
+            args,
+        ).fetchone()
+        return int(row[0]) if row is not None else 0
+    finally:
+        conn.close()
+
+
+def fetch_matching_oids(
+    db_path: str | Path,
+    where_sql: str,
+    args: tuple,
+    *,
+    page_size: int = 5000,
+    progress_cb: Callable[[int, int], None] | None = None,
+) -> frozenset[int]:
+    """Fetch all OIDs matching ``where_sql`` using a read-only SQLite connection."""
+    uri = f"file:{Path(db_path).resolve()}?mode=ro"
+    conn = sqlite3.connect(uri, uri=True)
+    try:
+        total = int(
+            conn.execute(
+                f"SELECT COUNT(*) FROM table_rows WHERE {where_sql}",
+                args,
+            ).fetchone()[0]
+        )
+        page = max(1000, int(page_size))
+        out: set[int] = set()
+        offset = 0
+        while offset < total:
+            rows = conn.execute(
+                "SELECT oid FROM table_rows WHERE "
+                f"{where_sql} ORDER BY oid ASC LIMIT ? OFFSET ?",
+                args + (page, offset),
+            ).fetchall()
+            if not rows:
+                break
+            out.update(int(r[0]) for r in rows)
+            offset += len(rows)
+            if progress_cb is not None:
+                progress_cb(min(offset, total), max(1, total))
+        if progress_cb is not None and total == 0:
+            progress_cb(0, 1)
+        return frozenset(out)
+    finally:
+        conn.close()

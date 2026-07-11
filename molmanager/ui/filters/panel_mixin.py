@@ -9,8 +9,9 @@ from PyQt5.QtCore import QTimer
 from PyQt5.QtWidgets import QMessageBox
 
 from ...config import MolManagerConfig, load_config
+from ...filter_compute import build_sqlite_where, fetch_matching_oids
 from ...utils import mol_to_canonical_smiles, safe_float
-from ...workers import SubstructureFilterWorker
+from ...workers import FilterApplyWorker, SubstructureFilterWorker
 from ..background_jobs import register_background_job, unregister_background_job
 from .cards import CategoryFilterCard, FilterCard, SubstructureFilterCard, TextFilterCard
 
@@ -47,87 +48,77 @@ class FilterPanelMixin:
     def _filterable_data_column_names(self) -> list[str]:
         return [h for h in self.headers[2:] if h and not self._table_model.is_pixmap_data_column(h)]
 
-    def _sqlite_filter_matched_oids(self) -> frozenset[int] | None:
+    def _filter_specs_for_sqlite(self) -> list[dict]:
+        """Serializable filter specs for SQL pushdown (substructure cards may be present but disabled)."""
+        specs: list[dict] = []
+        for f in self.filters:
+            if isinstance(f, SubstructureFilterCard):
+                specs.append({"kind": "substructure", "enabled": f.filter_enabled()})
+                continue
+            if isinstance(f, CategoryFilterCard):
+                specs.append(
+                    {
+                        "kind": "category",
+                        "enabled": f.filter_enabled(),
+                        "column": f.column_name(),
+                        "values": sorted(f.checked_values()),
+                    }
+                )
+                continue
+            if isinstance(f, FilterCard):
+                cfg = f.get_cfg()
+                specs.append(
+                    {
+                        "kind": "numeric",
+                        "enabled": bool(cfg.get("enabled", True)),
+                        "column": cfg.get("p"),
+                        "min": float(cfg.get("min", 0.0)),
+                        "max": float(cfg.get("max", 0.0)),
+                        "inverted": bool(cfg.get("inverted", False)),
+                    }
+                )
+                continue
+            if isinstance(f, TextFilterCard):
+                cfg = f.get_cfg()
+                specs.append(
+                    {
+                        "kind": "text",
+                        "enabled": bool(cfg.get("enabled", True)),
+                        "column": cfg.get("p"),
+                        "text": str(cfg.get("text", "") or ""),
+                        "case_sensitive": bool(cfg.get("case_sensitive", False)),
+                        "partial_match": bool(cfg.get("partial_match", True)),
+                        "inverted": bool(cfg.get("inverted", False)),
+                    }
+                )
+                continue
+            specs.append({"kind": "unknown", "enabled": True})
+        return specs
+
+    def _sqlite_filter_where_clause(self) -> tuple[str, tuple] | None:
         """Try SQL pushdown for simple enabled filters; return None when unsupported."""
         ensure_sqlite = getattr(self, "_ensure_sqlite_store_current", None)
         if callable(ensure_sqlite) and not ensure_sqlite():
             return None
+        return build_sqlite_where(self._filter_specs_for_sqlite(), headers=self.headers)
+
+    def _sqlite_filter_matched_oids(self) -> frozenset[int] | None:
+        """Try SQL pushdown for simple enabled filters; return None when unsupported."""
+        where = self._sqlite_filter_where_clause()
+        if where is None:
+            return None
         store = getattr(self, "_sqlite_store", None)
         if store is None:
             return None
-        where_parts: list[str] = []
-        args: list[object] = []
-        for f in self.filters:
-            if isinstance(f, SubstructureFilterCard):
-                return None
-            if isinstance(f, CategoryFilterCard):
-                if not f.filter_enabled():
-                    continue
-                prop = f.column_name()
-                if not prop or prop not in self.headers:
-                    continue
-                checked = f.checked_values()
-                qp = str(prop).replace('"', '""')
-                if not checked:
-                    where_parts.append("0")
-                else:
-                    placeholders = ", ".join(["?"] * len(checked))
-                    where_parts.append(f'"{qp}" IN ({placeholders})')
-                    args.extend(sorted(checked))
-                continue
-            if isinstance(f, FilterCard):
-                cfg = f.get_cfg()
-                if not cfg.get("enabled", True):
-                    continue
-                prop = cfg.get("p")
-                if not prop or prop not in self.headers:
-                    continue
-                qp = str(prop).replace('"', '""')
-                lo = float(cfg.get("min", 0.0))
-                hi = float(cfg.get("max", 0.0))
-                if cfg.get("inverted", False):
-                    where_parts.append(f'(CAST("{qp}" AS REAL) < ? OR CAST("{qp}" AS REAL) > ?)')
-                else:
-                    where_parts.append(f'(CAST("{qp}" AS REAL) >= ? AND CAST("{qp}" AS REAL) <= ?)')
-                args.extend([lo, hi])
-                continue
-            if isinstance(f, TextFilterCard):
-                cfg = f.get_cfg()
-                if not cfg.get("enabled", True):
-                    continue
-                prop = cfg.get("p")
-                needle = str(cfg.get("text", "") or "").strip()
-                if not prop or not needle:
-                    continue
-                qp = str(prop).replace('"', '""')
-                case_sensitive = bool(cfg.get("case_sensitive", False))
-                partial = bool(cfg.get("partial_match", True))
-                inverted = bool(cfg.get("inverted", False))
-                from ..search_query import sqlite_text_match_clause
-
-                expr, match_args = sqlite_text_match_clause(
-                    qp, needle, partial=partial, case_sensitive=case_sensitive
-                )
-                where_parts.append(
-                    f"(NOT ({expr}))" if inverted else f"({expr})"
-                )
-                args.extend(match_args)
-                continue
-            return None
-        if not where_parts:
-            return None
-        where_sql = " AND ".join(where_parts)
-        total = store.count(where_sql=where_sql, args=tuple(args))
-        page = max(1000, int(getattr(load_config(), "sqlite_backend_page_size", 5000)))
-        out: set[int] = set()
-        offset = 0
-        while offset < total:
-            recs = store.fetch_page(limit=page, offset=offset, where_sql=where_sql, args=tuple(args), sort_by="oid")
-            if not recs:
-                break
-            out.update(int(oid) for oid, _ in recs)
-            offset += len(recs)
-        return frozenset(out)
+        where_sql, args = where
+        cfg = load_config()
+        page = max(1000, int(cfg.sqlite_backend_page_size))
+        return fetch_matching_oids(
+            store.db_path,
+            where_sql,
+            args,
+            page_size=page,
+        )
 
     def calculate_global_bounds(self) -> None:
         """Scan all numeric columns and refresh filter/plot axis bounds (synchronous)."""
@@ -177,6 +168,267 @@ class FilterPanelMixin:
         self._substructure_job_gen = int(getattr(self, "_substructure_job_gen", 0)) + 1
         self._substructure_job_smarts = None
 
+    def _invalidate_filter_jobs(self) -> None:
+        """Drop in-flight SQL/chunked filter jobs (completion handler will no-op)."""
+        self._filter_job_gen = int(getattr(self, "_filter_job_gen", 0)) + 1
+        self._filter_pending_substructure = None
+        timer = getattr(self, "_chunked_filter_timer", None)
+        if timer is not None:
+            timer.stop()
+        self._chunked_filter_state = None
+        self._unregister_filter_background_job()
+
+    def _unregister_filter_background_job(self, job_gen: int | None = None) -> None:
+        job_id = getattr(self, "_filter_bg_job_id", None)
+        if job_id is None:
+            return
+        if job_gen is not None and job_id != f"filter-{job_gen}":
+            return
+        unregister_background_job(self, job_id)
+        self._filter_bg_job_id = None
+
+    def _on_filter_apply_finished(self, job_gen: int, matched) -> None:
+        self._unregister_filter_background_job(job_gen)
+        if job_gen != getattr(self, "_filter_job_gen", 0):
+            return
+        finish = getattr(self, "_finish_tool_progress", None)
+        if callable(finish):
+            finish("Applying filters", status_message=None)
+        sub = getattr(self, "_filter_pending_substructure", None)
+        self._filter_pending_substructure = None
+        oids = matched if isinstance(matched, frozenset) else frozenset()
+        self._apply_filters_impl_sync(sub, sqlite_oids=oids)
+
+    def _on_filter_apply_failed(self, job_gen: int, msg: str) -> None:
+        self._unregister_filter_background_job(job_gen)
+        if job_gen != getattr(self, "_filter_job_gen", 0):
+            return
+        finish = getattr(self, "_finish_tool_progress", None)
+        if callable(finish):
+            finish("Applying filters", status_message=None)
+        logger.warning("Filter apply job failed: %s", msg)
+        pending = getattr(self, "_filter_pending_substructure", None)
+        self._filter_pending_substructure = None
+        self._start_chunked_filter_apply(pending)
+
+    def _start_async_sqlite_filter_apply(
+        self,
+        substructure_matches: tuple[str, frozenset] | None,
+    ) -> None:
+        where = self._sqlite_filter_where_clause()
+        store = getattr(self, "_sqlite_store", None)
+        if where is None or store is None:
+            self._start_chunked_filter_apply(substructure_matches)
+            return
+        where_sql, args = where
+        self._invalidate_filter_jobs()
+        gen = self._filter_job_gen
+        self._filter_pending_substructure = substructure_matches
+        n_rows = self._table_model.rowCount()
+        cfg = load_config()
+        sigs = getattr(self, "_filter_apply_signals", None)
+        if sigs is None:
+            self._apply_filters_impl_sync(substructure_matches)
+            return
+        job_id = f"filter-{gen}"
+        self._filter_bg_job_id = job_id
+        register_background_job(self, job_id, f"Applying filters ({n_rows:,} rows)")
+        begin = getattr(self, "_begin_tool_progress", None)
+        if callable(begin):
+            begin("Applying filters", n_rows)
+        worker_signals = getattr(self, "signals", None)
+        progress_state = getattr(self, "_tool_progress_state", None)
+        self.threadpool.start(
+            FilterApplyWorker(
+                gen,
+                str(store.db_path),
+                where_sql,
+                args,
+                max(1000, int(cfg.sqlite_backend_page_size)),
+                sigs,
+                progress_state=progress_state,
+                worker_signals=worker_signals,
+            )
+        )
+
+    def _start_chunked_filter_apply(
+        self,
+        substructure_matches: tuple[str, frozenset] | None,
+    ) -> None:
+        self._invalidate_filter_jobs()
+        gen = self._filter_job_gen
+        n_rows = self._table_model.rowCount()
+        cfg = load_config()
+        self._chunked_filter_state = {
+            "job_gen": gen,
+            "row": 0,
+            "n_rows": n_rows,
+            "visible_oids": set(),
+            "substructure_matches": substructure_matches,
+            "sqlite_oids": self._sqlite_filter_matched_oids(),
+        }
+        begin = getattr(self, "_begin_tool_progress", None)
+        if callable(begin):
+            begin("Applying filters", n_rows)
+        timer = getattr(self, "_chunked_filter_timer", None)
+        if timer is None:
+            self._apply_filters_impl_sync(substructure_matches)
+            return
+        timer.start(0)
+
+    def _chunked_filter_step(self) -> None:
+        state = getattr(self, "_chunked_filter_state", None)
+        if not state:
+            return
+        if state["job_gen"] != getattr(self, "_filter_job_gen", 0):
+            state.clear()
+            self._chunked_filter_state = None
+            return
+        cfg = load_config()
+        chunk = max(64, int(cfg.filter_chunk_rows))
+        n_rows = int(state["n_rows"])
+        start = int(state["row"])
+        end = min(n_rows, start + chunk)
+        override_smarts = None
+        override_oids = None
+        sub = state.get("substructure_matches")
+        if sub:
+            override_smarts, override_oids = sub[0], sub[1]
+        sqlite_oids = state.get("sqlite_oids")
+        h_map = {h: i for i, h in enumerate(self.headers)}
+        visible_oids: set[int] = state["visible_oids"]
+        for r in range(start, end):
+            hide = False
+            oid = self._table_model.row_oid(r)
+            if sqlite_oids is not None:
+                hide = oid not in sqlite_oids
+            for f in ([] if sqlite_oids is not None else self.filters):
+                if isinstance(f, SubstructureFilterCard):
+                    if not f.filter_enabled():
+                        continue
+                    inv = f.filter_inverted()
+                    if (
+                        override_smarts is not None
+                        and override_oids is not None
+                        and override_smarts == (f.smarts_edit.text() or "").strip()
+                    ):
+                        matched = oid in override_oids
+                        if inv:
+                            if matched:
+                                hide = True
+                                break
+                        elif not matched:
+                            hide = True
+                            break
+                        continue
+                    mol = self.mols.get(oid)
+                    matched = f.match_mol(mol)
+                    if inv:
+                        if matched:
+                            hide = True
+                            break
+                    elif not matched:
+                        hide = True
+                        break
+                    continue
+                if isinstance(f, TextFilterCard):
+                    if not f.filter_enabled():
+                        continue
+                    if not f.row_matches(r):
+                        hide = True
+                        break
+                    continue
+                if isinstance(f, CategoryFilterCard):
+                    if not f.filter_enabled():
+                        continue
+                    if not f.row_matches(r):
+                        hide = True
+                        break
+                    continue
+                if not isinstance(f, FilterCard):
+                    continue
+                fcfg = f.get_cfg()
+                if not fcfg.get("enabled", True):
+                    continue
+                prop = fcfg.get("p")
+                if not prop or prop not in h_map:
+                    continue
+                v = safe_float(self._table_model.value_for_header(r, prop))
+                if v is None:
+                    hide = True
+                    break
+                lo, hi = fcfg["min"], fcfg["max"]
+                inside = lo <= v <= hi
+                if fcfg.get("inverted", False):
+                    if inside:
+                        hide = True
+                        break
+                elif not inside:
+                    hide = True
+                    break
+            if not hide:
+                visible_oids.add(oid)
+        state["row"] = end
+        state["visible_oids"] = visible_oids
+        on_progress = getattr(self, "_on_tool_progress", None)
+        if callable(on_progress):
+            on_progress("Applying filters…", end, n_rows)
+        if end >= n_rows:
+            self._chunked_filter_state = None
+            finish = getattr(self, "_finish_tool_progress", None)
+            if callable(finish):
+                finish("Applying filters", status_message=None)
+            if sqlite_oids is not None and override_oids is not None and override_smarts is not None:
+                visible_oids = self._apply_substructure_override_to_visible(
+                    frozenset(sqlite_oids), override_smarts, override_oids
+                )
+            elif (
+                override_oids is not None
+                and override_smarts is not None
+                and sqlite_oids is None
+                and len([f for f in self.filters if f.filter_enabled()]) == 1
+            ):
+                for f in self.filters:
+                    if isinstance(f, SubstructureFilterCard) and f.filter_enabled():
+                        inv = f.filter_inverted()
+                        visible_oids = (
+                            {oid for oid in self.mols if oid not in override_oids}
+                            if inv
+                            else set(override_oids)
+                        )
+                        break
+            self._finalize_filter_apply(set(visible_oids), n_rows)
+            return
+        timer = getattr(self, "_chunked_filter_timer", None)
+        if timer is not None:
+            timer.start(0)
+
+    def _finalize_filter_apply(self, visible_oids: set[int], n_rows: int) -> None:
+        proxy = self._filter_proxy_model
+        table = getattr(self, "table", None)
+        if table is not None:
+            table.setUpdatesEnabled(False)
+        try:
+            proxy.set_visible_oids(frozenset(visible_oids))
+        finally:
+            if table is not None:
+                table.setUpdatesEnabled(True)
+        invalid_smarts_msg = None
+        for f in self.filters:
+            if isinstance(f, SubstructureFilterCard):
+                sm = (f.smarts_edit.text() or "").strip()
+                if sm and f._compiled_query() is None:
+                    invalid_smarts_msg = "Substructure filter: invalid SMARTS."
+                    break
+        vis = len(visible_oids)
+        if invalid_smarts_msg:
+            self.status_label.setText(invalid_smarts_msg)
+        else:
+            self.status_label.setText(f"Showing {vis} / {len(self.mols)} molecules")
+        schedule_replot = getattr(self, "_schedule_active_plots_replot", None)
+        if callable(schedule_replot):
+            schedule_replot()
+
     def _substructure_filter_targets(self) -> list[tuple[int, str]]:
         """(oid, SMILES text) per row — RDKit matching runs in ``SubstructureFilterWorker``."""
         targets: list[tuple[int, str]] = []
@@ -202,7 +454,7 @@ class FilterPanelMixin:
         dispatched = getattr(self, "_substructure_job_smarts", None) or ""
         ss_cards = [f for f in self.filters if isinstance(f, SubstructureFilterCard) and f.filter_enabled()]
         if len(ss_cards) != 1:
-            self._apply_filters_impl_sync(None)
+            self._route_filter_apply(None)
             return
         card = ss_cards[0]
         current = (card.smarts_edit.text() or "").strip()
@@ -210,7 +462,10 @@ class FilterPanelMixin:
             self.apply_filters()
             return
         oids = matched if isinstance(matched, frozenset) else frozenset()
-        self._apply_filters_impl_sync((dispatched, oids))
+        finish = getattr(self, "_finish_tool_progress", None)
+        if callable(finish):
+            finish("Filtering substructure", status_message=None)
+        self._route_filter_apply((dispatched, oids))
 
     def _on_substructure_filter_failed(self, job_gen: int, msg: str) -> None:
         self._unregister_substructure_background_job(job_gen)
@@ -218,7 +473,7 @@ class FilterPanelMixin:
             return
         logger.warning("Substructure filter job failed: %s", msg)
         self._invalidate_substructure_async_jobs()
-        self._apply_filters_impl_sync(None)
+        self._route_filter_apply(None)
 
     def _apply_substructure_override_to_visible(
         self,
@@ -237,7 +492,25 @@ class FilterPanelMixin:
             return {oid for oid in base if oid in override_oids}
         return set(base)
 
-    def _apply_filters_impl_sync(self, substructure_matches: tuple[str, frozenset] | None) -> None:
+    def _route_filter_apply(self, substructure_matches: tuple[str, frozenset] | None) -> None:
+        """Pick sync, async SQLite, or chunked apply based on table size and filter mix."""
+        cfg = load_config()
+        n_rows = self._table_model.rowCount()
+        if n_rows >= cfg.filter_async_min_rows:
+            where = self._sqlite_filter_where_clause()
+            if where is not None:
+                self._start_async_sqlite_filter_apply(substructure_matches)
+                return
+            self._start_chunked_filter_apply(substructure_matches)
+            return
+        self._apply_filters_impl_sync(substructure_matches)
+
+    def _apply_filters_impl_sync(
+        self,
+        substructure_matches: tuple[str, frozenset] | None,
+        *,
+        sqlite_oids: frozenset[int] | None = None,
+    ) -> None:
         """Apply all filters on the UI thread. If ``substructure_matches`` is ``(smarts, oids)``, use that for the matching SMARTS."""
         n_rows = self._table_model.rowCount()
         proxy = self._filter_proxy_model
@@ -254,7 +527,8 @@ class FilterPanelMixin:
 
         override_smarts = substructure_matches[0] if substructure_matches else None
         override_oids = substructure_matches[1] if substructure_matches else None
-        sqlite_oids = self._sqlite_filter_matched_oids()
+        if sqlite_oids is None:
+            sqlite_oids = self._sqlite_filter_matched_oids()
 
         h_map = {h: i for i, h in enumerate(self.headers)}
         vis = 0
@@ -361,24 +635,10 @@ class FilterPanelMixin:
                         if not hide:
                             visible_oids.add(oid)
                             vis += 1
-                proxy.set_visible_oids(frozenset(visible_oids))
         finally:
             if table is not None:
                 table.setUpdatesEnabled(True)
-        invalid_smarts_msg = None
-        for f in self.filters:
-            if isinstance(f, SubstructureFilterCard):
-                sm = (f.smarts_edit.text() or "").strip()
-                if sm and f._compiled_query() is None:
-                    invalid_smarts_msg = "Substructure filter: invalid SMARTS."
-                    break
-        if invalid_smarts_msg:
-            self.status_label.setText(invalid_smarts_msg)
-        else:
-            self.status_label.setText(f"Showing {vis} / {len(self.mols)} molecules")
-        schedule_replot = getattr(self, "_schedule_active_plots_replot", None)
-        if callable(schedule_replot):
-            schedule_replot()
+        self._finalize_filter_apply(visible_oids, n_rows)
 
     def _apply_filters_impl(self, cfg: MolManagerConfig | None = None) -> None:
         if cfg is None:
@@ -388,53 +648,58 @@ class FilterPanelMixin:
             ensure_sqlite = getattr(self, "_ensure_sqlite_store_current", None)
             if callable(ensure_sqlite) and not ensure_sqlite():
                 self._sqlite_rebuild_pending_filters = True
+                if n_rows >= cfg.filter_async_min_rows:
+                    self._invalidate_substructure_async_jobs()
+                    self._start_chunked_filter_apply(None)
+                    return
                 return
         if not self.filters:
             self._invalidate_substructure_async_jobs()
+            self._invalidate_filter_jobs()
             self._apply_filters_impl_sync(None)
             return
 
         ss_cards = [f for f in self.filters if isinstance(f, SubstructureFilterCard) and f.filter_enabled()]
         thresh = cfg.substructure_async_rows
 
-        if len(ss_cards) != 1:
-            self._invalidate_substructure_async_jobs()
-            self._apply_filters_impl_sync(None)
-            return
+        if len(ss_cards) == 1:
+            card = ss_cards[0]
+            smarts = (card.smarts_edit.text() or "").strip()
+            if smarts and n_rows >= thresh and card._compiled_query() is not None:
+                self._invalidate_filter_jobs()
+                self._substructure_job_gen = int(getattr(self, "_substructure_job_gen", 0)) + 1
+                gen = self._substructure_job_gen
+                self._substructure_job_smarts = smarts
+                perf = getattr(self, "_perf", None)
+                scope = perf.track if perf is not None else (lambda *_args, **_kwargs: nullcontext())
+                with scope("filters.substructure_targets"):
+                    targets = self._substructure_filter_targets()
+                sigs = getattr(self, "_substructure_filter_signals", None)
+                if sigs is None:
+                    self._route_filter_apply(None)
+                    return
+                job_id = f"substructure-{gen}"
+                self._substructure_bg_job_id = job_id
+                register_background_job(self, job_id, f"Substructure filter ({n_rows:,} rows)")
+                begin = getattr(self, "_begin_tool_progress", None)
+                if callable(begin):
+                    begin("Filtering substructure", n_rows)
+                worker_signals = getattr(self, "signals", None)
+                progress_state = getattr(self, "_tool_progress_state", None)
+                self.threadpool.start(
+                    SubstructureFilterWorker(
+                        gen,
+                        smarts,
+                        targets,
+                        sigs,
+                        progress_state=progress_state,
+                        worker_signals=worker_signals,
+                    )
+                )
+                return
 
-        card = ss_cards[0]
-        smarts = (card.smarts_edit.text() or "").strip()
-        if not smarts:
-            self._invalidate_substructure_async_jobs()
-            self._apply_filters_impl_sync(None)
-            return
-
-        if n_rows < thresh:
-            self._invalidate_substructure_async_jobs()
-            self._apply_filters_impl_sync(None)
-            return
-
-        if card._compiled_query() is None:
-            self._invalidate_substructure_async_jobs()
-            self._apply_filters_impl_sync(None)
-            return
-
-        self._substructure_job_gen = int(getattr(self, "_substructure_job_gen", 0)) + 1
-        gen = self._substructure_job_gen
-        self._substructure_job_smarts = smarts
-        perf = getattr(self, "_perf", None)
-        scope = perf.track if perf is not None else (lambda *_args, **_kwargs: nullcontext())
-        with scope("filters.substructure_targets"):
-            targets = self._substructure_filter_targets()
-        self.status_label.setText(f"Filtering substructure… ({n_rows} rows)")
-        sigs = getattr(self, "_substructure_filter_signals", None)
-        if sigs is None:
-            self._apply_filters_impl_sync(None)
-            return
-        job_id = f"substructure-{gen}"
-        self._substructure_bg_job_id = job_id
-        register_background_job(self, job_id, f"Substructure filter ({n_rows:,} rows)")
-        self.threadpool.start(SubstructureFilterWorker(gen, smarts, targets, sigs))
+        self._invalidate_substructure_async_jobs()
+        self._route_filter_apply(None)
 
     def add_filter_card(self, initial_property: str | None = None):
         if isinstance(initial_property, bool):

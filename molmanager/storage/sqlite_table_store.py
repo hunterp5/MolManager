@@ -27,6 +27,10 @@ class SqliteTableStore:
     def headers(self) -> list[str]:
         return list(self._headers)
 
+    @property
+    def db_path(self) -> Path:
+        return self._path
+
     def close(self) -> None:
         self._conn.close()
 
