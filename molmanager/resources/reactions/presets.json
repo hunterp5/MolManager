@@ -1,0 +1,137 @@
+{
+  "presets": [
+    {
+      "id": "suzuki",
+      "name": "Suzuki coupling",
+      "description": "Aryl halide + boronic acid or boronate ester → biaryl",
+      "smarts": "[c:1]-[Cl,Br,I:2].[c:3]-[B;$(B(O)O),$(B1OC(C)(C)C(C)(C)O1)]>>[c:1]-[c:3]",
+      "reactant_labels": ["Aryl halide", "Boronic acid / boronate ester"]
+    },
+    {
+      "id": "buchwald",
+      "name": "Buchwald–Hartwig amination",
+      "description": "Aryl halide + amine → C–N coupling product",
+      "smarts": "[c:1]-[Cl,Br,I:2].[N;H2,H1]>>[c:1]-[N]",
+      "reactant_labels": ["Aryl halide", "Amine"]
+    },
+    {
+      "id": "heck",
+      "name": "Heck coupling",
+      "description": "Aryl halide + alkene → substituted alkene",
+      "smarts": "[c:1]-[Cl,Br,I:2].[C:3]=[C:4]>>[c:1]-[C:3]=[C:4]",
+      "reactant_labels": ["Aryl halide", "Alkene"]
+    },
+    {
+      "id": "sonogashira",
+      "name": "Sonogashira coupling",
+      "description": "Aryl halide + terminal alkyne → aryl alkyne",
+      "smarts": "[c:1]-[Cl,Br,I:2].[C:3]#[CH:4]>>[c:1]-[C:3]#[CH:4]",
+      "reactant_labels": ["Aryl halide", "Terminal alkyne"]
+    },
+    {
+      "id": "stille",
+      "name": "Stille coupling",
+      "description": "Aryl halide + organostannane → biaryl",
+      "smarts": "[c:1]-[Cl,Br,I:2].[c:3]-[Sn](C)(C)C>>[c:1]-[c:3]",
+      "reactant_labels": ["Aryl halide", "Organostannane"]
+    },
+    {
+      "id": "negishi",
+      "name": "Negishi coupling",
+      "description": "Aryl halide + organozinc reagent → biaryl",
+      "smarts": "[c:1]-[Cl,Br,I:2].[c:3]-[Zn][Cl,Br,I]>>[c:1]-[c:3]",
+      "reactant_labels": ["Aryl halide", "Organozinc reagent"]
+    },
+    {
+      "id": "amide",
+      "name": "Amide coupling (carboxylic acid)",
+      "description": "Carboxylic acid + amine → amide",
+      "smarts": "[C:1](=[O:2])-[OH;D1].[N;H2,H1]>>[C:1](=[O:2])-[N]",
+      "reactant_labels": ["Carboxylic acid", "Amine"]
+    },
+    {
+      "id": "schotten_baumann",
+      "name": "Schotten–Baumann amide",
+      "description": "Acyl chloride + amine → amide",
+      "smarts": "[C:1](=[O:2])-[Cl].[N;H2,H1]>>[C:1](=[O:2])-[N]",
+      "reactant_labels": ["Acyl chloride", "Amine"]
+    },
+    {
+      "id": "esterification",
+      "name": "Esterification (acyl chloride)",
+      "description": "Acyl chloride + alcohol → ester",
+      "smarts": "[C:1](=[O:2])-[Cl].[O;H1]>>[C:3][O][C:1](=[O:2])",
+      "reactant_labels": ["Acyl chloride", "Alcohol"]
+    },
+    {
+      "id": "amine_alkylation",
+      "name": "Amine alkylation (SN2)",
+      "description": "Alkyl halide + amine → substituted amine",
+      "smarts": "[C:1]-[Cl,Br,I:2].[N;H2,H1]>>[C:1]-[N]",
+      "reactant_labels": ["Alkyl halide", "Amine"]
+    },
+    {
+      "id": "williamson",
+      "name": "Williamson ether synthesis",
+      "description": "Alkyl halide + alcohol → ether",
+      "smarts": "[C:1]-[Cl,Br,I:2].[O;H1]>>[C:2][O][C:1]",
+      "reactant_labels": ["Alkyl halide", "Alcohol"]
+    },
+    {
+      "id": "thioether",
+      "name": "Thioether formation",
+      "description": "Alkyl halide + thiol → thioether",
+      "smarts": "[C:1]-[Cl,Br,I:2].[S;H1]>>[C:3][S][C:1]",
+      "reactant_labels": ["Alkyl halide", "Thiol"]
+    },
+    {
+      "id": "reductive_amination",
+      "name": "Reductive amination",
+      "description": "Aldehyde/ketone + amine → amine product",
+      "smarts": "[C:1]=[O,N:2].[N;H2,H1]>>[C:1]-[N]",
+      "reactant_labels": ["Carbonyl", "Amine"]
+    },
+    {
+      "id": "michael",
+      "name": "Michael addition",
+      "description": "α,β-unsaturated carbonyl + amine → conjugate addition product",
+      "smarts": "[C:1]=[C:2]-[C:3]=[O:4].[N;H2,H1]>>[C:1]-[C:2]([N])-[C:3]=[O:4]",
+      "reactant_labels": ["α,β-Unsaturated carbonyl", "Amine"]
+    },
+    {
+      "id": "hydrazone",
+      "name": "Hydrazone formation",
+      "description": "Carbonyl + hydrazine → hydrazone",
+      "smarts": "[C:1]=[O:2].[N;H2,H1]-[N;H2,H1]>>[C:1]=[N]-[N]",
+      "reactant_labels": ["Carbonyl", "Hydrazine"]
+    },
+    {
+      "id": "sulfonamide",
+      "name": "Sulfonamide coupling",
+      "description": "Sulfonyl chloride + amine → sulfonamide",
+      "smarts": "[S:1](=[O:2])(=[O:3])-[Cl,Br].[N;H2,H1]>>[S:1](=[O:2])(=[O:3])-[N]",
+      "reactant_labels": ["Sulfonyl chloride", "Amine"]
+    },
+    {
+      "id": "friedel_crafts",
+      "name": "Friedel–Crafts acylation",
+      "description": "Aromatic + acyl halide → aryl ketone",
+      "smarts": "[c:1].[C:2](=[O:3])-[Cl,Br]>>[c:1]-[C:2]=[O:3]",
+      "reactant_labels": ["Aromatic", "Acyl halide"]
+    },
+    {
+      "id": "snar",
+      "name": "Nucleophilic aromatic substitution (SNAr)",
+      "description": "Activated aryl halide + amine → aniline derivative",
+      "smarts": "[c:1][F,Cl,Br,I:2].[N;H2,H1]>>[c:1]-[N]",
+      "reactant_labels": ["Activated aryl halide", "Amine"]
+    },
+    {
+      "id": "custom",
+      "name": "Custom reaction",
+      "description": "Enter your own two-reactant reaction SMARTS",
+      "smarts": "",
+      "reactant_labels": ["Reactant 1", "Reactant 2"]
+    }
+  ]
+}

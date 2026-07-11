@@ -150,6 +150,8 @@ class ChemicalTableApp(
         self.signals.fragment_decomp_failed.connect(self.on_fragment_decomp_failed, _qc)
         self.signals.fragment_recomp_finished.connect(self.on_fragment_recomp_finished, _qc)
         self.signals.fragment_recomp_failed.connect(self.on_fragment_recomp_failed, _qc)
+        self.signals.reaction_enum_finished.connect(self.on_reaction_enum_finished, _qc)
+        self.signals.reaction_enum_failed.connect(self.on_reaction_enum_failed, _qc)
         self.signals.cluster_failed.connect(self.on_cluster_failed, _qc)
         self.signals.cluster_explore_finished.connect(self.on_cluster_explore_finished, _qc)
         self.signals.export_finished.connect(self._on_export_finished_message, _qc)
@@ -839,6 +841,18 @@ class ChemicalTableApp(
             act = QAction(title, self, triggered=slot)
             act.setToolTip(tip)
             decomp_menu.addAction(act)
+
+        act_reaction_enum = QAction(
+            "Reaction Based Enumeration…",
+            self,
+            triggered=self.open_reaction_enumeration,
+        )
+        act_reaction_enum.setToolTip(
+            "Run a named reaction (Suzuki, Buchwald, amide coupling, etc.) across two reactant "
+            "pools from structure files or pasted SMILES, then append products to the table "
+            "and/or an SDF file."
+        )
+        tools.addAction(act_reaction_enum)
 
         tools.addSeparator()
         tools.addAction(self._act_custom_calc)

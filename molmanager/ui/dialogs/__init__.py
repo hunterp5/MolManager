@@ -32,6 +32,7 @@ from .protomer import ProtomerGeneratorDialog
 from .pdbqt_generator import PdbqtGeneratorDialog
 from .protonate import ProtonateDialog
 from .qsar import QSARDialog
+from .reaction_enumeration import ReactionEnumerationDialog
 from .render_2d import Render2DStructureDialog
 from .scope import selection_scope_checked
 
@@ -62,6 +63,7 @@ __all__ = [
     "PdbqtGeneratorDialog",
     "ProtonateDialog",
     "QSARDialog",
+    "ReactionEnumerationDialog",
     "Render2DStructureDialog",
     "SketchWidget",
     "SketcherDialog",
