@@ -225,6 +225,7 @@ class PrepareStructuresMixin:
             )
             self.status_label.setText("Ready.")
             return
+        n = len(rows)
         self._fast_prepare_ctx = {
             "prepare_col": prepare_col,
             "src": src,
@@ -392,7 +393,9 @@ class PrepareStructuresMixin:
             self._render2d_cancel_event,
             self._render2d_batch_session_tag,
         )
-        self._render_threadpool.start(Render2DBatchChunkRunner(worker, self))
+        self._render_threadpool.start(
+            Render2DBatchChunkRunner(worker, self._on_fast_prepare_render_chunk_done)
+        )
 
     @pyqtSlot()
     def _on_fast_prepare_render_chunk_done(self) -> None:
