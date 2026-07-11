@@ -57,6 +57,6 @@ def test_detect_fragment_column_prefixes():
 def test_recompose_brics_from_aspirin_fragments():
     mol = Chem.MolFromSmiles("CC(=O)Oc1ccccc1C(=O)O")
     frags = decompose_brics(mol)
-    products = recompose_fragments(frags, "brics", max_depth=2, max_products=50)
+    products, _skipped, _cancelled = recompose_fragments(frags, "brics", max_depth=2, max_products=50)
     assert len(products) >= 2
     assert any("c1ccccc1" in s for s in products)

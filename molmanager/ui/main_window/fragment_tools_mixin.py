@@ -317,7 +317,7 @@ class FragmentToolsMixin:
             return
         method = "brics" if p.method == "brics" else "recap"
         ps = self._tool_progress_state
-        self._begin_tool_progress(p.tool_title, 1)
+        self._begin_tool_progress(p.tool_title, p.max_products)
         self.process_queue.enqueue(
             f"{p.tool_title} ({len(fragments)} fragments)",
             lambda ev, fr=fragments, pp=p, m=method, sigs=self.signals, prog=ps: FragmentRecompositionWorker(
@@ -333,7 +333,7 @@ class FragmentToolsMixin:
             ),
         )
 
-    def on_fragment_recomp_finished(self, products: list, tool_title: str, filtered_out: int = 0) -> None:
+    def on_fragment_recomp_finished(self, products: list, tool_title: str, skipped: int = 0) -> None:
         self._finish_tool_progress(tool_title)
         method_label = "BRICS" if "BRICS" in tool_title.upper() else "RECAP"
         records = [
@@ -341,14 +341,16 @@ class FragmentToolsMixin:
         ]
         n = self.add_rows_from_external_records_batch(records, render_structures=True)
         suffix = ""
-        if filtered_out > 0:
-            suffix = f" ({filtered_out:,} product(s) filtered out)"
-        self.status_label.setText(
-            self._consume_partial_results_notice()
-            or f"{tool_title}: added {n:,} product row(s){suffix}."
-        )
+        if skipped > 0:
+            suffix = f" ({skipped:,} assembly candidate(s) skipped by constraints)"
+        if getattr(self, "_partial_results_notice", None):
+            return
+        self.status_label.setText(f"{tool_title}: added {n:,} product row(s){suffix}.")
 
     def on_fragment_recomp_failed(self, message: str, tool_title: str) -> None:
-        self._clear_tool_progress()
+        if message == "Cancelled.":
+            self._finish_tool_progress(tool_title)
+            self.status_label.setText(self._consume_partial_results_notice() or "Cancelled.")
+            return
         self.status_label.setText("Ready.")
         QMessageBox.warning(self, tool_title, message or "Fragment recomposition failed.")

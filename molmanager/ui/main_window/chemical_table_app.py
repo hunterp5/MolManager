@@ -241,7 +241,6 @@ class ChemicalTableApp(
         self._render2d_queue_payload = None
         self._render2d_queue_cancel_event = None
         self._ingest_append_mode = False
-        self._structure_column_autosize_after_render_oid = None
         self.process_queue = ProcessQueueManager(self)
         self._background_jobs: dict[str, str] = {}
         self.background_activity = BackgroundActivityHub(self)

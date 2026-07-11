@@ -97,6 +97,8 @@ class MolManagerConfig:
     table_selection_chunk_rows: int
     table_delete_batch_min: int
     table_delete_chunk_rows: int
+    recomp_constraint_candidate_multiplier: int
+    recomp_constraint_min_candidates: int
 
 
 def _migrate_chemmanager_env_aliases() -> None:
@@ -194,5 +196,11 @@ def load_config() -> MolManagerConfig:
         ),
         table_delete_chunk_rows=_env_int(
             "MOLMANAGER_TABLE_DELETE_CHUNK_ROWS", 2000, lo=64, hi=100_000
+        ),
+        recomp_constraint_candidate_multiplier=_env_int(
+            "MOLMANAGER_RECOMP_CONSTRAINT_CANDIDATE_MULT", 100, lo=10, hi=10_000
+        ),
+        recomp_constraint_min_candidates=_env_int(
+            "MOLMANAGER_RECOMP_CONSTRAINT_MIN_CANDIDATES", 10_000, lo=1000, hi=10_000_000
         ),
     )
