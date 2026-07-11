@@ -2,9 +2,6 @@ from __future__ import annotations
 
 import sqlite3
 
-from PyQt5.QtCore import QEventLoop
-from PyQt5.QtWidgets import QApplication
-
 from molmanager.ui.main_window import ChemicalTableApp
 
 
@@ -29,12 +26,5 @@ def test_load_from_sql_streaming_sqlite(tmp_path, qapp):  # noqa: ARG001
     assert "SMILES" in w.headers
     assert w._table_model.value_for_header(0, "Note") == "alpha"
     assert w._table_model.value_for_header(1, "Note") == "beta"
-
-    app = QApplication.instance()
-    if app is not None:
-        app.processEvents(QEventLoop.AllEvents, 2000)
-    w.process_queue.shutdown_for_exit()
-    w.threadpool.waitForDone(1000)
-    w._render_threadpool.waitForDone(1000)
     w.close()
 

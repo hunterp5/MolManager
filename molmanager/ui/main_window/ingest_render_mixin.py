@@ -508,10 +508,7 @@ class IngestRenderMixin:
             )
             if lazy_structure:
                 cfg = load_config()
-                store = StructureRenderStore(
-                    max_decoded_pixmaps=cfg.structure_render_pixmap_lru,
-                    max_png_ram_rows=cfg.structure_render_png_ram_rows,
-                )
+                store = StructureRenderStore(max_decoded_pixmaps=cfg.structure_render_pixmap_lru)
                 png_items: list[tuple[int, bytes]] = []
                 for oid in ordered:
                     rec = pending.get(oid)
