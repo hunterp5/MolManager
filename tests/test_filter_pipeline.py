@@ -165,6 +165,29 @@ def test_substructure_invalid_smarts_sets_status(qapp):  # noqa: ARG001
     assert "invalid" in w.status_label.text().lower()
 
 
+def test_async_sqlite_filter_apply_hides_rows(qapp, monkeypatch, tmp_path):  # noqa: ARG001
+    monkeypatch.setenv("MOLMANAGER_FILTER_ASYNC_MIN_ROWS", "2")
+    w = ChemicalTableApp()
+    w.headers = ["ID_HIDDEN", "Structure", "SMILES", "MW"]
+    w._table_model.set_headers(list(w.headers))
+    for i, mw in enumerate(("10", "50", "30")):
+        w._table_model.append_row(i, {"SMILES": "C" * (i + 1), "MW": mw})
+        w.mols[i] = Chem.MolFromSmiles("C" * (i + 1))
+    w.next_oid = 3
+    w.calculate_global_bounds()
+    w._rebuild_sqlite_store_from_model()
+    w._sqlite_store_dirty = False
+    card = FilterCard(list(w.global_bounds.keys()), w, initial_property="MW")
+    card.restore_state("MW", 5.0, 25.0)
+    w.filters = [card]
+    w._apply_filters_impl()
+    assert w.threadpool.waitForDone(120_000)
+    qapp.processEvents()
+    assert _src_row_visible(w, 0) is True
+    assert _src_row_visible(w, 1) is False
+    assert _src_row_visible(w, 2) is False
+
+
 def test_substructure_async_handoff_hides_rows(qapp, monkeypatch):  # noqa: ARG001
     monkeypatch.setenv("MOLMANAGER_SUBSTRUCTURE_ASYNC_ROWS", "64")
     w = ChemicalTableApp()

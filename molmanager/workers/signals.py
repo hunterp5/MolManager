@@ -89,6 +89,13 @@ class SubstructureFilterSignals(QObject):
     failed = pyqtSignal(int, str)  # job_gen, message
 
 
+class FilterApplySignals(QObject):
+    """Completion signals for :class:`FilterApplyWorker` (owned by the main window)."""
+
+    finished = pyqtSignal(int, object)  # job_gen, frozenset[int] of matched oids
+    failed = pyqtSignal(int, str)  # job_gen, message
+
+
 class SqliteRebuildSignals(QObject):
     """Completion signals for :class:`SqliteRebuildWorker` (owned by the main window)."""
 

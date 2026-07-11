@@ -80,6 +80,8 @@ class MolManagerConfig:
     filter_debounce_substructure_ms: int
     filter_debounce_default_rows: int
     filter_debounce_default_ms: int
+    filter_async_min_rows: int
+    filter_chunk_rows: int
     ingest_gui_chunk_size: int
     ingest_gui_time_budget_ms: int
     ingest_worker_batch_size: int
@@ -155,6 +157,12 @@ def load_config() -> MolManagerConfig:
         ),
         filter_debounce_default_ms=_env_int(
             "MOLMANAGER_FILTER_DEBOUNCE_DEFAULT_MS", 80, lo=0, hi=60_000
+        ),
+        filter_async_min_rows=_env_int(
+            "MOLMANAGER_FILTER_ASYNC_MIN_ROWS", 5000, lo=1, hi=10_000_000
+        ),
+        filter_chunk_rows=_env_int(
+            "MOLMANAGER_FILTER_CHUNK_ROWS", 2000, lo=64, hi=100_000
         ),
         ingest_gui_chunk_size=_env_int("MOLMANAGER_INGEST_GUI_CHUNK", 256, lo=16, hi=10_000),
         ingest_gui_time_budget_ms=_env_int("MOLMANAGER_INGEST_GUI_TIME_MS", 25, lo=5, hi=200),
