@@ -395,11 +395,11 @@ class TableSearchMixin:
                 result &= row_sets[i]
         return result
 
-    def _select_table_rows(self, rows: list[int], *, allow_hidden: bool = False) -> bool:
+    def _select_table_rows(self, rows: list[int]) -> bool:
         """Select *rows* in the table view; return False if nothing selected."""
         if not rows:
             return False
-        n = self.select_table_rows(rows, allow_hidden=allow_hidden)
+        n = self.select_table_rows(rows)
         if n <= 0:
             return False
         view_rows = self._source_rows_to_view_rows(sorted({int(r) for r in rows}))
@@ -452,6 +452,7 @@ class TableSearchMixin:
                 )
 
         combined = sorted(self._combine_search_row_sets(specs, row_sets))
+        visible_combined = [r for r in combined if self._is_source_row_visible(r)]
         sm = self.table.selectionModel()
         self._in_programmatic_table_selection = True
         try:
@@ -462,7 +463,10 @@ class TableSearchMixin:
         if not combined:
             self.status_label.setText("Search: no matches.")
             return
-        if not self._select_table_rows(combined, allow_hidden=True):
+        if not visible_combined:
+            self.status_label.setText("Search: no visible matches.")
+            return
+        if not self._select_table_rows(visible_combined):
             self.status_label.setText("Search: no visible matches.")
             return
 
@@ -475,5 +479,5 @@ class TableSearchMixin:
         else:
             glue_note = ""
         self.status_label.setText(
-            f"Search: {len(combined)} matching row(s) selected{glue_note}."
+            f"Search: {len(visible_combined)} matching row(s) selected{glue_note}."
         )
