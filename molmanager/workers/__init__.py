@@ -49,12 +49,10 @@ from .fingerprint_similarity import (
     SIMILARITY_METRIC_LABELS,
     pairwise_fingerprint_similarity,
 )
-from .fast_prepare import FastPrepareWorker
 from .load_render import (
     AddExplicitHydrogensWorker,
     NeutralizeWorker,
     RemoveExplicitHydrogensWorker,
-    Render2DBatchChunkRunner,
     Render2DBatchHeldJob,
     Render2DBatchProcessWorker,
     RenderWorker,
@@ -99,7 +97,6 @@ __all__ = [
     "DiverseSubsetWorker",
     "build_diverse_subset_pool",
     "ExportWorker",
-    "FastPrepareWorker",
     "FilterApplySignals",
     "FilterApplyWorker",
     "FragmentDecompositionWorker",
@@ -115,7 +112,6 @@ __all__ = [
     "PermeabilityPredictorWorker",
     "ProtomerGeneratorSignals",
     "ProtomerGeneratorWorker",
-    "Render2DBatchChunkRunner",
     "Render2DBatchHeldJob",
     "Render2DBatchProcessWorker",
     "RenderWorker",

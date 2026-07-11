@@ -13,7 +13,7 @@ def structure_cairo_dimensions(target_w: int, target_h: int) -> tuple[int, int]:
     return int(target_w), int(target_h)
 
 
-def _apply_table_draw_options(drawer: rdMolDraw2D.MolDraw2DCairo, target_w: int) -> None:
+def configure_mol_drawer(drawer: rdMolDraw2D.MolDraw2D, target_w: int) -> None:
     """Thinner bonds at table resolution; scale stroke with zoomed (2×) depictions."""
     opts = drawer.drawOptions()
     base_w = max(1.0, float(STRUCTURE_DEPICT_WIDTH))
@@ -21,11 +21,15 @@ def _apply_table_draw_options(drawer: rdMolDraw2D.MolDraw2DCairo, target_w: int)
     opts.bondLineWidth = float(STRUCTURE_DEPICT_BOND_LINE_WIDTH) * ratio
 
 
+def _apply_table_draw_options(drawer: rdMolDraw2D.MolDraw2DCairo, target_w: int) -> None:
+    configure_mol_drawer(drawer, target_w)
+
+
 def render_molecule_png(mol: Chem.Mol, target_w: int, target_h: int) -> bytes:
     """Draw *mol* to PNG bytes at the requested table / zoom size."""
     cw, ch = structure_cairo_dimensions(target_w, target_h)
     drawer = rdMolDraw2D.MolDraw2DCairo(int(cw), int(ch))
-    _apply_table_draw_options(drawer, int(cw))
+    configure_mol_drawer(drawer, int(cw))
     rdMolDraw2D.PrepareAndDrawMolecule(drawer, mol)
     drawer.FinishDrawing()
     return drawer.GetDrawingText()

@@ -534,33 +534,10 @@ class SketchWidgetEventsMixin:
 
     def keyPressEvent(self, ev):
         if ev.key() in (Qt.Key_Delete, Qt.Key_Backspace):
-            if self.select_mode and (self.selected_nodes or self.selected_bond_indices):
-                self._delete_selected_atoms_and_bonds()
-                return
-            if isinstance(self.hover, int):
-                nid = self.hover
-                node = next((n for n in self.nodes if n["id"] == nid), None)
-                if node is not None:
-                    conn = [b for b in self.bonds if b[0] == nid or b[1] == nid]
-                    self._push_undo("del_node", (node, conn))
-                self._delete_node(nid)
-                self.hover = None
-                return
-            if isinstance(self.hover, tuple) and self.hover[0] == "bond":
-                bi = self.hover[1]
-                if 0 <= bi < len(self.bonds):
-                    b = self.bonds.pop(bi)
-                    self._push_undo("del_bond", b)
-                    self.hover = None
-                    self._after_sketch_edit(notify=True, notify_if_valence_failed=True)
+            if self._sketcher_dialog_if() is None:
+                if self._handle_delete_key():
+                    ev.accept()
                     return
-            if self.sel is not None:
-                node = next((n for n in self.nodes if n["id"] == self.sel), None)
-                if node is not None:
-                    conn = [b for b in self.bonds if b[0] == self.sel or b[1] == self.sel]
-                    self._push_undo("del_node", (node, conn))
-                self._delete_node(self.sel)
-                return
 
         try:
             if isinstance(self.hover, int):

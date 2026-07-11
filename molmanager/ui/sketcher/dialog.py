@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import re
 
-from PyQt5.QtCore import QPoint, Qt, QTimer
+from PyQt5.QtCore import QEvent, QPoint, Qt, QTimer
 from PyQt5.QtGui import QCursor, QFont, QKeySequence
 from PyQt5.QtWidgets import (
     QAction,
@@ -347,7 +347,72 @@ class SketcherDialog(QDialog):
         sc_paste_sel = QShortcut(QKeySequence.Paste, self)
         sc_paste_sel.setContext(Qt.WindowShortcut)
         sc_paste_sel.activated.connect(self._shortcut_paste_selection)
+        self._parent_delete_action = None
+        self._parent_delete_was_enabled = False
+        self._sketch_key_filters_installed = False
         make_window_minimizable(self)
+
+    @staticmethod
+    def _is_sketch_delete_key(event) -> bool:
+        if event.key() not in (Qt.Key_Delete, Qt.Key_Backspace):
+            return False
+        mods = event.modifiers()
+        return not (mods & (Qt.ControlModifier | Qt.AltModifier | Qt.MetaModifier))
+
+    def _resolve_parent_delete_action(self):
+        if self._parent_delete_action is not None:
+            return self._parent_delete_action
+        parent = self.parent()
+        if parent is not None and hasattr(parent, "_hotkey_actions"):
+            self._parent_delete_action = parent._hotkey_actions.get("edit.delete_selection")
+        return self._parent_delete_action
+
+    def _set_parent_delete_action_blocked(self, blocked: bool) -> None:
+        act = self._resolve_parent_delete_action()
+        if act is None:
+            return
+        if blocked:
+            if act.isEnabled():
+                self._parent_delete_was_enabled = True
+                act.setEnabled(False)
+        elif self._parent_delete_was_enabled:
+            act.setEnabled(True)
+            self._parent_delete_was_enabled = False
+
+    def _install_sketch_key_filters(self) -> None:
+        if self._sketch_key_filters_installed:
+            return
+        for widget in (self, *self.findChildren(QWidget)):
+            widget.installEventFilter(self)
+        self._sketch_key_filters_installed = True
+
+    def _remove_sketch_key_filters(self) -> None:
+        if not self._sketch_key_filters_installed:
+            return
+        for widget in (self, *self.findChildren(QWidget)):
+            widget.removeEventFilter(self)
+        self._sketch_key_filters_installed = False
+
+    def eventFilter(self, obj, event) -> bool:  # noqa: ARG002
+        if not self.isVisible():
+            return False
+        if event.type() == QEvent.ShortcutOverride and self._is_sketch_delete_key(event):
+            event.accept()
+            return False
+        if event.type() == QEvent.KeyPress and self._is_sketch_delete_key(event):
+            self.canvas._handle_delete_key()
+            return True
+        return False
+
+    def showEvent(self, event) -> None:
+        super().showEvent(event)
+        self._set_parent_delete_action_blocked(True)
+        self._install_sketch_key_filters()
+
+    def hideEvent(self, event) -> None:
+        self._set_parent_delete_action_blocked(False)
+        self._remove_sketch_key_filters()
+        super().hideEvent(event)
 
     def _sync_mode_menu_checks(self) -> None:
         if not getattr(self, "_act_mode_erase", None):
@@ -905,5 +970,7 @@ class SketcherDialog(QDialog):
         self._update_sketch_status()
 
     def closeEvent(self, event):
+        self._set_parent_delete_action_blocked(False)
+        self._remove_sketch_key_filters()
         event.accept()
 

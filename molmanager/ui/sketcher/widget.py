@@ -112,6 +112,8 @@ class SketchWidget(SketchWidgetEventsMixin, SketchWidgetPaintMixin, SketchWidget
         self.radius = 14
         self._median_bond_length_px = float(SKETCH_MEDIAN_BOND_PX)
         self._view_scale = 1.0
+        self._rdkit_sketch_paint_cache_key = None
+        self._rdkit_sketch_paint_cache = None
         self._valence_violations: set[int] = set()
         self._charge_violations: set[int] = set()
 
@@ -270,6 +272,54 @@ class SketchWidget(SketchWidgetEventsMixin, SketchWidgetPaintMixin, SketchWidget
         self.selected_bond_indices = set()
         self.hover = None
         self._after_sketch_edit(notify=True, notify_if_valence_failed=True)
+
+    def _try_delete_hover_target(self, *, refresh_hover: bool = True) -> bool:
+        """Delete the atom or bond under the cursor, if any."""
+        if refresh_hover:
+            try:
+                local = self.mapFromGlobal(QCursor.pos())
+                if self.rect().contains(local):
+                    self._refresh_hover_from_cursor()
+            except Exception:
+                pass
+        if isinstance(self.hover, int):
+            nid = int(self.hover)
+            node = next((n for n in self.nodes if n["id"] == nid), None)
+            if node is None:
+                return False
+            conn = [b for b in self.bonds if b[0] == nid or b[1] == nid]
+            self._push_undo("del_node", (node, conn))
+            self._delete_node(nid)
+            self.hover = None
+            return True
+        if isinstance(self.hover, tuple) and self.hover[0] == "bond":
+            try:
+                bi = int(self.hover[1])
+            except (TypeError, ValueError):
+                return False
+            if 0 <= bi < len(self.bonds):
+                b = self.bonds.pop(bi)
+                self._push_undo("del_bond", b)
+                self.hover = None
+                self._after_sketch_edit(notify=True, notify_if_valence_failed=True)
+                return True
+        return False
+
+    def _handle_delete_key(self) -> bool:
+        """Delete hover target first, else selection fallback. Returns True when handled."""
+        if self._try_delete_hover_target():
+            return True
+        if self.select_mode and (self.selected_nodes or self.selected_bond_indices):
+            self._delete_selected_atoms_and_bonds()
+            return True
+        if self.sel is not None:
+            node = next((n for n in self.nodes if n["id"] == self.sel), None)
+            if node is not None:
+                conn = [b for b in self.bonds if b[0] == self.sel or b[1] == self.sel]
+                self._push_undo("del_node", (node, conn))
+            self._delete_node(self.sel)
+            return True
+        return False
 
     @staticmethod
     def _formal_charge(node: dict[str, Any]) -> int:
@@ -583,6 +633,7 @@ class SketchWidget(SketchWidgetEventsMixin, SketchWidgetPaintMixin, SketchWidget
         that must still emit ``sketch_changed`` (for example bulk delete) set
         ``notify_if_valence_failed=True``.
         """
+        self._invalidate_rdkit_sketch_paint_cache()
         if valence:
             try:
                 self._recompute_valence_violations(notify=notify)
