@@ -240,7 +240,7 @@ class SessionMixin:
         self.global_bounds = {}
         rows = doc.get("rows") or []
         max_id = -1
-        chunk = 128
+        chunk = max(128, int(load_config().ingest_gui_chunk_size))
         if len(rows) <= chunk:
             batch_rows: list[tuple[int, dict[str, str]]] = []
             try:

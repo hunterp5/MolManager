@@ -19,6 +19,7 @@ from rdkit.Chem.Draw import rdMolDraw2D
 
 from ..display_constants import STRUCTURE_DEPICT_HEIGHT, STRUCTURE_DEPICT_WIDTH
 from ..import_structure import needs_structure_source_picker
+from ..ingest_cells import prepare_mol_row
 from ..fragment_disconnect import largest_fragment_and_rest
 from ..structure_neutralize import neutralize_mol
 from ..structure_hydrogens import add_explicit_hydrogens
@@ -168,11 +169,32 @@ class UniversalLoadWorker(QRunnable):
         batch_size=400,
         cancel_event: threading.Event | None = None,
         structure_choice_event: threading.Event | None = None,
+        structure_override_holder: list | None = None,
     ):
         super().__init__()
         self.path, self.signals, self.batch_size = path, signals, batch_size
         self.cancel_event = cancel_event
         self.structure_choice_event = structure_choice_event
+        self._structure_override_holder = structure_override_holder
+
+    def _structure_field(self) -> str | None:
+        holder = self._structure_override_holder
+        if not holder:
+            return None
+        try:
+            field = holder[0]
+        except (IndexError, TypeError):
+            return None
+        return field if isinstance(field, str) and field.strip() else None
+
+    def _emit_batch(self, batch: list, headers: list[str], first_emit: bool, is_last: bool) -> None:
+        data_headers = headers[2:] if len(headers) > 2 else []
+        field = self._structure_field()
+        payload: list[tuple] = []
+        for mol in batch:
+            mol_out, cells = prepare_mol_row(mol, data_headers, field)
+            payload.append((mol_out, cells))
+        self.signals.mols_loaded.emit(payload, headers if first_emit else [], first_emit, is_last)
 
     def _cancelled(self) -> bool:
         return self.cancel_event is not None and self.cancel_event.is_set()
@@ -219,7 +241,7 @@ class UniversalLoadWorker(QRunnable):
                                 break
                         batch.append(mol)
                         if len(batch) >= batch_size:
-                            self.signals.mols_loaded.emit(batch, headers if first_emit else [], first_emit, False)
+                            self._emit_batch(batch, headers, first_emit, False)
                             first_emit = False
                             batch = []
             elif ext in [".smi", ".txt", ".csv"]:
@@ -249,7 +271,7 @@ class UniversalLoadWorker(QRunnable):
                                     m.SetProp(h, str(row[h]))
                             batch.append(m)
                             if len(batch) >= batch_size:
-                                self.signals.mols_loaded.emit(batch, headers if first_emit else [], first_emit, False)
+                                self._emit_batch(batch, headers, first_emit, False)
                                 first_emit = False
                                 batch = []
             elif ext == ".tdt":
@@ -264,7 +286,7 @@ class UniversalLoadWorker(QRunnable):
                                 break
                         batch.append(mol)
                         if len(batch) >= batch_size:
-                            self.signals.mols_loaded.emit(batch, headers if first_emit else [], first_emit, False)
+                            self._emit_batch(batch, headers, first_emit, False)
                             first_emit = False
                             batch = []
             elif ext == ".pdb":
@@ -275,13 +297,13 @@ class UniversalLoadWorker(QRunnable):
                     if mol:
                         batch.append(mol)
                         if len(batch) >= batch_size:
-                            self.signals.mols_loaded.emit(batch, headers if first_emit else [], first_emit, False)
+                            self._emit_batch(batch, headers, first_emit, False)
                             first_emit = False
                             batch = []
 
             # emit remaining
             if batch:
-                self.signals.mols_loaded.emit(batch, headers if first_emit else [], first_emit, True)
+                self._emit_batch(batch, headers, first_emit, True)
             else:
                 # if no molecules found, still signal completion
                 if first_emit:

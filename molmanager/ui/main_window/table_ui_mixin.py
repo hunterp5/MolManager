@@ -1016,22 +1016,10 @@ class TableUIMixin(TableSearchMixin, FilterPanelMixin):
 
     def _row_cells_from_mol(self, mol: Chem.Mol | None) -> dict[str, str]:
         """Build row cell values for all data columns from one molecule."""
-        values: dict[str, str] = {}
-        for _c, name in enumerate(self.headers[2:], start=2):
-            if mol is None:
-                txt = ""
-            elif name == "SMILES":
-                if mol.HasProp("SMILES"):
-                    txt = (safe_mol_prop_string(mol, "SMILES") or "").strip()
-                else:
-                    try:
-                        txt = mol_to_canonical_smiles(mol)
-                    except Exception:
-                        txt = ""
-            else:
-                txt = safe_mol_prop_string(mol, name)
-            values[name] = txt
-        return values
+        from ...ingest_cells import row_cells_from_mol
+
+        data_headers = self.headers[2:] if len(self.headers) > 2 else []
+        return row_cells_from_mol(mol, data_headers)
 
     def _mol_for_structure_row(self, row: int) -> Chem.Mol | None:
         """Best-effort RDKit mol: in-memory store, then any parseable chemistry in table columns."""
@@ -1832,9 +1820,15 @@ class TableUIMixin(TableSearchMixin, FilterPanelMixin):
         self.zoomed_ids = set()
         for f in self.filters:
             f.deleteLater()
-        self.filters, self.headers, self.mols, self.global_bounds = [], [], {}, {}
+        self.filters = []
+        self.headers = []
+        self.global_bounds = {}
+        self.mols.clear()
         self.next_oid = 0
         self._structure_field_override = None
+        holder = getattr(self, "_structure_override_holder", None)
+        if holder is not None:
+            holder[0] = None
         self._export_prep = None
         self._export_busy = False
         self._render2d_queue = None
