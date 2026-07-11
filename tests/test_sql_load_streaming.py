@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import sqlite3
 
+from PyQt5.QtWidgets import QApplication
+
 from molmanager.ui.main_window import ChemicalTableApp
 
 
@@ -21,6 +23,11 @@ def test_load_from_sql_streaming_sqlite(tmp_path, qapp):  # noqa: ARG001
     w = ChemicalTableApp()
     url = "sqlite:///" + str(db_path).replace("\\", "/")
     w.load_from_sql(url=url, table="compounds", limit=10, apply_limit=True, clear_first=True)
+    assert w.process_queue.wait_for_all_jobs(60_000)
+
+    app = QApplication.instance()
+    if app is not None:
+        app.processEvents()
 
     assert w._table_model.rowCount() == 3
     assert "SMILES" in w.headers

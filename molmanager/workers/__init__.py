@@ -58,6 +58,7 @@ from .load_render import (
     UniversalLoadWorker,
     WashWorker,
 )
+from .sql_load import SqlLoadWorker, build_sql_statement
 from .pka_predictor import PKaPredictorSignals, PKaPredictorWorker
 from .permeability_worker import PermeabilityPredictorSignals, PermeabilityPredictorWorker
 from .protomer_generator import ProtomerGeneratorSignals, ProtomerGeneratorWorker
@@ -111,6 +112,8 @@ __all__ = [
     "RGroupDecompositionWorker",
     "SqliteRebuildSignals",
     "SqliteRebuildWorker",
+    "SqlLoadWorker",
+    "build_sql_statement",
     "SubstructureFilterSignals",
     "SubstructureFilterWorker",
     "AddExplicitHydrogensWorker",
