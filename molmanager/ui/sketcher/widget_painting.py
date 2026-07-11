@@ -8,9 +8,9 @@ from PyQt5.QtCore import QPoint, QPointF, Qt
 from PyQt5.QtGui import QBrush, QColor, QFont, QFontMetrics, QPainter, QPainterPath, QPen, QPolygonF
 
 from .acs_style import acs_sketch_style
-from .constants import SKETCH_MEDIAN_BOND_PX
+from .sketch_rdkit_paint import render_sketch_mol_to_pixmap, sketch_rdkit_paint_cache_key
+from .constants import SKETCH_MEDIAN_BOND_PX, WILDCARD_ELEMENT
 from .bonds import _bond_unpack
-from .constants import WILDCARD_ELEMENT
 from .element_colors import rdkit_default_element_rgb
 from .wildcards import _normalize_wildcard_elements
 
@@ -233,11 +233,58 @@ class SketchWidgetPaintMixin:
             self._stereo_label_node_ids.discard(node_id)
         self._after_sketch_edit()
 
-    def _paint_sketch_structure(self, p: QPainter, style) -> None:
-        ink = self._acs_ink_pen(style)
-        p.setPen(ink)
-        p.setBrush(Qt.NoBrush)
+    def _should_paint_sketch_with_rdkit(self) -> bool:
+        return bool(self.nodes) and not self.sketch_has_wildcards()
 
+    def _invalidate_rdkit_sketch_paint_cache(self) -> None:
+        self._rdkit_sketch_paint_cache_key = None
+        self._rdkit_sketch_paint_cache = None
+
+    def _try_paint_rdkit_sketch_structure(self, p: QPainter) -> bool:
+        if not self._should_paint_sketch_with_rdkit():
+            return False
+        cache_key = sketch_rdkit_paint_cache_key(self.nodes, self.bonds)
+        view_bucket = max(1, int(round(max(1.0, float(getattr(self, "_view_scale", 1.0))) * 2)))
+        cache_key = cache_key + (view_bucket, int(round(max(1.0, float(self.devicePixelRatioF())))))
+        if (
+            getattr(self, "_rdkit_sketch_paint_cache", None) is not None
+            and getattr(self, "_rdkit_sketch_paint_cache_key", None) == cache_key
+        ):
+            pm, transform = self._rdkit_sketch_paint_cache
+        else:
+            ids = {n["id"] for n in self.nodes}
+            out = self._mol_from_node_ids(ids, return_idmap=True)
+            if out is None:
+                return False
+            mol, idmap = out
+            if mol is None or mol.GetNumAtoms() == 0:
+                return False
+            med = float(getattr(self, "_median_bond_length_px", None) or SKETCH_MEDIAN_BOND_PX)
+            view_scale = max(1.0, float(getattr(self, "_view_scale", 1.0)))
+            dpr = max(1.0, float(self.devicePixelRatioF()))
+            render_scale = max(2, min(4, int(round(max(view_scale, dpr) * 2))))
+            rendered = render_sketch_mol_to_pixmap(
+                mol,
+                idmap,
+                self.nodes,
+                pad_px=max(32.0, med * 0.65),
+                bond_scale_px=med,
+                render_scale=render_scale,
+            )
+            if rendered is None:
+                return False
+            self._rdkit_sketch_paint_cache = rendered
+            self._rdkit_sketch_paint_cache_key = cache_key
+            pm, transform = rendered
+        p.save()
+        p.setRenderHint(QPainter.SmoothPixmapTransform, float(getattr(self, "_view_scale", 1.0)) != 1.0)
+        p.setTransform(transform, combine=True)
+        p.drawPixmap(0, 0, pm)
+        p.restore()
+        return True
+
+    def _paint_sketch_bond_highlights(self, p: QPainter, style) -> None:
+        ink = self._acs_ink_pen(style)
         selected_bonds = set(self.selected_bond_indices)
         hover_bond: int | None = None
         if isinstance(self.hover, tuple) and self.hover[0] == "bond":
@@ -245,18 +292,6 @@ class SketchWidgetPaintMixin:
                 hover_bond = int(self.hover[1])
             except (TypeError, ValueError):
                 hover_bond = None
-
-        for bi, bond in enumerate(self.bonds):
-            i, j, order, stereo = _bond_unpack(bond)
-            ni = next((n for n in self.nodes if n["id"] == i), None)
-            nj = next((n for n in self.nodes if n["id"] == j), None)
-            if not ni or not nj:
-                continue
-            self._draw_bond(p, ni, nj, order, stereo, ink)
-            if order == 2:
-                ez = (getattr(self, "_alkene_ez_by_bond_index", None) or {}).get(bi)
-                if ez in ("E", "Z"):
-                    self._draw_alkene_ez_label(p, ni, nj, str(ez), font_pt=style.label_font_pt)
 
         accent = QPen(QColor(0, 80, 200))
         accent.setCapStyle(Qt.RoundCap)
@@ -281,6 +316,7 @@ class SketchWidgetPaintMixin:
                 hover_pen.setCapStyle(Qt.RoundCap)
                 self._draw_bond(p, ni, nj, order, stereo, hover_pen)
 
+    def _paint_sketch_atom_overlays(self, p: QPainter, style) -> None:
         stereo_issue = getattr(self, "_chiral_stereo_issue_ids", set())
         for n in self.nodes:
             pos = n["pos"]
@@ -298,6 +334,39 @@ class SketchWidgetPaintMixin:
                 hover=self.hover == nid,
             )
 
+        for bi, bond in enumerate(self.bonds):
+            i, j, order, stereo = _bond_unpack(bond)
+            if order != 2:
+                continue
+            ez = (getattr(self, "_alkene_ez_by_bond_index", None) or {}).get(bi)
+            if ez not in ("E", "Z"):
+                continue
+            ni = next((n for n in self.nodes if n["id"] == i), None)
+            nj = next((n for n in self.nodes if n["id"] == j), None)
+            if ni and nj:
+                self._draw_alkene_ez_label(p, ni, nj, str(ez), font_pt=style.label_font_pt)
+
+        for n in self.nodes:
+            code = self._stereo_cip_by_node_id.get(n["id"])
+            if n["id"] in self._stereo_label_node_ids and code in ("R", "S"):
+                self._draw_cip_label(p, pos=n["pos"], nid=n["id"], code=code)
+
+    def _paint_sketch_structure_acs(self, p: QPainter, style) -> None:
+        ink = self._acs_ink_pen(style)
+        p.setPen(ink)
+        p.setBrush(Qt.NoBrush)
+
+        for bi, bond in enumerate(self.bonds):
+            i, j, order, stereo = _bond_unpack(bond)
+            ni = next((n for n in self.nodes if n["id"] == i), None)
+            nj = next((n for n in self.nodes if n["id"] == j), None)
+            if not ni or not nj:
+                continue
+            self._draw_bond(p, ni, nj, order, stereo, ink)
+
+        self._paint_sketch_bond_highlights(p, style)
+        self._paint_sketch_atom_overlays(p, style)
+
         for n in self.nodes:
             pos = n["pos"]
             el = n["element"]
@@ -312,9 +381,6 @@ class SketchWidgetPaintMixin:
                 ch = n.get("charge", 0)
                 if ch:
                     self._draw_formal_charge(p, pos, ch, symbol="*", font_pt=style.label_font_pt)
-                code = self._stereo_cip_by_node_id.get(n["id"])
-                if n["id"] in self._stereo_label_node_ids and code in ("R", "S"):
-                    self._draw_cip_label(p, pos, n["id"], code)
                 continue
 
             if el == "C":
@@ -334,9 +400,12 @@ class SketchWidgetPaintMixin:
                 if ch:
                     self._draw_formal_charge(p, pos, ch, symbol=el, font_pt=style.label_font_pt)
 
-            code = self._stereo_cip_by_node_id.get(n["id"])
-            if n["id"] in self._stereo_label_node_ids and code in ("R", "S"):
-                self._draw_cip_label(p, pos, n["id"], code)
+    def _paint_sketch_structure(self, p: QPainter, style) -> None:
+        if self._try_paint_rdkit_sketch_structure(p):
+            self._paint_sketch_bond_highlights(p, style)
+            self._paint_sketch_atom_overlays(p, style)
+            return
+        self._paint_sketch_structure_acs(p, style)
 
     def paintEvent(self, ev) -> None:
         self._ensure_bonds_sanitized()

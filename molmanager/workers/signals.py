@@ -32,8 +32,6 @@ class WorkerSignals(QObject):
 
     # --- Batch chemistry / tools (wash, descriptors, conformers, custom calc, export) ---
     washed = pyqtSignal(list)
-    fast_prepare_chunk = pyqtSignal(list)
-    fast_prepared = pyqtSignal(list)
     neutralized = pyqtSignal(list)
     explicit_hydrogens_added = pyqtSignal(list)
     explicit_hydrogens_removed = pyqtSignal(list)
