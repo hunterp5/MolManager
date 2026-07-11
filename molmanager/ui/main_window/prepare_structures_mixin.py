@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 import threading
 
-from PyQt5.QtCore import Qt
+from PyQt5.QtCore import Qt, pyqtSlot
 from PyQt5.QtWidgets import (
     QMessageBox,
 )
@@ -19,6 +19,7 @@ from ..strings import (
 )
 from ...workers import (
     FastPrepareWorker,
+    Render2DBatchChunkRunner,
     Render2DBatchProcessWorker,
     Render2DBatchHeldJob,
     WashWorker,
@@ -231,21 +232,28 @@ class PrepareStructuresMixin:
             "largest_col": largest_col,
             "fragments_col": fragments_col,
             "allowed_oids": allowed,
+            "n_rows": n,
+            "column_pixmap_mode": prepare_col != "Structure",
         }
+        self._fast_prepare_pipeline_active = False
+        self._fast_prepare_render_session_active = False
+        self._fast_prepare_chem_done = False
+        self._fast_prepare_render_chunks_inflight = 0
         self.status_label.setText("Fast prepare: preparing structures…")
         cfg = load_config()
         batch_size = max(32, int(cfg.descriptor_process_pool_batch_size))
-        n = len(rows)
-        self.process_queue.enqueue(
-            f"Fast prepare ({n} rows)",
-            lambda ev, r=rows, sm=is_smiles, bs=batch_size: FastPrepareWorker(
+
+        def _factory(ev, r=rows, sm=is_smiles, bs=batch_size):
+            self._fast_prepare_cancel_event = ev
+            return FastPrepareWorker(
                 r,
                 self.signals,
                 is_smiles=sm,
                 cancel_event=ev,
                 batch_size=bs,
-            ),
-        )
+            )
+
+        self.process_queue.enqueue(f"Fast prepare ({n} rows)", _factory)
 
     def _apply_fast_prepare_table_updates(self, results: list[tuple[int, Chem.Mol, str]]) -> None:
         """Write disconnect/neutralize outputs in one batched pass."""
@@ -322,19 +330,136 @@ class PrepareStructuresMixin:
             row_by_oid[oid_i] = row
         return renders, row_by_oid
 
+    def _ensure_fast_prepare_render_session(self, ctx: dict) -> None:
+        if getattr(self, "_fast_prepare_render_session_active", False):
+            return
+        prepare_col = str(ctx.get("prepare_col") or "Structure")
+        n_total = max(1, int(ctx.get("n_rows") or 1))
+        column_pixmap_mode = bool(ctx.get("column_pixmap_mode", prepare_col != "Structure"))
+        structure_column = prepare_col == "Structure"
+
+        self._fast_prepare_render_session_active = True
+        self._fast_prepare_pipeline_active = True
+        self._render2d_session_id += 1
+        self._render2d_batch_session_tag = self._render2d_session_id
+        self._render2d_accept_session = self._render2d_batch_session_tag
+        self._render2d_pixmap_target = None if structure_column else prepare_col
+        self._render2d_column_pixmap_mode = column_pixmap_mode
+        if self._render2d_pixmap_target and column_pixmap_mode:
+            self._table_model.register_pixmap_column(self._render2d_pixmap_target)
+        self._render2d_saved_sort_enabled = self.table.isSortingEnabled()
+        self.table.setSortingEnabled(False)
+        self._render2d_batch_active = True
+        self._render2d_row_by_oid = {}
+        self._render2d_batch_oids_ordered = []
+        self._render2d_pending = {}
+        self._render2d_lazy_flush = self._render2d_use_lazy_structure_flush(
+            n_total, structure_column=structure_column
+        )
+        self._render2d_snapshot = {}
+        if structure_column and self._render2d_lazy_flush:
+            self._table_model.clear_structure_png_store()
+        self._render2d_progress_last_emit = 0.0
+        self._render2d_progress_last_done = 0
+        self._import_progress_active = True
+        self._import_render_goal = 0
+        self._import_render_done = 0
+        cancel_event = getattr(self, "_fast_prepare_cancel_event", None)
+        self._render2d_cancel_event = cancel_event if cancel_event is not None else threading.Event()
+        hub = getattr(self, "background_activity", None)
+        if hub is not None:
+            hub.notify_changed()
+
+    def _submit_fast_prepare_render_chunk(self, renders: list, row_by_oid: dict[int, int]) -> None:
+        if not renders:
+            return
+        row_map = getattr(self, "_render2d_row_by_oid", None) or {}
+        if not isinstance(row_map, dict):
+            row_map = {}
+        row_map.update(row_by_oid)
+        self._render2d_row_by_oid = row_map
+        ordered = list(getattr(self, "_render2d_batch_oids_ordered", []) or [])
+        for oid, *_rest in renders:
+            ordered.append(int(oid))
+        self._render2d_batch_oids_ordered = ordered
+        self._import_render_goal = int(getattr(self, "_import_render_goal", 0)) + len(renders)
+        self._fast_prepare_render_chunks_inflight = (
+            int(getattr(self, "_fast_prepare_render_chunks_inflight", 0)) + 1
+        )
+        worker = Render2DBatchProcessWorker(
+            renders,
+            self.signals,
+            self._render2d_cancel_event,
+            self._render2d_batch_session_tag,
+        )
+        self._render_threadpool.start(Render2DBatchChunkRunner(worker, self))
+
+    @pyqtSlot()
+    def _on_fast_prepare_render_chunk_done(self) -> None:
+        self._fast_prepare_render_chunks_inflight = max(
+            0, int(getattr(self, "_fast_prepare_render_chunks_inflight", 0)) - 1
+        )
+        self._maybe_finish_fast_prepare_pipeline()
+
+    def _maybe_finish_fast_prepare_pipeline(self) -> None:
+        if not getattr(self, "_fast_prepare_pipeline_active", False):
+            return
+        if not getattr(self, "_fast_prepare_chem_done", False):
+            return
+        if int(getattr(self, "_fast_prepare_render_chunks_inflight", 0)) > 0:
+            return
+        n_goal = int(getattr(self, "_import_render_goal", 0))
+        n_done = int(getattr(self, "_import_render_done", 0))
+        if n_goal > 0 and n_done < n_goal:
+            return
+        self._fast_prepare_pipeline_active = False
+        self._fast_prepare_render_session_active = False
+        self._fast_prepare_ctx = None
+        self._import_progress_active = False
+        self._clear_tool_progress(status_message=None)
+        self._flush_render2d_batch_results()
+        self._restore_render2d_batch_environment()
+        self.status_label.setText(
+            self._consume_partial_results_notice() or "Fast prepare done."
+        )
+
+    def on_fast_prepare_chunk(self, chunk: list) -> None:
+        if not chunk:
+            return
+        ctx = getattr(self, "_fast_prepare_ctx", None) or {}
+        self._apply_fast_prepare_table_updates(chunk)
+        allowed_oids = ctx.get("allowed_oids")
+        mol_rows = [(int(oid), mol) for oid, mol, _frag in chunk if mol is not None]
+        base_w, base_h = STRUCTURE_DEPICT_WIDTH, STRUCTURE_DEPICT_HEIGHT
+        renders, row_by_oid = self._build_render2d_tasks_from_mol_rows(
+            mol_rows, allowed_oids, base_w, base_h
+        )
+        if not renders:
+            return
+        self._ensure_fast_prepare_render_session(ctx)
+        self.status_label.setText("Fast prepare: rendering 2D…")
+        self._submit_fast_prepare_render_chunk(renders, row_by_oid)
+
     def on_fast_prepare_finished(self, results: list) -> None:
         ctx = getattr(self, "_fast_prepare_ctx", None) or {}
-        self._fast_prepare_ctx = None
+        self._fast_prepare_chem_done = True
         self._clear_tool_progress()
+        self.schedule_calculate_global_bounds()
+
         if not results:
+            self._fast_prepare_ctx = None
+            self._fast_prepare_pipeline_active = False
+            self._fast_prepare_render_session_active = False
             self.status_label.setText(
                 self._consume_partial_results_notice() or "Fast prepare: no structures prepared."
             )
             return
 
-        self._apply_fast_prepare_table_updates(results)
-        self.schedule_calculate_global_bounds()
+        if getattr(self, "_fast_prepare_pipeline_active", False):
+            self._maybe_finish_fast_prepare_pipeline()
+            return
 
+        self._apply_fast_prepare_table_updates(results)
         prepare_col = str(ctx.get("prepare_col") or "Structure")
         allowed_oids = ctx.get("allowed_oids")
         mol_rows = [(int(oid), mol) for oid, mol, _frag in results if mol is not None]
@@ -342,6 +467,7 @@ class PrepareStructuresMixin:
         renders, row_by_oid = self._build_render2d_tasks_from_mol_rows(
             mol_rows, allowed_oids, base_w, base_h
         )
+        self._fast_prepare_ctx = None
         if renders and not getattr(self, "_render2d_batch_active", False):
             self.status_label.setText("Fast prepare: rendering 2D…")
             self._start_render_2d_batch(

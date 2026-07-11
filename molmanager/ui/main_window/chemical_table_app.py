@@ -138,6 +138,7 @@ class ChemicalTableApp(
         self.signals.rendered.connect(self.on_row_ready, _qc)
         self.signals.washed.connect(self.on_wash_finished, _qc)
         self.signals.fast_prepared.connect(self.on_fast_prepare_finished, _qc)
+        self.signals.fast_prepare_chunk.connect(self.on_fast_prepare_chunk, _qc)
         self.signals.neutralized.connect(self.on_neutralize_finished, _qc)
         self.signals.explicit_hydrogens_added.connect(self.on_add_explicit_hydrogens_finished, _qc)
         self.signals.explicit_hydrogens_removed.connect(self.on_remove_explicit_hydrogens_finished, _qc)

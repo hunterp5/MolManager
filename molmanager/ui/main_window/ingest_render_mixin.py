@@ -602,9 +602,12 @@ class IngestRenderMixin:
             if self._import_render_done >= self._import_render_goal:
                 self._import_progress_active = False
                 self._clear_tool_progress()
-                self.status_label.setText("Ready")
-                self._flush_render2d_batch_results()
-                self._restore_render2d_batch_environment()
+                if getattr(self, "_fast_prepare_pipeline_active", False):
+                    self._maybe_finish_fast_prepare_pipeline()
+                else:
+                    self.status_label.setText("Ready")
+                    self._flush_render2d_batch_results()
+                    self._restore_render2d_batch_environment()
 
     def _resize_columns_after_render2d(self, pix_target: str | None) -> None:
         """Set structure / pixmap column width from depict size (O(1), safe for huge tables)."""
