@@ -83,6 +83,81 @@ class IngestRenderMixin:
     def _ingest_use_silent_model(self) -> bool:
         return bool(load_config().ingest_silent_model_append)
 
+    def _ingest_use_sqlite_incremental(self) -> bool:
+        return bool(load_config().ingest_sqlite_incremental)
+
+    def _sqlite_data_headers(self) -> list[str]:
+        return [h for h in self.headers[2:] if h and not self._table_model.is_pixmap_data_column(h)]
+
+    def _ingest_sqlite_entries_from_rows(
+        self,
+        new_rows: list[tuple[int, dict[str, str]]],
+        data_headers: list[str],
+    ) -> list[tuple[int, dict[str, str]]]:
+        return [
+            (int(oid), {h: str(cells.get(h, "") or "") for h in data_headers})
+            for oid, cells in new_rows
+        ]
+
+    def _ingest_sqlite_begin_bulk(self) -> None:
+        store = getattr(self, "_sqlite_store", None)
+        if store is None or not self._ingest_use_sqlite_incremental():
+            return
+        data_headers = self._sqlite_data_headers()
+        if self._ingest_append_mode and self._table_model.rowCount() > 0:
+            if frozenset(store.headers) != frozenset(data_headers):
+                return
+            self._ingest_sqlite_bulk_active = True
+            self._ingest_sqlite_bulk_headers = list(data_headers)
+            self._ingest_sqlite_paused_dirty = True
+            return
+        try:
+            store.begin_bulk_load(self.headers)
+        except Exception:
+            logger.exception("Failed to begin incremental SQLite ingest")
+            self._ingest_sqlite_bulk_active = False
+            self._ingest_sqlite_paused_dirty = False
+            return
+        self._ingest_sqlite_bulk_active = True
+        self._ingest_sqlite_bulk_headers = list(data_headers)
+        self._ingest_sqlite_paused_dirty = True
+
+    def _ingest_sqlite_append_batch(self, new_rows: list[tuple[int, dict[str, str]]]) -> None:
+        if not getattr(self, "_ingest_sqlite_bulk_active", False) or not new_rows:
+            return
+        store = getattr(self, "_sqlite_store", None)
+        headers = getattr(self, "_ingest_sqlite_bulk_headers", None)
+        if store is None or not headers:
+            return
+        try:
+            store.append_bulk_rows(self._ingest_sqlite_entries_from_rows(new_rows, headers))
+        except Exception:
+            logger.exception("Incremental SQLite ingest append failed")
+            self._ingest_sqlite_bulk_active = False
+            self._ingest_sqlite_paused_dirty = False
+            self._sqlite_store_dirty = True
+
+    def _ingest_sqlite_finalize_bulk(self) -> bool:
+        """Return True when the SQLite mirror is ready and no rebuild is needed."""
+        if not getattr(self, "_ingest_sqlite_bulk_active", False):
+            self._ingest_sqlite_paused_dirty = False
+            return False
+        store = getattr(self, "_sqlite_store", None)
+        self._ingest_sqlite_bulk_active = False
+        self._ingest_sqlite_paused_dirty = False
+        self._ingest_sqlite_bulk_headers = None
+        if store is None:
+            return False
+        if store.bulk_loading:
+            try:
+                store.finalize_bulk_load()
+            except Exception:
+                logger.exception("Failed to finalize incremental SQLite ingest")
+                self._sqlite_store_dirty = True
+                return False
+        self._sqlite_store_dirty = False
+        return True
+
     def _ingest_begin_silent_if_needed(self) -> None:
         if self._ingest_use_silent_model() and not self._table_model.silent_appending:
             self._table_model.begin_silent_appends()
@@ -118,6 +193,7 @@ class IngestRenderMixin:
             if self._table_stack.currentIndex() == 0:
                 self._loading_detail.setText(LOADING_DETAIL_AFTER_FILE_READ)
             self._ingest_begin_silent_if_needed()
+            self._ingest_sqlite_begin_bulk()
         if mols_list:
             self._pending_batches.append((mols_list, is_last))
         if is_last:
@@ -149,6 +225,7 @@ class IngestRenderMixin:
                         new_rows: list[tuple[int, dict[str, str]]] = []
                         self._ingest_append_batch_items(take, new_rows)
                         self._table_model.append_rows_batch(new_rows, defer_color_cache=True)
+                        self._ingest_sqlite_append_batch(new_rows)
                         processed += len(new_rows)
                         n = self._table_model.rowCount()
                         self.status_label.setText(f"Loaded {n:,} molecules — preparing table…")
@@ -183,10 +260,11 @@ class IngestRenderMixin:
         """Finish ingest on the loading page; reveal the table once filters are prepared."""
         if self._table_model.silent_appending:
             self._table_model.end_silent_appends()
-        if getattr(self, "_sqlite_store", None) is not None:
-            self._sqlite_store_dirty = True
-        else:
-            self._rebuild_sqlite_store_from_model()
+        if not self._ingest_sqlite_finalize_bulk():
+            if getattr(self, "_sqlite_store", None) is not None:
+                self._sqlite_store_dirty = True
+            else:
+                self._rebuild_sqlite_store_from_model()
         self.table.setSortingEnabled(False)
         self._structures_queued = 0
         self._ingest_prep_before_reveal = True

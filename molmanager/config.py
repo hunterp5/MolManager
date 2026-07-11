@@ -100,6 +100,7 @@ class MolManagerConfig:
     ingest_worker_batch_size: int
     ingest_csv_text_first: bool
     ingest_silent_model_append: bool
+    ingest_sqlite_incremental: bool
     structure_render_lazy_after_ingest_min_rows: int
     perf_metrics_enabled: bool
     perf_log_every: int
@@ -192,6 +193,7 @@ def load_config() -> MolManagerConfig:
         ingest_worker_batch_size=_env_int("MOLMANAGER_INGEST_WORKER_BATCH", 2000, lo=64, hi=20_000),
         ingest_csv_text_first=_env_bool("MOLMANAGER_INGEST_CSV_TEXT_FIRST", True),
         ingest_silent_model_append=_env_bool("MOLMANAGER_INGEST_SILENT_MODEL_APPEND", True),
+        ingest_sqlite_incremental=_env_bool("MOLMANAGER_INGEST_SQLITE_INCREMENTAL", True),
         structure_render_lazy_after_ingest_min_rows=_env_int(
             "MOLMANAGER_STRUCTURE_RENDER_LAZY_AFTER_INGEST", 200, lo=0, hi=10_000_000
         ),

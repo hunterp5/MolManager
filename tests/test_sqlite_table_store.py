@@ -15,6 +15,35 @@ def test_sqlite_table_store_distinct_values():
     assert vals == ["100", "200"]
 
 
+def test_sqlite_table_store_incremental_bulk_load():
+    store = SqliteTableStore()
+    try:
+        headers = ["ID_HIDDEN", "Structure", "SMILES", "Name", "Score"]
+        store.begin_bulk_load(headers)
+        assert store.bulk_loading
+        store.append_bulk_rows(
+            [
+                (1, {"SMILES": "CCO", "Name": "alpha", "Score": "3.2"}),
+                (2, {"SMILES": "CCN", "Name": "beta", "Score": "7.1"}),
+            ]
+        )
+        store.append_bulk_rows([(3, {"SMILES": "CCC", "Name": "alphabet", "Score": "9.9"})])
+        store.finalize_bulk_load()
+        assert not store.bulk_loading
+        assert store.count() == 3
+        assert store.count(where_sql='CAST("Score" AS REAL) >= ?', args=(7.0,)) == 2
+        page = store.fetch_page(
+            limit=10,
+            where_sql='LOWER("Name") LIKE ?',
+            args=("%alpha%",),
+            sort_by="Score",
+            ascending=False,
+        )
+        assert [oid for oid, _ in page] == [3, 1]
+    finally:
+        store.close()
+
+
 def test_sqlite_table_store_rebuild_and_filter_page():
     store = SqliteTableStore()
     try:

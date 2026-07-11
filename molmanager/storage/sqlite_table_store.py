@@ -22,6 +22,11 @@ class SqliteTableStore:
         self._conn = sqlite3.connect(str(self._path))
         self._conn.row_factory = sqlite3.Row
         self._headers: list[str] = []
+        self._bulk_loading = False
+
+    @property
+    def bulk_loading(self) -> bool:
+        return self._bulk_loading
 
     @property
     def headers(self) -> list[str]:
@@ -34,9 +39,10 @@ class SqliteTableStore:
     def close(self) -> None:
         self._conn.close()
 
-    def rebuild(self, headers: list[str], rows: list[tuple[int, dict[str, str]]]) -> None:
-        cols = [h for h in headers if h not in ("ID_HIDDEN", "Structure")]
-        self._headers = list(cols)
+    def _data_columns(self, headers: list[str]) -> list[str]:
+        return [h for h in headers if h not in ("ID_HIDDEN", "Structure")]
+
+    def _create_table_rows_schema(self, cols: list[str]) -> None:
         cur = self._conn.cursor()
         cur.execute("DROP TABLE IF EXISTS table_rows")
         col_sql = ", ".join(f"{_quoted_ident(h)} TEXT" for h in cols)
@@ -44,18 +50,64 @@ class SqliteTableStore:
             cur.execute(f"CREATE TABLE table_rows (oid INTEGER PRIMARY KEY, {col_sql})")
         else:
             cur.execute("CREATE TABLE table_rows (oid INTEGER PRIMARY KEY)")
-        if rows:
-            names = ["oid"] + cols
-            placeholders = ", ".join(["?"] * len(names))
-            insert_sql = (
-                f"INSERT INTO table_rows ({', '.join(_quoted_ident(n) for n in names)}) VALUES ({placeholders})"
-            )
-            payload = []
-            for oid, cells in rows:
-                vals = [int(oid)] + [str(cells.get(h, "") or "") for h in cols]
-                payload.append(vals)
-            cur.executemany(insert_sql, payload)
-        cur.execute("CREATE INDEX IF NOT EXISTS idx_table_rows_oid ON table_rows(oid)")
+
+    def _insert_rows_payload(
+        self,
+        cols: list[str],
+        rows: list[tuple[int, dict[str, str]]],
+    ) -> None:
+        if not rows:
+            return
+        names = ["oid"] + cols
+        placeholders = ", ".join(["?"] * len(names))
+        insert_sql = (
+            f"INSERT INTO table_rows ({', '.join(_quoted_ident(n) for n in names)}) VALUES ({placeholders})"
+        )
+        payload = []
+        for oid, cells in rows:
+            vals = [int(oid)] + [str(cells.get(h, "") or "") for h in cols]
+            payload.append(vals)
+        self._conn.cursor().executemany(insert_sql, payload)
+
+    def begin_bulk_load(self, headers: list[str]) -> None:
+        """Start an incremental ingest: create schema and defer the oid index until finalize."""
+        cols = self._data_columns(headers)
+        self._headers = list(cols)
+        self._bulk_loading = True
+        self._create_table_rows_schema(cols)
+        self._conn.execute("BEGIN IMMEDIATE")
+
+    def append_bulk_rows(self, rows: list[tuple[int, dict[str, str]]]) -> None:
+        """Append rows during :meth:`begin_bulk_load` / :meth:`finalize_bulk_load`."""
+        if not rows:
+            return
+        self._insert_rows_payload(self._headers, rows)
+
+    def finalize_bulk_load(self) -> None:
+        """Finish incremental ingest: create index and commit the bulk transaction."""
+        if not self._bulk_loading:
+            return
+        try:
+            self._conn.cursor().execute("CREATE INDEX IF NOT EXISTS idx_table_rows_oid ON table_rows(oid)")
+            self._conn.commit()
+        except Exception:
+            self._conn.rollback()
+            raise
+        finally:
+            self._bulk_loading = False
+
+    def rebuild(self, headers: list[str], rows: list[tuple[int, dict[str, str]]]) -> None:
+        if self._bulk_loading:
+            try:
+                self._conn.rollback()
+            except Exception:
+                pass
+            self._bulk_loading = False
+        cols = self._data_columns(headers)
+        self._headers = list(cols)
+        self._create_table_rows_schema(cols)
+        self._insert_rows_payload(cols, rows)
+        self._conn.cursor().execute("CREATE INDEX IF NOT EXISTS idx_table_rows_oid ON table_rows(oid)")
         self._conn.commit()
 
     def count(self, where_sql: str = "", args: tuple | list | None = None) -> int:
