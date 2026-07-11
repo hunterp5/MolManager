@@ -171,24 +171,58 @@ class IngestRenderMixin:
         self.table.setSortingEnabled(False)
         self._ingest_loading = False
         self._structures_queued = 0
+        try:
+            self.table.setUpdatesEnabled(False)
+        except Exception:
+            pass
         self._table_stack.setCurrentIndex(1)
         self._import_progress_active = False
         self._clear_tool_progress(status_message=None)
         self._ingest_append_mode = False
         self._last_batch_received = False
         self._processing_batches = False
-        app = QApplication.instance()
-        if app is not None:
-            app.processEvents(QEventLoop.ExcludeUserInputEvents)
         if "confs" in self.headers or "superpose" in self.headers:
             QTimer.singleShot(0, self._migrate_legacy_confs_cells_to_sidecar)
         QTimer.singleShot(0, self._deferred_post_ingest_follow_up)
 
     def _deferred_post_ingest_follow_up(self) -> None:
         """Runs after the table is visible: bounds, column colors, then optional auto 2D render."""
-        self._table_model.rebuild_column_color_caches_after_bulk_load()
+        n_rows = self._table_model.rowCount()
+        cfg = load_config()
+        defer_rows = int(cfg.bulk_update_defer_color_cache_rows)
+        pending = self._table_model.rebuild_column_color_caches_after_bulk_load(
+            limit_headers=1 if defer_rows > 0 and n_rows >= defer_rows else None
+        )
+        if pending:
+            self._post_ingest_color_headers_pending = list(pending)
+            QTimer.singleShot(0, self._deferred_post_ingest_color_cache_step)
+        else:
+            self._finish_deferred_post_ingest_follow_up()
+
+    def _deferred_post_ingest_color_cache_step(self) -> None:
+        pending = list(getattr(self, "_post_ingest_color_headers_pending", []) or [])
+        if not pending:
+            self._finish_deferred_post_ingest_follow_up()
+            return
+        header = pending.pop(0)
+        self._table_model.rebuild_column_color_cache_for_header(header)
+        self._post_ingest_color_headers_pending = pending
+        if pending:
+            QTimer.singleShot(0, self._deferred_post_ingest_color_cache_step)
+        else:
+            self._finish_deferred_post_ingest_follow_up()
+
+    def _finish_deferred_post_ingest_follow_up(self) -> None:
+        self._post_ingest_color_headers_pending = []
         self.schedule_calculate_global_bounds(delay_ms=500)
         started_render = self._try_auto_render_all_structures_after_ingest()
+        try:
+            self.table.setUpdatesEnabled(True)
+        except Exception:
+            pass
+        app = QApplication.instance()
+        if app is not None:
+            app.processEvents(QEventLoop.ExcludeUserInputEvents)
         if not started_render:
             n = self._table_model.rowCount()
             self.status_label.setText(STATUS_READY_RENDER_2D if n else "Ready.")

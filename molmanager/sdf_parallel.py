@@ -14,16 +14,38 @@ _MOLBLOCK_TRAILER = "$$$$"
 
 
 def _prepare_sdf_record_text(block: str) -> str:
-    """Normalize a split SDF record for :class:`~rdkit.Chem.ForwardSDMolSupplier`."""
+    """Normalize a split SDF record for :class:`~rdkit.Chem.ForwardSDMolSupplier`.
+
+    SDWriter emits a blank title line before the program line; some databases use
+    whitespace-only titles or padded numeric IDs. Only prepend a title when the
+    first line is already the RDKit program line.
+    """
     text = (block or "").replace("\r\n", "\n").rstrip()
     if not text:
         return ""
-    first_nonempty = next((line for line in text.split("\n") if line.strip()), "")
-    if first_nonempty.lstrip().startswith("RDKit") or (
-        first_nonempty.startswith(" ") and "V2000" not in first_nonempty
-    ):
-        text = "\n" + text.lstrip("\n")
+    lines = text.split("\n")
+    first_line = lines[0] if lines else ""
+    if first_line.lstrip().startswith("RDKit"):
+        text = "\n" + text
     return f"{text.rstrip()}\n\n{_MOLBLOCK_TRAILER}\n"
+
+
+def _parse_sdf_block(block: str) -> Chem.Mol | None:
+    """Parse one SDF record (mol block + SD data)."""
+    text = _prepare_sdf_record_text(block)
+    if not text:
+        return None
+    payload = BytesIO(text.encode("utf-8"))
+    for supplier_cls in (Chem.ForwardSDMolSupplier, Chem.SDMolSupplier):
+        try:
+            suppl = supplier_cls(payload, sanitize=True, removeHs=False)
+            mol = next(iter(suppl), None)
+            if mol is not None:
+                return mol
+        except Exception:
+            logger.debug("SDF supplier parse failed", exc_info=True)
+        payload.seek(0)
+    return None
 
 try:
     _PROP_FLAGS = int(Chem.PropertyPickleOptions.AllProps)
@@ -62,15 +84,7 @@ def mp_parse_sdf_molblocks(molblocks: list[str]) -> list[bytes | None]:
     """Parse SDF records in a child process; return pickled mol bytes (or None)."""
     out: list[bytes | None] = []
     for block in molblocks:
-        mol = None
-        try:
-            text = _prepare_sdf_record_text(block)
-            if text:
-                suppl = Chem.ForwardSDMolSupplier(BytesIO(text.encode("utf-8")), sanitize=True, removeHs=False)
-                mol = next(iter(suppl), None)
-        except Exception:
-            logger.debug("SDF mol block parse failed", exc_info=True)
-            mol = None
+        mol = _parse_sdf_block(block)
         if mol is None:
             out.append(None)
         else:
