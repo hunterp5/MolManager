@@ -13,7 +13,7 @@ Run the standalone demo::
 from __future__ import annotations
 
 import zlib
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 from PyQt5.QtCore import QAbstractItemModel, QAbstractTableModel, QModelIndex, QRect, QSize, Qt
 from PyQt5.QtGui import QColor, QPalette, QPixmap
@@ -27,6 +27,7 @@ from ..display_constants import (
 )
 from ..structure_render_store import StructureRenderStore
 from ..utils import safe_float
+from .row_store import InMemoryRowStore, SqliteRowStore
 from .strings import STRUCTURE_PENDING_HINT
 
 # Backward-compatible names (also re-export layout constants for ``from .compound_table_model import …``).
@@ -45,12 +46,6 @@ __all__ = [
 
 # Packed multi-conformer / alignment payloads — not numeric filter columns (avoids scanning huge cells).
 _NON_NUMERIC_BLOB_COLUMNS = frozenset({"confs", "superpose"})
-
-
-@dataclass
-class _Row:
-    oid: int
-    values: dict[str, str] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -77,10 +72,9 @@ class CompoundTableModel(QAbstractTableModel):
     def __init__(self, headers: list[str], parent=None):
         super().__init__(parent)
         self._headers = list(headers)
-        self._rows: list[_Row] = []
+        self._store = InMemoryRowStore()
         self._pixmaps: dict[int, QPixmap] = {}
         self._structure_png_store: StructureRenderStore | None = None
-        self._oid_to_row: dict[int, int] = {}
         # Optional extra columns that show a 2D pixmap (e.g. disconnected fragment) keyed by (oid, header).
         self._pixmap_columns: set[str] = set()
         self._extra_pixmaps: dict[tuple[int, str], QPixmap] = {}
@@ -106,15 +100,44 @@ class CompoundTableModel(QAbstractTableModel):
         self._invalidate_numeric_bounds_all()
         self.endResetModel()
 
+    def _reset_row_store(self) -> None:
+        """Release the current store (incl. any temp file) and start fresh in-memory.
+
+        Each load begins in RAM and is upgraded to disk backing only if it grows past the
+        configured threshold (see ``_maybe_upgrade_row_store``).
+        """
+        old = self._store
+        self._store = InMemoryRowStore()
+        try:
+            old.clear()
+        except Exception:
+            pass
+
+    def _maybe_upgrade_row_store(self, incoming: int) -> None:
+        """Migrate the in-memory store to the disk-backed store when the table grows large.
+
+        Order-preserving and count-neutral, so it needs no Qt notification; called before appends.
+        """
+        if isinstance(self._store, SqliteRowStore):
+            return
+        from ..config import load_config
+
+        cfg = load_config()
+        threshold = int(cfg.row_store_disk_min_rows)
+        if threshold <= 0 or len(self._store) + int(incoming) < threshold:
+            return
+        new = SqliteRowStore(cache_rows=int(cfg.row_store_cache_rows))
+        new.append_batch(self._store.export_all())
+        self._store = new
+
     def clear_rows(self) -> None:
         """Drop all rows and cached structure pixmaps; keep column headers."""
         self.beginResetModel()
-        self._rows.clear()
+        self._reset_row_store()
         self._pixmaps.clear()
         if self._structure_png_store is not None:
             self._structure_png_store.clear()
         self._structure_png_store = None
-        self._oid_to_row.clear()
         self._extra_pixmaps.clear()
         self._highlighted_oids = None
         for cache in self._column_color_cache.values():
@@ -135,20 +158,19 @@ class CompoundTableModel(QAbstractTableModel):
     def is_row_highlighted(self, row: int) -> bool:
         if self._highlighted_oids is None:
             return False
-        if row < 0 or row >= len(self._rows):
+        if row < 0 or row >= len(self._store):
             return False
-        return int(self._rows[row].oid) in self._highlighted_oids
+        return int(self._store.oid_at(row)) in self._highlighted_oids
 
     def clear(self) -> None:
         """Remove rows and clear the header list (empty table)."""
         self.beginResetModel()
-        self._rows.clear()
+        self._reset_row_store()
         self._pixmaps.clear()
         if self._structure_png_store is not None:
             self._structure_png_store.clear()
         self._structure_png_store = None
         self._headers.clear()
-        self._oid_to_row.clear()
         self._pixmap_columns.clear()
         self._extra_pixmaps.clear()
         self._column_color_rules.clear()
@@ -157,14 +179,13 @@ class CompoundTableModel(QAbstractTableModel):
         self.endResetModel()
 
     def append_row(self, oid: int, cells: dict[str, str]) -> None:
-        r = len(self._rows)
+        self._maybe_upgrade_row_store(1)
+        r = len(self._store)
         self.beginInsertRows(QModelIndex(), r, r)
-        row_obj = _Row(oid=oid, values=dict(cells))
-        self._rows.append(row_obj)
+        self._store.append(oid, cells)
         self.endInsertRows()
-        self._oid_to_row[oid] = len(self._rows) - 1
         if self._column_color_rules:
-            self._refresh_color_cache_for_row(row_obj, cells)
+            self._refresh_color_cache_for_row(int(oid), cells)
         bh = self._bounds_data_headers()
         for k in cells:
             if k in bh:
@@ -179,23 +200,20 @@ class CompoundTableModel(QAbstractTableModel):
         """Append many rows with a single insert-range notification."""
         if not entries:
             return
-        start = len(self._rows)
+        self._maybe_upgrade_row_store(len(entries))
+        start = len(self._store)
         end = start + len(entries) - 1
         self.beginInsertRows(QModelIndex(), start, end)
         bh = self._bounds_data_headers()
         dirty_cols: set[str] = set()
-        row_idx = start
         refresh_color = bool(self._column_color_rules) and not defer_color_cache
-        for oid, cells in entries:
-            row_cells = dict(cells)
-            row_obj = _Row(oid=int(oid), values=row_cells)
-            self._rows.append(row_obj)
-            self._oid_to_row[int(oid)] = row_idx
-            row_idx += 1
-            if refresh_color:
-                self._refresh_color_cache_for_row(row_obj, row_cells)
-            if bh:
-                dirty_cols |= {k for k in row_cells if k in bh}
+        self._store.append_batch(entries)
+        if refresh_color or bh:
+            for oid, cells in entries:
+                if refresh_color:
+                    self._refresh_color_cache_for_row(int(oid), cells)
+                if bh:
+                    dirty_cols |= {k for k in cells if k in bh}
         self.endInsertRows()
         if dirty_cols:
             self._mark_numeric_bounds_dirty(dirty_cols)
@@ -208,25 +226,22 @@ class CompoundTableModel(QAbstractTableModel):
             self._rebuild_column_color_cache(header_name)
 
     def insert_row_at(self, logical_index: int, oid: int, cells: dict[str, str]) -> None:
-        n = len(self._rows)
+        n = len(self._store)
         logical_index = max(0, min(logical_index, n))
         self.beginInsertRows(QModelIndex(), logical_index, logical_index)
-        self._rows.insert(logical_index, _Row(oid=oid, values=dict(cells)))
+        self._store.insert_at(logical_index, oid, cells)
         self.endInsertRows()
-        self._rebuild_oid_index()
         if self._column_color_rules:
-            self._refresh_color_cache_for_row(self._rows[logical_index], cells)
+            self._refresh_color_cache_for_row(int(oid), cells)
         self._invalidate_numeric_bounds_all()
 
     def remove_row_at(self, logical_row: int) -> None:
-        if logical_row < 0 or logical_row >= len(self._rows):
+        if logical_row < 0 or logical_row >= len(self._store):
             return
         self.beginRemoveRows(QModelIndex(), logical_row, logical_row)
-        oid = self._rows[logical_row].oid
-        self._rows.pop(logical_row)
+        oid = self._store.remove_at(logical_row)
         self._drop_row_assets(oid)
         self.endRemoveRows()
-        self._rebuild_oid_index()
         self._invalidate_numeric_bounds_all()
 
     def _drop_row_assets(self, oid: int) -> None:
@@ -241,18 +256,16 @@ class CompoundTableModel(QAbstractTableModel):
         kill = {int(x) for x in oids}
         if not kill:
             return 0
-        n_before = len(self._rows)
         self.beginResetModel()
-        self._rows = [r for r in self._rows if int(r.oid) not in kill]
+        removed = self._store.remove_by_oids(kill)
         for oid in kill:
             self._drop_row_assets(oid)
         if self._highlighted_oids is not None:
             remaining = frozenset(x for x in self._highlighted_oids if int(x) not in kill)
             self._highlighted_oids = remaining if remaining else None
-        self._rebuild_oid_index()
         self._invalidate_numeric_bounds_all()
         self.endResetModel()
-        return n_before - len(self._rows)
+        return removed
 
     def insert_rows_batch(self, rows: list[tuple[int, int, dict[str, str]]]) -> None:
         """Restore rows deleted in bulk (undo). Each item is ``(orig_logical_index, oid, cells)``."""
@@ -260,35 +273,22 @@ class CompoundTableModel(QAbstractTableModel):
             return
         ordered = sorted(rows, key=lambda item: item[0])
         self.beginResetModel()
-        new_rows = list(self._rows)
-        for k, (orig_row, oid, cells) in enumerate(ordered):
-            insert_at = max(0, min(int(orig_row) + k, len(new_rows)))
-            new_rows.insert(insert_at, _Row(oid=int(oid), values=dict(cells)))
-        self._rows = new_rows
-        self._rebuild_oid_index()
+        self._store.insert_many_at(ordered)
         if self._column_color_rules:
             for _orig_row, _oid, cells in ordered:
-                row_obj = self._rows[self._oid_to_row[int(_oid)]]
-                self._refresh_color_cache_for_row(row_obj, cells)
+                self._refresh_color_cache_for_row(int(_oid), cells)
         self._invalidate_numeric_bounds_all()
         self.endResetModel()
 
     def row_oid(self, logical_row: int) -> int:
-        return self._rows[logical_row].oid
-
-    def _rebuild_oid_index(self) -> None:
-        self._oid_to_row = {row.oid: i for i, row in enumerate(self._rows)}
+        return self._store.oid_at(logical_row)
 
     def logical_row_for_oid(self, oid: int) -> int:
-        r = self._oid_to_row.get(oid, -1)
-        if 0 <= r < len(self._rows) and self._rows[r].oid == oid:
-            return r
-        self._rebuild_oid_index()
-        return self._oid_to_row.get(oid, -1)
+        return self._store.index_of(oid)
 
     def export_rows_for_sqlite(self, data_headers: list[str]) -> list[tuple[int, dict[str, str]]]:
         """Bulk export text columns for the SQLite mirror (avoids per-cell lookup)."""
-        return self.export_rows_for_sqlite_slice(data_headers, 0, len(self._rows))
+        return self.export_rows_for_sqlite_slice(data_headers, 0, len(self._store))
 
     def export_rows_for_sqlite_slice(
         self,
@@ -297,24 +297,34 @@ class CompoundTableModel(QAbstractTableModel):
         end_row: int,
     ) -> list[tuple[int, dict[str, str]]]:
         """Export a row slice ``[start_row, end_row)`` for chunked SQLite indexing."""
-        n = len(self._rows)
+        n = len(self._store)
         lo = max(0, int(start_row))
         hi = min(n, int(end_row))
-        out: list[tuple[int, dict[str, str]]] = []
-        for r in range(lo, hi):
-            row = self._rows[r]
-            cells = {h: str(row.values.get(h, "") or "") for h in data_headers}
-            out.append((int(row.oid), cells))
-        return out
+        return self._store.export_slice(data_headers, lo, hi)
+
+    def row_snapshots(
+        self,
+        data_headers: list[str],
+        start_row: int = 0,
+        end_row: int | None = None,
+    ) -> list[tuple[int, int, dict[str, str]]]:
+        """``(row_index, oid, {header: text})`` for rows ``[start_row, end_row)`` in display order.
+
+        Public bulk accessor for delete/undo snapshots (avoids reaching into the row store).
+        """
+        n = len(self._store)
+        lo = max(0, int(start_row))
+        hi = n if end_row is None else min(n, int(end_row))
+        rows = self._store.export_slice(data_headers, lo, hi)
+        return [(lo + i, oid, cells) for i, (oid, cells) in enumerate(rows)]
 
     def set_cell_text(self, oid: int, column_name: str, text: str) -> None:
         if column_name in ("ID_HIDDEN", "Structure") or column_name in self._pixmap_columns:
             return
-        r = self.logical_row_for_oid(oid)
+        r = self._store.set_value_by_oid(oid, column_name, text)
         if r < 0:
             return
-        self._rows[r].values[column_name] = text
-        self._refresh_color_cache_for_cell(self._rows[r], column_name, text)
+        self._refresh_color_cache_for_cell(int(oid), column_name, text)
         if column_name in self._bounds_data_headers():
             self._mark_numeric_bounds_dirty({column_name})
         try:
@@ -340,8 +350,8 @@ class CompoundTableModel(QAbstractTableModel):
             except ValueError:
                 continue
             text_s = str(text)
-            self._rows[r].values[column_name] = text_s
-            self._refresh_color_cache_for_cell(self._rows[r], column_name, text_s)
+            self._store.set_value_at(r, column_name, text_s)
+            self._refresh_color_cache_for_cell(int(oid), column_name, text_s)
             changed_cols.append(c)
         if not changed_cols:
             return
@@ -378,9 +388,10 @@ class CompoundTableModel(QAbstractTableModel):
         return None
 
     def notify_structure_column_changed(self, row_lo: int = 0, row_hi: int | None = None) -> None:
-        if not self._rows:
+        n = len(self._store)
+        if n == 0:
             return
-        hi = len(self._rows) - 1 if row_hi is None else max(0, min(int(row_hi), len(self._rows) - 1))
+        hi = n - 1 if row_hi is None else max(0, min(int(row_hi), n - 1))
         lo = max(0, min(int(row_lo), hi))
         roles = [Qt.DecorationRole, Qt.SizeHintRole, Qt.DisplayRole, Qt.ToolTipRole]
         self.dataChanged.emit(self.index(lo, self.STRUCTURE_COL), self.index(hi, self.STRUCTURE_COL), roles)
@@ -391,7 +402,7 @@ class CompoundTableModel(QAbstractTableModel):
             store = self._structure_png_store
             if store is not None:
                 store.remove_oid(oid)
-        if emit and oids and self._rows:
+        if emit and oids and len(self._store):
             self.notify_structure_column_changed()
 
     def apply_structure_pixmaps_batch(
@@ -410,7 +421,7 @@ class CompoundTableModel(QAbstractTableModel):
             r = self.logical_row_for_oid(oid_i)
             if r >= 0:
                 rows.append(r)
-        if emit and rows and self._rows:
+        if emit and rows and len(self._store):
             lo, hi = min(rows), max(rows)
             self.notify_structure_column_changed(lo, hi)
 
@@ -501,7 +512,7 @@ class CompoundTableModel(QAbstractTableModel):
     def rowCount(self, parent=QModelIndex()) -> int:  # noqa: N802
         if parent.isValid():
             return 0
-        return len(self._rows)
+        return len(self._store)
 
     def columnCount(self, parent=QModelIndex()) -> int:  # noqa: N802
         if parent.isValid():
@@ -512,10 +523,10 @@ class CompoundTableModel(QAbstractTableModel):
         if not index.isValid():
             return None
         row, col = index.row(), index.column()
-        if row < 0 or row >= len(self._rows) or col < 0 or col >= len(self._headers):
+        if row < 0 or row >= len(self._store) or col < 0 or col >= len(self._headers):
             return None
         h = self._headers[col]
-        oid = self._rows[row].oid
+        oid = self._store.oid_at(row)
 
         if col == 0:
             if role in (Qt.DisplayRole, Qt.EditRole):
@@ -587,9 +598,9 @@ class CompoundTableModel(QAbstractTableModel):
             return None
 
         if role in (Qt.DisplayRole, Qt.EditRole):
-            return self._rows[row].values.get(h, "")
+            return self._store.value_at(row, h, "")
         if role == Qt.TextAlignmentRole:
-            v = self._rows[row].values.get(h, "")
+            v = self._store.value_at(row, h, "")
             if safe_float(v) is not None:
                 return int(Qt.AlignRight | Qt.AlignVCenter)
         return None
@@ -598,12 +609,13 @@ class CompoundTableModel(QAbstractTableModel):
         if not index.isValid() or role != Qt.EditRole:
             return False
         row, col = index.row(), index.column()
-        if row < 0 or row >= len(self._rows) or col < 2:
+        if row < 0 or row >= len(self._store) or col < 2:
             return False
         h = self._headers[col]
         text_s = str(value)
-        self._rows[row].values[h] = text_s
-        self._refresh_color_cache_for_cell(self._rows[row], h, text_s)
+        oid = self._store.oid_at(row)
+        self._store.set_value_at(row, h, text_s)
+        self._refresh_color_cache_for_cell(int(oid), h, text_s)
         self.dataChanged.emit(index, index, [Qt.DisplayRole, Qt.EditRole, Qt.BackgroundRole])
         return True
 
@@ -632,18 +644,14 @@ class CompoundTableModel(QAbstractTableModel):
         if column < 0 or column >= len(self._headers):
             return []
         if column == 0 or column == 1:
-            return [(r.oid, "") for r in self._rows]
-        h = self._headers[column]
-        return [(r.oid, r.values.get(h, "") or "") for r in self._rows]
+            return self._store.snapshot_pairs(None)
+        return self._store.snapshot_pairs(self._headers[column])
 
     def apply_sorted_oids(self, ordered_oids: list[int]) -> None:
         """Reorder rows to match a precomputed oid order (from :func:`table_sort.build_sort_order`)."""
-        pos = {int(oid): i for i, oid in enumerate(ordered_oids)}
-        tail = len(pos)
         self.layoutAboutToBeChanged.emit([], QAbstractItemModel.VerticalSortHint)
-        self._rows.sort(key=lambda r: pos.get(r.oid, tail))
+        self._store.reorder(ordered_oids)
         self.layoutChanged.emit([], QAbstractItemModel.VerticalSortHint)
-        self._rebuild_oid_index()
 
     def sort(self, column: int, order: Qt.SortOrder = Qt.AscendingOrder, *, sort_kind: str = "auto") -> None:  # noqa: N802
         """Sort rows by *column*. *sort_kind*: ``auto`` (numbers then text), ``numeric``, or ``alphabetic``."""
@@ -656,15 +664,15 @@ class CompoundTableModel(QAbstractTableModel):
         self.apply_sorted_oids(ordered)
 
     def all_oids_in_order(self) -> list[int]:
-        return [r.oid for r in self._rows]
+        return self._store.all_oids()
 
     def cell_text(self, row: int, col: int) -> str:
-        if row < 0 or row >= len(self._rows) or col < 0 or col >= len(self._headers):
+        if row < 0 or row >= len(self._store) or col < 0 or col >= len(self._headers):
             return ""
         if col == 0:
-            return str(self._rows[row].oid)
+            return str(self._store.oid_at(row))
         if col == self.STRUCTURE_COL:
-            oid = self._rows[row].oid
+            oid = self._store.oid_at(row)
             pix = self._pixmaps.get(oid)
             if pix is not None and not pix.isNull():
                 return ""
@@ -672,21 +680,21 @@ class CompoundTableModel(QAbstractTableModel):
         h = self._headers[col]
         if h in self._pixmap_columns:
             return ""
-        return self._rows[row].values.get(h, "") or ""
+        return self._store.value_at(row, h, "") or ""
 
     def value_for_header(self, row: int, header_name: str) -> str:
         """Raw string cell for a data column (no QModelIndex); empty if unknown column."""
-        if row < 0 or row >= len(self._rows):
+        if row < 0 or row >= len(self._store):
             return ""
         if header_name in self._pixmap_columns:
             return ""
-        return self._rows[row].values.get(header_name, "") or ""
+        return self._store.value_at(row, header_name, "") or ""
 
     def backing_value_for_row_header(self, row: int, header_name: str) -> str:
         """Stored cell text even when ``header_name`` is a pixmap-only column (hidden from ``cell_text``)."""
-        if row < 0 or row >= len(self._rows):
+        if row < 0 or row >= len(self._store):
             return ""
-        return (self._rows[row].values.get(header_name, "") or "").strip()
+        return (self._store.value_at(row, header_name, "") or "").strip()
 
     def structure_pixmap_copy(self, oid: int) -> QPixmap | None:
         """Detached copy of the main structure pixmap for this molecule id, if any."""
@@ -777,7 +785,7 @@ class CompoundTableModel(QAbstractTableModel):
         """Min/max metadata for a single data column (one pass over rows)."""
         if header_name not in self._bounds_data_headers():
             return None
-        return self._scan_numeric_column(self._rows, header_name)
+        return self._scan_numeric_column(header_name)
 
     def refresh_numeric_bounds_for_headers(self, headers: list[str]) -> None:
         """Update cached min/max for specific columns only (avoids rescanning the full table)."""
@@ -791,7 +799,7 @@ class CompoundTableModel(QAbstractTableModel):
             self._numeric_bounds_dirty_cols = set()
         self._numeric_bounds_key = tuple(self._sorted_bounds_data_headers())
         for h in targets:
-            meta = self._scan_numeric_column(self._rows, h)
+            meta = self._scan_numeric_column(h)
             if meta is not None:
                 self._numeric_bounds_cache[h] = meta
             else:
@@ -799,12 +807,11 @@ class CompoundTableModel(QAbstractTableModel):
         if self._numeric_bounds_dirty_cols is not None:
             self._numeric_bounds_dirty_cols -= set(targets)
 
-    @staticmethod
-    def _scan_numeric_column(rows: list[_Row], h: str) -> dict | None:
+    def _scan_numeric_column(self, h: str) -> dict | None:
         lo = hi = None
         int_ok = True
-        for row in rows:
-            f = safe_float(row.values.get(h, ""))
+        for raw in self._store.iter_values(h):
+            f = safe_float(raw)
             if f is None:
                 continue
             fv = float(f)
@@ -834,7 +841,7 @@ class CompoundTableModel(QAbstractTableModel):
             return {}
         out: dict[str, dict] = {}
         for h in data_headers:
-            meta = self._scan_numeric_column(self._rows, h)
+            meta = self._scan_numeric_column(h)
             if meta is not None:
                 out[h] = meta
         return out
@@ -869,7 +876,7 @@ class CompoundTableModel(QAbstractTableModel):
         for h in list(self._numeric_bounds_dirty_cols):
             if h not in key:
                 continue
-            meta = self._scan_numeric_column(self._rows, h)
+            meta = self._scan_numeric_column(h)
             if meta is None:
                 cache.pop(h, None)
             else:
@@ -878,13 +885,14 @@ class CompoundTableModel(QAbstractTableModel):
         return dict(cache)
 
     def set_cell_text_at(self, row: int, col: int, text: str) -> None:
-        if row < 0 or row >= len(self._rows) or col < 2 or col >= len(self._headers):
+        if row < 0 or row >= len(self._store) or col < 2 or col >= len(self._headers):
             return
         h = self._headers[col]
         if h in self._pixmap_columns:
             return
-        self._rows[row].values[h] = str(text)
-        self._refresh_color_cache_for_cell(self._rows[row], h, str(text))
+        oid = self._store.oid_at(row)
+        self._store.set_value_at(row, h, str(text))
+        self._refresh_color_cache_for_cell(int(oid), h, str(text))
         if h in self._bounds_data_headers():
             self._mark_numeric_bounds_dirty({h})
         idx = self.index(row, col)
@@ -894,10 +902,7 @@ class CompoundTableModel(QAbstractTableModel):
         """Snapshot one text column as ``{oid: value}`` (fast path for undo / bulk ops)."""
         if header_name in ("ID_HIDDEN", "Structure") or header_name in self._pixmap_columns:
             return {}
-        out: dict[int, str] = {}
-        for row in self._rows:
-            out[row.oid] = str(row.values.get(header_name, ""))
-        return out
+        return self._store.column_by_oid(header_name)
 
     def duplicate_column_at(self, dest_col: int, header_name: str, src_logical: int) -> None:
         """Insert a column and bulk-copy values from *src_logical* with one model notification."""
@@ -907,18 +912,17 @@ class CompoundTableModel(QAbstractTableModel):
         src_key = self._headers[src_logical]
         self.beginInsertColumns(QModelIndex(), dest_col, dest_col)
         self._headers.insert(dest_col, header_name)
-        for row in self._rows:
-            row.values[header_name] = str(row.values.get(src_key, ""))
+        self._store.add_column(header_name, copy_from=src_key)
         if src_key in self._column_color_rules:
             self._column_color_rules[header_name] = self._column_color_rules[src_key]
             self._rebuild_column_color_cache(header_name)
         self._mark_headers_added_for_bounds([header_name])
         self.endInsertColumns()
-        if self._rows:
+        if len(self._store):
             roles = [Qt.DisplayRole, Qt.EditRole, Qt.BackgroundRole]
             self.dataChanged.emit(
                 self.index(0, dest_col),
-                self.index(len(self._rows) - 1, dest_col),
+                self.index(len(self._store) - 1, dest_col),
                 roles,
             )
 
@@ -931,11 +935,11 @@ class CompoundTableModel(QAbstractTableModel):
         roles: list | None = None,
     ) -> None:
         """Notify the view only for changed rows (merged ranges), not the whole table."""
-        if not rows_changed or not self._rows:
+        if not rows_changed or not len(self._store):
             return
         if roles is None:
             roles = [Qt.DisplayRole, Qt.EditRole, Qt.BackgroundRole]
-        n = len(self._rows)
+        n = len(self._store)
         unique = sorted({int(r) for r in rows_changed if 0 <= int(r) < n})
         if not unique:
             return
@@ -959,17 +963,14 @@ class CompoundTableModel(QAbstractTableModel):
             col = self._headers.index(column_name)
         except ValueError:
             return
-        rows_changed: list[int] = []
-        for oid, text in oid_values:
-            r = self.logical_row_for_oid(oid)
-            if r < 0:
-                continue
-            text_s = str(text)
-            self._rows[r].values[column_name] = text_s
-            self._refresh_color_cache_for_cell(self._rows[r], column_name, text_s)
-            rows_changed.append(r)
+        rows_changed = self._store.set_column_by_oids(column_name, oid_values)
         if not rows_changed:
             return
+        if self._column_color_rules.get(column_name) is not None:
+            for r in rows_changed:
+                self._refresh_color_cache_for_cell(
+                    int(self._store.oid_at(r)), column_name, self._store.value_at(r, column_name, "")
+                )
         if column_name in self._bounds_data_headers():
             self._mark_numeric_bounds_dirty({column_name})
         self._emit_data_changed_row_spans(rows_changed, col, col)
@@ -1000,17 +1001,7 @@ class CompoundTableModel(QAbstractTableModel):
         from ..config import load_config
 
         defer_color = len(oid_value_rows) >= int(load_config().bulk_update_defer_color_cache_rows)
-        rows_changed: list[int] = []
-        for oid, row_d in oid_value_rows:
-            r = self._oid_to_row.get(int(oid), -1)
-            if r < 0 or r >= len(self._rows):
-                continue
-            row_obj = self._rows[r]
-            for header_name in col_set:
-                if header_name not in row_d:
-                    continue
-                row_obj.values[header_name] = str(row_d[header_name])
-            rows_changed.append(r)
+        rows_changed = self._store.apply_columns_bulk(col_set, oid_value_rows)
         if defer_color:
             for header_name in colored_cols:
                 self._column_color_cache.pop(header_name, None)
@@ -1047,16 +1038,15 @@ class CompoundTableModel(QAbstractTableModel):
             col = self._headers.index(column_name)
         except ValueError:
             return
-        for row in self._rows:
-            row.values[column_name] = oid_to_text.get(row.oid, default)
+        self._store.fill_column(column_name, oid_to_text, default)
         if column_name in self._column_color_rules:
             self._rebuild_column_color_cache(column_name)
         if column_name in self._bounds_data_headers():
             self._mark_numeric_bounds_dirty({column_name})
-        if emit and self._rows:
+        if emit and len(self._store):
             self.dataChanged.emit(
                 self.index(0, col),
-                self.index(len(self._rows) - 1, col),
+                self.index(len(self._store) - 1, col),
                 [Qt.DisplayRole, Qt.EditRole, Qt.BackgroundRole],
             )
 
@@ -1076,8 +1066,7 @@ class CompoundTableModel(QAbstractTableModel):
             self._headers.insert(col + i, header_name)
         if copy_key is not None:
             for header_name in header_names:
-                for row in self._rows:
-                    row.values[header_name] = row.values.get(copy_key, "")
+                self._store.add_column(header_name, copy_from=copy_key)
                 if copy_key in self._column_color_rules:
                     self._column_color_rules[header_name] = self._column_color_rules[copy_key]
                     self._rebuild_column_color_cache(header_name)
@@ -1094,8 +1083,7 @@ class CompoundTableModel(QAbstractTableModel):
         self.beginInsertColumns(QModelIndex(), col, col)
         self._headers.insert(col, header_name)
         if copy_key is not None:
-            for row in self._rows:
-                row.values[header_name] = row.values.get(copy_key, "")
+            self._store.add_column(header_name, copy_from=copy_key)
             if copy_key in self._column_color_rules:
                 self._column_color_rules[header_name] = self._column_color_rules[copy_key]
                 self._rebuild_column_color_cache(header_name)
@@ -1117,8 +1105,7 @@ class CompoundTableModel(QAbstractTableModel):
         self.beginRemoveColumns(QModelIndex(), col, col)
         self._headers.pop(col)
         if col >= 2:
-            for row in self._rows:
-                row.values.pop(h, None)
+            self._store.remove_column(h)
         self._mark_header_removed_for_bounds(h)
         self.endRemoveColumns()
 
@@ -1134,18 +1121,14 @@ class CompoundTableModel(QAbstractTableModel):
         if col >= 2 and old in self._pixmap_columns:
             self._pixmap_columns.discard(old)
             self._pixmap_columns.add(new_name)
-            for row in self._rows:
-                oid = row.oid
-                kk = (oid, old)
-                if kk in self._extra_pixmaps:
-                    self._extra_pixmaps[(oid, new_name)] = self._extra_pixmaps.pop(kk)
+            renames = [(k, (k[0], new_name)) for k in self._extra_pixmaps if k[1] == old]
+            for old_key, new_key in renames:
+                self._extra_pixmaps[new_key] = self._extra_pixmaps.pop(old_key)
         if col >= 2:
-            for row in self._rows:
-                if old in row.values:
-                    row.values[new_name] = row.values.pop(old)
+            self._store.rename_column(old, new_name)
         self.headerDataChanged.emit(Qt.Horizontal, col, col)
         c0 = self.index(0, col)
-        c1 = self.index(max(len(self._rows) - 1, 0), col)
+        c1 = self.index(max(len(self._store) - 1, 0), col)
         self.dataChanged.emit(c0, c1, [Qt.DisplayRole, Qt.EditRole, Qt.BackgroundRole])
         self._invalidate_numeric_bounds_all()
 
@@ -1295,31 +1278,31 @@ class CompoundTableModel(QAbstractTableModel):
     def _emit_color_refresh_for_header(self, header_name: str) -> None:
         if header_name not in self._headers:
             return
-        n = len(self._rows)
+        n = len(self._store)
         if n <= 0:
             return
         col = self._headers.index(header_name)
         self.dataChanged.emit(self.index(0, col), self.index(n - 1, col), [Qt.BackgroundRole])
 
-    def _refresh_color_cache_for_cell(self, row_obj: _Row, header_name: str, value: str) -> None:
+    def _refresh_color_cache_for_cell(self, oid: int, header_name: str, value: str) -> None:
         rule = self._column_color_rules.get(header_name)
         if rule is None:
             return
         cmap = self._column_color_cache.setdefault(header_name, {})
         rgb = self._color_rgb_for_value(rule, value)
         if rgb is None:
-            cmap.pop(row_obj.oid, None)
+            cmap.pop(int(oid), None)
         else:
-            cmap[row_obj.oid] = rgb
+            cmap[int(oid)] = rgb
 
-    def _refresh_color_cache_for_row(self, row_obj: _Row, row_cells: dict[str, str]) -> None:
+    def _refresh_color_cache_for_row(self, oid: int, row_cells: dict[str, str]) -> None:
         if not self._column_color_rules:
             return
         for header_name in self._column_color_rules:
             if header_name in self._pixmap_columns:
                 continue
             val = row_cells.get(header_name, "")
-            self._refresh_color_cache_for_cell(row_obj, header_name, val)
+            self._refresh_color_cache_for_cell(oid, header_name, val)
 
     def _rebuild_column_color_cache(self, header_name: str) -> None:
         rule = self._column_color_rules.get(header_name)
@@ -1327,10 +1310,10 @@ class CompoundTableModel(QAbstractTableModel):
             self._column_color_cache.pop(header_name, None)
             return
         cmap: dict[int, int] = {}
-        for row in self._rows:
-            rgb = self._color_rgb_for_value(rule, row.values.get(header_name, ""))
+        for oid, value in self._store.column_by_oid(header_name).items():
+            rgb = self._color_rgb_for_value(rule, value)
             if rgb is not None:
-                cmap[row.oid] = rgb
+                cmap[oid] = rgb
         self._column_color_cache[header_name] = cmap
 
     @staticmethod
@@ -1395,19 +1378,14 @@ class CompoundTableModel(QAbstractTableModel):
     def moveRow(self, sourceParent: QModelIndex, sourceRow: int, destinationParent: QModelIndex, destinationChild: int) -> bool:  # noqa: N802
         if sourceParent.isValid() or destinationParent.isValid():
             return False
-        n = len(self._rows)
+        n = len(self._store)
         if sourceRow < 0 or sourceRow >= n or destinationChild < 0 or destinationChild > n:
             return False
         if sourceRow == destinationChild:
             return True
         self.beginMoveRows(QModelIndex(), sourceRow, sourceRow, QModelIndex(), destinationChild)
-        row = self._rows.pop(sourceRow)
-        if destinationChild > sourceRow:
-            self._rows.insert(destinationChild, row)
-        else:
-            self._rows.insert(destinationChild, row)
+        self._store.move(sourceRow, destinationChild)
         self.endMoveRows()
-        self._rebuild_oid_index()
         return True
 
 

@@ -95,6 +95,8 @@ class MolManagerConfig:
     structure_render_png_ram_rows: int
     mols_live_max: int
     sort_async_min_rows: int
+    row_store_disk_min_rows: int
+    row_store_cache_rows: int
     tool_progress_poll_ms: int
     table_selection_oid_override_min: int
     table_selection_chunk_rows: int
@@ -193,6 +195,12 @@ def load_config() -> MolManagerConfig:
         ),
         sort_async_min_rows=_env_int(
             "MOLMANAGER_SORT_ASYNC_MIN_ROWS", 50_000, lo=1000, hi=50_000_000
+        ),
+        row_store_disk_min_rows=_env_int(
+            "MOLMANAGER_ROW_STORE_DISK_MIN_ROWS", 300_000, lo=0, hi=50_000_000
+        ),
+        row_store_cache_rows=_env_int(
+            "MOLMANAGER_ROW_STORE_CACHE_ROWS", 20_000, lo=0, hi=10_000_000
         ),
         tool_progress_poll_ms=_env_int("MOLMANAGER_TOOL_PROGRESS_POLL_MS", 200, lo=50, hi=2000),
         table_selection_oid_override_min=_env_int(
