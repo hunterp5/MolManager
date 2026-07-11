@@ -258,15 +258,11 @@ class TableUIMixin(TableSearchMixin, FilterPanelMixin):
         *,
         clear_oid_override: bool = True,
         extra_status: str = "",
-        allow_hidden: bool = False,
     ) -> int:
         """Replace the selection with the given source-model row indices (skips invalid indices)."""
         self._cancel_chunked_table_selection()
         return self._apply_table_row_selection(
-            rows,
-            clear_oid_override=clear_oid_override,
-            extra_status=extra_status,
-            allow_hidden=allow_hidden,
+            rows, clear_oid_override=clear_oid_override, extra_status=extra_status
         )
 
     def select_table_oids(
@@ -538,7 +534,6 @@ class TableUIMixin(TableSearchMixin, FilterPanelMixin):
         *,
         clear_oid_override: bool = True,
         extra_status: str = "",
-        allow_hidden: bool = False,
     ) -> int:
         n_rows = self._table_model.rowCount()
         if n_rows <= 0:
@@ -566,18 +561,6 @@ class TableUIMixin(TableSearchMixin, FilterPanelMixin):
             return len(uniq)
         view_rows = self._source_rows_to_view_rows(uniq)
         if not view_rows:
-            if allow_hidden:
-                oids = self._oids_for_source_rows(uniq)
-                if oids:
-                    extra = str(extra_status or "")
-                    hint = "(includes filtered-out rows)"
-                    extra = f"{extra} {hint}".strip() if extra else hint
-                    return self._finish_oid_override_selection(
-                        uniq,
-                        oids,
-                        clear_oid_override=clear_oid_override,
-                        extra_status=extra,
-                    )
             if not clear_oid_override and self._selected_oids_override:
                 n_override = len(self._selected_oids_override)
                 self._report_table_selection_status(n_override)
