@@ -23,9 +23,6 @@ from ..strings import (
     loaded_session_status,
 )
 from ...storage import SqliteTableStore
-from ...workers import (
-    SqliteRebuildWorker,
-)
 from ..compound_table_model import (
     CompoundTableModel,
     STRUCTURE_COLUMN_HORIZONTAL_PADDING,
@@ -66,6 +63,9 @@ class IngestRenderMixin:
                 self._structure_field_override = picked
             elif not ok:
                 self._structure_field_override = None
+        holder = getattr(self, "_structure_override_holder", None)
+        if holder is not None:
+            holder[0] = self._structure_field_override
         ev = getattr(self, "_structure_choice_event", None)
         if ev is not None:
             ev.set()
@@ -120,20 +120,25 @@ class IngestRenderMixin:
                     take = mols_list[:remain]
                     if take:
                         new_rows: list[tuple[int, dict[str, str]]] = []
-                        for m in take:
-                            m = self._apply_structure_field_override(m)
+                        for item in take:
+                            if isinstance(item, tuple) and len(item) == 2:
+                                m, cells = item
+                            else:
+                                m = self._apply_structure_field_override(item)
+                                cells = self._row_cells_from_mol(m)
                             oid = self.next_oid
                             self.next_oid += 1
                             self.mols[oid] = m
-                            new_rows.append((oid, self._row_cells_from_mol(m)))
+                            new_rows.append((oid, cells))
                         self._table_model.append_rows_batch(new_rows, defer_color_cache=True)
                         processed += len(new_rows)
-                        n = len(self.mols)
-                        self.status_label.setText(f"Loaded {n} molecules — preparing table…")
-                        if self._table_stack.currentIndex() == 0:
-                            self._loading_detail.setText(
-                                f"Building table…\n{n} molecule(s); 2D structures draw when ready"
-                            )
+                        n = self.next_oid
+                        if processed == len(new_rows) or n % 2000 < len(new_rows):
+                            self.status_label.setText(f"Loaded {n:,} molecules — preparing table…")
+                            if self._table_stack.currentIndex() == 0:
+                                self._loading_detail.setText(
+                                    f"Building table…\n{n:,} molecule(s); 2D structures draw when ready"
+                                )
                         if getattr(self, "_ingest_loading", False):
                             if not self._import_building_progress_shown:
                                 self._import_building_progress_shown = True
@@ -206,14 +211,9 @@ class IngestRenderMixin:
             self._sqlite_rebuild_in_progress = False
 
     def _schedule_sqlite_rebuild(self) -> None:
-        """Export in UI chunks, then rebuild the SQLite mirror in a background worker."""
+        """Export the model to a temp SQLite file in UI chunks (bounded RAM), then swap the mirror."""
         store = getattr(self, "_sqlite_store", None)
         if store is None or self._sqlite_rebuild_in_progress:
-            return
-        sigs = getattr(self, "_sqlite_rebuild_signals", None)
-        pool = getattr(self, "threadpool", None)
-        if sigs is None or pool is None:
-            self._rebuild_sqlite_store_from_model()
             return
         self._sqlite_rebuild_gen = int(getattr(self, "_sqlite_rebuild_gen", 0)) + 1
         gen = self._sqlite_rebuild_gen
@@ -239,12 +239,11 @@ class IngestRenderMixin:
         self._sqlite_export_ctx = {
             "gen": gen,
             "data_headers": data_headers,
-            "entries": [],
             "row_idx": 0,
             "n_rows": n_rows,
             "chunk": chunk,
             "db_path": str(db_path),
-            "signals": sigs,
+            "store": None,
         }
         self.status_label.setText(f"Indexing table… (0/{n_rows:,} rows)")
         QTimer.singleShot(0, self._sqlite_export_chunk_step)
@@ -261,22 +260,51 @@ class IngestRenderMixin:
         n_rows = int(ctx["n_rows"])
         chunk = int(ctx["chunk"])
         end = min(row_idx + chunk, n_rows)
-        ctx["entries"].extend(self._table_model.export_rows_for_sqlite_slice(data_headers, row_idx, end))
+        slice_entries = self._table_model.export_rows_for_sqlite_slice(data_headers, row_idx, end)
+        store = ctx.get("store")
+        if store is None:
+            store = SqliteTableStore(ctx["db_path"])
+            store.begin_rebuild(list(self.headers))
+            ctx["store"] = store
+        store.append_chunk(slice_entries)
         ctx["row_idx"] = end
         self.status_label.setText(f"Indexing table… ({end:,}/{n_rows:,} rows)")
         if end < n_rows:
             QTimer.singleShot(0, self._sqlite_export_chunk_step)
             return
         gen = int(ctx["gen"])
-        entries = ctx["entries"]
         db_path = ctx["db_path"]
-        sigs = ctx["signals"]
         self._sqlite_export_ctx = None
-        pool = getattr(self, "threadpool", None)
-        if pool is None:
+        try:
+            store.finish_rebuild()
+            store.close()
+            new_store = SqliteTableStore(db_path)
+            old = getattr(self, "_sqlite_store", None)
+            self._sqlite_store = new_store
+            if old is not None:
+                try:
+                    old.close()
+                except Exception:
+                    pass
+            self._sqlite_store_dirty = False
             self._sqlite_rebuild_in_progress = False
-            return
-        pool.start(SqliteRebuildWorker(gen, list(self.headers), entries, db_path, sigs))
+            self._sqlite_rebuild_pending_path = None
+            self._unregister_sqlite_rebuild_background_job(gen)
+            if getattr(self, "_sqlite_rebuild_stale", False):
+                self._sqlite_rebuild_stale = False
+                self._sqlite_store_dirty = True
+                self._schedule_sqlite_rebuild()
+                return
+            if getattr(self, "_sqlite_rebuild_pending_filters", False):
+                self._sqlite_rebuild_pending_filters = False
+                self.apply_filters()
+            elif n_rows:
+                self.status_label.setText(loaded_session_status(n_rows))
+        except Exception:
+            logger.exception("Failed to finalize streamed SQLite rebuild")
+            self._sqlite_rebuild_in_progress = False
+            self._sqlite_rebuild_pending_path = None
+            self._unregister_sqlite_rebuild_background_job(gen)
 
     def _unregister_sqlite_rebuild_background_job(self, job_gen: int) -> None:
         from ..background_jobs import unregister_background_job

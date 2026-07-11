@@ -185,6 +185,7 @@ class ChemicalTableApp(
         self._refresh_structure_delegate_theme()
         self.next_oid = 0
         self._structure_field_override = None
+        self._structure_override_holder = [None]
         self._structure_choice_event = threading.Event()
         self._structure_choice_event.set()
         # incremental batch processing state to avoid UI freezes
