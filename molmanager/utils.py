@@ -57,12 +57,14 @@ def parse_molecule_from_cell_text(raw: str):
         and ("[" in raw or ">>" in raw or raw.startswith("^"))
     ):
         try:
-            m = Chem.MolFromSmarts(raw)
+            from .smarts_patterns import mol_from_smarts
+
+            m = mol_from_smarts(raw)
             if m is not None:
                 return m
         except Exception:
             pass
-    return None
+        return None
 
 
 def redact_sqlalchemy_url(url: str) -> str:

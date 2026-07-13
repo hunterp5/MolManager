@@ -327,6 +327,7 @@ column shows 2D images when structures are available.</p>
 <li><b>Select</b> — pick the first row for each distinct value in that column.</li>
 <li><b>Logarithmic</b> — convert positive numeric values to log<sub>10</sub>; click again to convert back.
 Disabled on columns without convertible positive numbers.</li>
+<li><b>Precision…</b> — round numeric values to a chosen number of decimal places (0–12).</li>
 </ul>
 <h3>Cell or row (right-click a cell)</h3>
 <ul>
@@ -356,7 +357,11 @@ do not match. Combine substructure, numeric slider, text, and category filters.<
 <li>Combine terms with <code>&amp;</code> (AND) or <code>|</code> / comma (OR), e.g. <code>&gt;10 &amp; &lt;500</code>.</li>
 <li>Quote text: <code>"sodium chloride"</code>.</li>
 <li>Numeric comparisons (<code>&gt;5</code>), <code>empty</code> / <code>not empty</code>, wildcards in quotes.</li>
-<li><b>Substructure</b> mode matches SMILES or SMARTS.</li>
+<li><b>Substructure</b> mode matches SMILES or
+<a href="https://www.daylight.com/dayhtml/doc/theory/theory.smarts.html">Daylight SMARTS</a>
+(including <code>!</code>, <code>&amp;</code>, <code>,</code>, <code>;</code> inside atom/bond expressions).
+Search-level OR still uses <code>|</code> or a comma <em>between</em> patterns;
+AND uses <code>&amp;</code>.</li>
 </ul>
 """,
     "tools_chem": """
@@ -366,11 +371,16 @@ do not match. Combine substructure, numeric slider, text, and category filters.<
 <ul>
 <li><b>Fast Prepare</b> — keep largest fragment, neutralize, then batch Render 2D in one job.</li>
 <li><b>Disconnect Largest Fragments</b> — split salts; keep the largest piece.</li>
-<li><b>Neutralize</b> — adjust protonation toward net charge 0.</li>
 <li><b>Add Explicit Hydrogens</b> — expand implicit H atoms to explicit hydrogens (RDKit AddHs).</li>
 <li><b>Remove Explicit Hydrogens</b> — strip explicit H atoms from structures (RDKit RemoveHs).</li>
 <li><b>Render 2D</b> — draw structures into a column; optional “show implicit hydrogens”.</li>
+<li><b>Protonate Structures</b> submenu:
+<ul>
 <li><b>Protonate</b> — dominant protomer at a chosen pH; optional 2D render and <b>% Protomer</b> column.</li>
+<li><b>Generate Protomers</b> — enumerate protomers or tautomers with approximate populations.</li>
+<li><b>Neutralize</b> — adjust protonation toward net charge 0.</li>
+</ul>
+</li>
 </ul>
 <h3>Calculate Descriptors</h3>
 <p>Choose descriptor categories (drug-likeness, atom counts, fingerprint on-bits, LogD/LogS when available).
@@ -414,14 +424,13 @@ a new column.</p>
 """,
     "tools_ion": """
 <h2>Ionization and permeability</h2>
-<h3>pKa Predictor</h3>
+<h3>Predict pKa</h3>
 <p>Estimates microstate pKa values from structures. Filter to most basic or most acidic sites; limit to
 selected rows on large tables. Runs through the background queue.</p>
-<h3>Protonate (Prepare Structures)</h3>
-<p>Writes the <b>dominant protomer</b> at a chosen pH to a new column, with optional <b>% Protomer</b>
-and 2D depiction.</p>
-<h3>Generate Protomers</h3>
-<p>Enumerates protonation/tautomer states with approximate populations at a chosen pH.</p>
+<h3>Protonate Structures (Prepare Structures)</h3>
+<p><b>Protonate</b> writes the <b>dominant protomer</b> at a chosen pH to a new column, with optional
+<b>% Protomer</b> and 2D depiction. <b>Generate Protomers</b> enumerates protonation/tautomer states
+with approximate populations. <b>Neutralize</b> adjusts formal charge toward net zero (RDKit Uncharger).</p>
 <h3>Predict Permeability</h3>
 <p>Predicts Caco-2 and MDCK permeability endpoints when the Chemprop model stack is installed.
 Download model weights with <code>python scripts/bootstrap_gnn_mtl_model.py</code> if needed.</p>

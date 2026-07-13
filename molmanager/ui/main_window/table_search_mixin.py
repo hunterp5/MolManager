@@ -212,11 +212,13 @@ class TableSearchMixin:
 
     def _search_query_pattern_mol(self, text: str) -> Chem.Mol | None:
         """Parse one query string as a substructure pattern (SMARTS first, then SMILES)."""
+        from ...smarts_patterns import mol_from_smarts
+
         text = (text or "").strip()
         if not text:
             return None
         try:
-            m = Chem.MolFromSmarts(text)
+            m = mol_from_smarts(text)
             if m is not None:
                 return m
         except Exception:
@@ -225,6 +227,29 @@ class TableSearchMixin:
             return Chem.MolFromSmiles(text)
         except Exception:
             return None
+
+    def _coalesce_smarts_term_groups(
+        self, needle: str, term_groups: list[list[str]]
+    ) -> list[list[str]]:
+        """
+        If search-level splitting breaks a valid Daylight SMARTS string, keep the whole query.
+
+        Prefer the split terms when every term parses; otherwise fall back to one pattern.
+        """
+        flat: list[str] = []
+        for and_terms in term_groups:
+            for t in and_terms:
+                pat_text, _neg = parse_substructure_term(t)
+                if pat_text:
+                    flat.append(pat_text)
+        if len(flat) <= 1:
+            return term_groups
+        if all(self._search_query_pattern_mol(t) is not None for t in flat):
+            return term_groups
+        whole = (needle or "").strip()
+        if whole and self._search_query_pattern_mol(whole) is not None:
+            return [[whole]]
+        return term_groups
 
     def _resolve_search_column(self, combo: QComboBox) -> int | None:
         col = combo.currentData()
@@ -248,6 +273,8 @@ class TableSearchMixin:
             term_groups = parse_search_term_groups(needle)
             if not term_groups:
                 continue
+            if row.substructure_cb.isChecked():
+                term_groups = self._coalesce_smarts_term_groups(needle, term_groups)
             col = self._resolve_search_column(row.col_combo)
             if col is None:
                 self._populate_search_row_columns(row)

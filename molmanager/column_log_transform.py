@@ -66,3 +66,43 @@ def transform_column_values_log10(
         if new_text != str(raw):
             out[int(oid)] = new_text
     return out
+
+
+def column_can_apply_precision(cell_texts: Iterable[str]) -> bool:
+    """True when the column has at least one finite numeric value."""
+    for raw in cell_texts:
+        value = safe_float(raw)
+        if value is not None and math.isfinite(value):
+            return True
+    return False
+
+
+def format_number_precision(value: float, decimals: int) -> str:
+    """Format *value* to a fixed number of decimal places (0–12)."""
+    places = max(0, min(12, int(decimals)))
+    if not math.isfinite(value):
+        return ""
+    if places == 0:
+        text = f"{round(value):.0f}"
+    else:
+        text = f"{value:.{places}f}"
+    if text in ("-0", "-0.0") or (text.startswith("-0.") and set(text[3:]) <= {"0"}):
+        return "0" if places == 0 else f"0.{'0' * places}"
+    return text
+
+
+def transform_column_values_precision(
+    oid_to_text: Mapping[int, str],
+    *,
+    decimals: int,
+) -> dict[int, str]:
+    """Return ``{oid: new_text}`` for numeric cells whose formatted text changes."""
+    out: dict[int, str] = {}
+    for oid, raw in oid_to_text.items():
+        value = safe_float(raw)
+        if value is None or not math.isfinite(value):
+            continue
+        new_text = format_number_precision(value, decimals)
+        if new_text != str(raw):
+            out[int(oid)] = new_text
+    return out

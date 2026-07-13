@@ -21,8 +21,9 @@ _PLACEHOLDER_TEXT = (
     "&, |, and comma are not treated as operators. Press Enter to search."
 )
 _PLACEHOLDER_SUBSTRUCTURE = (
-    "Substructure (SMILES/SMARTS), e.g. c1ccccc1 or [OH]. Prefix NOT, !, or - to exclude. "
-    "& or comma combines terms. Press Enter."
+    "Substructure (SMILES/SMARTS), e.g. c1ccccc1, [F,Cl], [!C;R], or [M]. "
+    "Daylight logic inside [] / bonds (! & , ;) is kept. "
+    "Search OR = | or comma between patterns; AND = &. Prefix NOT, !, or - to exclude. Press Enter."
 )
 
 

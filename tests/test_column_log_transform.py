@@ -6,8 +6,11 @@ import math
 
 from molmanager.column_log_transform import (
     column_can_apply_log10,
+    column_can_apply_precision,
+    format_number_precision,
     format_transformed_number,
     transform_column_values_log10,
+    transform_column_values_precision,
 )
 
 
@@ -37,3 +40,21 @@ def test_format_transformed_number_handles_edge_cases() -> None:
     assert format_transformed_number(0.0) == "0"
     assert format_transformed_number(math.inf) == ""
     assert format_transformed_number(1.25) == "1.25"
+
+
+def test_column_can_apply_precision_requires_numeric() -> None:
+    assert column_can_apply_precision(["1.234", "N/A"])
+    assert column_can_apply_precision(["-3"])
+    assert not column_can_apply_precision([])
+    assert not column_can_apply_precision(["", "abc"])
+
+
+def test_transform_column_values_precision() -> None:
+    src = {1: "1.23456", 2: "10", 3: "", 4: "N/A"}
+    changed = transform_column_values_precision(src, decimals=2)
+    assert changed[1] == "1.23"
+    assert changed[2] == "10.00"
+    assert 3 not in changed
+    assert 4 not in changed
+    assert format_number_precision(1.999, 0) == "2"
+    assert format_number_precision(-0.0, 2) == "0.00"

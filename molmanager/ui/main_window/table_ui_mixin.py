@@ -25,7 +25,12 @@ from ...utils import (
     parse_molecule_from_cell_text,
     safe_mol_prop_string,
 )
-from ...column_log_transform import column_can_apply_log10, transform_column_values_log10
+from ...column_log_transform import (
+    column_can_apply_log10,
+    column_can_apply_precision,
+    transform_column_values_log10,
+    transform_column_values_precision,
+)
 from ..table_selection import item_selection_for_view_rows, merge_sorted_row_indices
 from ..compound_table_model import CompoundTableModel
 from ..singleton_modeless_dialog import reuse_or_show_modeless_singleton
@@ -43,6 +48,7 @@ from .table_undo_commands import (
     UndoInsertRowCommand,
     UndoLogarithmicColumnCommand,
     UndoPasteCellCommand,
+    UndoPrecisionColumnCommand,
 )
 
 
@@ -1330,6 +1336,12 @@ class TableUIMixin(TableSearchMixin, FilterPanelMixin):
             "Disabled when the column has no positive numeric values, or any numeric "
             "value ≤ 0 (while not already logarithmic)."
         )
+        prec_act = menu.addAction("Precision…")
+        prec_act.setEnabled(self._column_can_apply_precision(old_n))
+        prec_act.setToolTip(
+            "Round numeric values in this column to a chosen number of decimal places. "
+            "Disabled when the column has no numeric values."
+        )
         action = menu.exec_(self.table.horizontalHeader().mapToGlobal(pos))
         if action == sel_act:
             self.table.setCurrentIndex(self._table_model.index(0, col))
@@ -1348,6 +1360,8 @@ class TableUIMixin(TableSearchMixin, FilterPanelMixin):
             self._open_column_color_dialog(col)
         elif action == log_act:
             self._toggle_column_logarithmic(old_n)
+        elif action == prec_act:
+            self._apply_column_precision(old_n)
         elif action == select_all_visible_act:
             self._select_all_visible_rows()
         elif action == select_all_act:
@@ -1415,6 +1429,45 @@ class TableUIMixin(TableSearchMixin, FilterPanelMixin):
                 self,
                 header_name,
                 to_log=to_log,
+                changed_by_oid=changed,
+                previous_by_oid=previous,
+            )
+            )
+
+    def _column_can_apply_precision(self, header_name: str) -> bool:
+        if header_name in ("ID_HIDDEN", "Structure"):
+            return False
+        if self._table_model.is_pixmap_data_column(header_name):
+            return False
+        texts = self._table_model.column_text_by_oid(header_name).values()
+        return column_can_apply_precision(texts)
+
+    def _apply_column_precision(self, header_name: str) -> None:
+        if not self._column_can_apply_precision(header_name):
+            return
+        decimals, ok = QInputDialog.getInt(
+            self,
+            "Precision",
+            f"Decimal places for '{header_name}':",
+            2,
+            0,
+            12,
+        )
+        if not ok:
+            return
+        current = self._table_model.column_text_by_oid(header_name)
+        changed = transform_column_values_precision(current, decimals=decimals)
+        if not changed:
+            self.status_label.setText(
+                f"Column '{header_name}' already matches {decimals} decimal place(s)."
+            )
+            return
+        previous = {oid: current[oid] for oid in changed}
+        self._undo_stack.push(
+            UndoPrecisionColumnCommand(
+                self,
+                header_name,
+                decimals=decimals,
                 changed_by_oid=changed,
                 previous_by_oid=previous,
             )

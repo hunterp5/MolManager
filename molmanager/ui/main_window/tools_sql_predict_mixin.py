@@ -815,19 +815,19 @@ class ToolsSqlPredictMixin:
             res = [(int(o), {"pKa": text}) for o, text in table_rows]
             self.on_calc_finished(res, ["pKa"], progress_label="pKa prediction")
         if lone:
-            QMessageBox.information(self, "pKa Predictor", lone[0])
+            QMessageBox.information(self, "Predict pKa", lone[0])
         if not table_rows:
             self._finish_tool_progress("pKa prediction")
 
     def _on_pka_prediction_failed(self, msg: str) -> None:
         self._finish_tool_progress("pKa prediction")
-        QMessageBox.warning(self, "pKa Predictor", msg or "Prediction failed.")
+        QMessageBox.warning(self, "Predict pKa", msg or "Prediction failed.")
 
     def open_pka_predictor(self) -> None:
         if not self.headers:
             QMessageBox.information(
                 self,
-                "pKa Predictor",
+                "Predict pKa",
                 "Open a file or start a session first.",
             )
             return

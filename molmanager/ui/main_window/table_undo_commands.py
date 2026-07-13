@@ -25,6 +25,7 @@ __all__ = [
     "UndoDuplicateColumnCommand",
     "UndoInsertRowCommand",
     "UndoLogarithmicColumnCommand",
+    "UndoPrecisionColumnCommand",
     "collect_delete_row_snapshots",
 ]
 
@@ -433,6 +434,52 @@ class UndoLogarithmicColumnCommand(QUndoCommand):
         self._apply(self._previous, logged=not self._to_log)
         verb = "linear" if self._to_log else "log10"
         self._app.status_label.setText(f"Undo: column '{self._hdr}' restored to {verb}.")
+
+
+class UndoPrecisionColumnCommand(QUndoCommand):
+    """Undo/redo reformatting numeric cells in a column to a fixed decimal precision."""
+
+    def __init__(
+        self,
+        app: TableUIMixin,
+        header: str,
+        *,
+        decimals: int,
+        changed_by_oid: dict[int, str],
+        previous_by_oid: dict[int, str],
+    ) -> None:
+        super().__init__(f"Precision column '{header}' ({int(decimals)} dp)")
+        self._app = app
+        self._hdr = header
+        self._decimals = int(decimals)
+        self._changed = {int(k): str(v) for k, v in changed_by_oid.items()}
+        self._previous = {int(k): str(v) for k, v in previous_by_oid.items()}
+
+    def _apply(self, oid_values: dict[int, str]) -> None:
+        app = self._app
+        if self._hdr not in app.headers:
+            return
+        pairs = list(oid_values.items())
+        if pairs:
+            app._table_model.set_column_text_by_oids(self._hdr, pairs)
+        sync = getattr(app, "_sync_global_bounds_for_headers", None)
+        if callable(sync):
+            sync([self._hdr])
+        else:
+            app.calculate_global_bounds()
+        mark = getattr(app, "_mark_sqlite_store_dirty", None)
+        if callable(mark):
+            mark()
+
+    def redo(self) -> None:
+        self._apply(self._changed)
+        self._app.status_label.setText(
+            f"Column '{self._hdr}' set to {self._decimals} decimal place(s)."
+        )
+
+    def undo(self) -> None:
+        self._apply(self._previous)
+        self._app.status_label.setText(f"Undo: column '{self._hdr}' precision restored.")
 
 
 class UndoDuplicateColumnCommand(QUndoCommand):
