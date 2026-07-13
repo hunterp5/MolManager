@@ -429,6 +429,13 @@ class ClusterDialog(QDialog):
         fp_choice = self.fp_combo.currentText()
         rows = list(rows_m)
 
+        from ...memory_guards import check_cluster_workload
+
+        guard = check_cluster_workload(len(rows))
+        if not guard.ok:
+            QMessageBox.warning(self, "Cluster", guard.message)
+            return
+
         if self.exploratory_cb.isChecked():
             include = {
                 "kmeans": self._ex_kmeans.isChecked(),

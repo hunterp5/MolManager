@@ -15,12 +15,20 @@ class StructureRenderStore:
     Holds rendered structure PNG bytes and decodes to QPixmap on demand.
 
     Only a bounded number of QPixmaps are kept in memory (LRU); the rest stay as bytes.
+    Optionally caps total PNG entries (oldest insertion order evicted).
     """
 
-    def __init__(self, *, max_decoded_pixmaps: int = 384) -> None:
+    def __init__(
+        self,
+        *,
+        max_decoded_pixmaps: int = 384,
+        max_png_entries: int = 0,
+    ) -> None:
         self._png: dict[int, bytes] = {}
         self._lru: OrderedDict[int, QPixmap] = OrderedDict()
         self._max_decoded = max(32, int(max_decoded_pixmaps))
+        # 0 = unlimited PNG entry count
+        self._max_png_entries = max(0, int(max_png_entries))
 
     def clear(self) -> None:
         self._png.clear()
@@ -32,6 +40,10 @@ class StructureRenderStore:
     def has_png(self, oid: int) -> bool:
         return int(oid) in self._png
 
+    def png_bytes(self, oid: int) -> bytes | None:
+        raw = self._png.get(int(oid))
+        return bytes(raw) if raw else None
+
     def remove_oid(self, oid: int) -> None:
         oid_i = int(oid)
         self._png.pop(oid_i, None)
@@ -39,8 +51,12 @@ class StructureRenderStore:
 
     def ingest_png(self, oid: int, png_bytes: bytes) -> None:
         oid_i = int(oid)
+        if oid_i in self._png:
+            # Re-insert so eviction order is refreshable
+            del self._png[oid_i]
         self._png[oid_i] = bytes(png_bytes)
         self._lru.pop(oid_i, None)
+        self._trim_png_entries()
 
     def ingest_batch(self, items: list[tuple[int, bytes]]) -> None:
         for oid, png_bytes in items:
@@ -76,3 +92,13 @@ class StructureRenderStore:
         for oid in list(self._lru):
             if oid not in keep:
                 del self._lru[oid]
+
+    def _trim_png_entries(self) -> None:
+        limit = self._max_png_entries
+        if limit <= 0:
+            return
+        while len(self._png) > limit:
+            # Insertion-ordered dict: drop oldest PNG bytes first.
+            oid = next(iter(self._png))
+            del self._png[oid]
+            self._lru.pop(oid, None)

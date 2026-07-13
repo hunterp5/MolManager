@@ -39,6 +39,7 @@ class DeleteRowSnapshot:
     cells: dict[str, str]
     mol_copy: Chem.Mol | None = None
     structure_pixmap: QPixmap | None = None
+    structure_png: bytes | None = None
     extra_pixmaps: dict[str, QPixmap] = field(default_factory=dict)
     light: bool = False
 
@@ -56,6 +57,8 @@ def collect_delete_row_snapshots(
     data_headers = [h for h in app.headers[2:] if h != "Structure"]
     out: list[DeleteRowSnapshot] = []
     model = app._table_model
+    # Skip heavy extra-column pixmap copies unless a single-row delete (memory cost).
+    copy_extra = (not light) and len(kill) <= 1
     for r, row in enumerate(model._rows):  # noqa: SLF001 — bulk path; model owns rows
         oid = int(row.oid)
         if oid not in kill:
@@ -66,8 +69,10 @@ def collect_delete_row_snapshots(
             continue
         pm = app.mols.get(oid)
         mol_copy = Chem.Mol(pm) if pm is not None else None
-        spm = model.structure_pixmap_copy(oid)
-        extra = model.extra_column_pixmaps_copy(oid)
+        png = model.structure_png_bytes(oid)
+        # Prefer compact PNG bytes over decoded QPixmap when the lazy store has them.
+        spm = None if png else model.structure_pixmap_copy(oid)
+        extra = model.extra_column_pixmaps_copy(oid) if copy_extra else {}
         out.append(
             DeleteRowSnapshot(
                 orig_row=r,
@@ -75,6 +80,7 @@ def collect_delete_row_snapshots(
                 cells=cells,
                 mol_copy=mol_copy,
                 structure_pixmap=spm,
+                structure_png=png,
                 extra_pixmaps=extra,
                 light=False,
             )
@@ -153,7 +159,9 @@ class UndoDeleteRowsCommand(QUndoCommand):
             app.mols[snap.oid] = Chem.Mol(snap.mol_copy)
         else:
             app.mols.pop(snap.oid, None)
-        if snap.structure_pixmap is not None:
+        if snap.structure_png:
+            app._table_model.set_structure_png_bytes(snap.oid, snap.structure_png)
+        elif snap.structure_pixmap is not None:
             app._table_model.set_structure_pixmap(snap.oid, snap.structure_pixmap)
         else:
             app._table_model.set_structure_pixmap(snap.oid, None)

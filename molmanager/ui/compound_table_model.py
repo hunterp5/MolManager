@@ -259,11 +259,15 @@ class CompoundTableModel(QAbstractTableModel):
         self._invalidate_numeric_bounds_all()
 
     def _drop_row_assets(self, oid: int) -> None:
-        self._pixmaps.pop(oid, None)
-        for k in [x for x in self._extra_pixmaps if x[0] == oid]:
+        oid_i = int(oid)
+        self._pixmaps.pop(oid_i, None)
+        for k in [x for x in self._extra_pixmaps if x[0] == oid_i]:
             del self._extra_pixmaps[k]
         for cache in self._column_color_cache.values():
-            cache.pop(oid, None)
+            cache.pop(oid_i, None)
+        store = self._structure_png_store
+        if store is not None:
+            store.remove_oid(oid_i)
 
     def remove_rows_by_oids(self, oids: frozenset[int] | set[int]) -> int:
         """Remove every row whose OID is in *oids* with a single model reset (fast bulk delete)."""
@@ -741,6 +745,36 @@ class CompoundTableModel(QAbstractTableModel):
         if pm is not None and not pm.isNull():
             return QPixmap(pm)
         return None
+
+    def structure_png_bytes(self, oid: int) -> bytes | None:
+        """Raw structure PNG bytes from the lazy store, if present."""
+        store = self._structure_png_store
+        if store is None:
+            return None
+        return store.png_bytes(oid)
+
+    def set_structure_png_bytes(self, oid: int, png: bytes | None) -> None:
+        """Restore structure PNG into the lazy store (decoded on demand)."""
+        store = self._structure_png_store
+        if png:
+            if store is None:
+                from ...structure_render_store import StructureRenderStore
+                from ...config import load_config
+
+                cfg = load_config()
+                store = StructureRenderStore(
+                    max_decoded_pixmaps=cfg.structure_render_pixmap_lru,
+                    max_png_entries=cfg.structure_render_png_max_entries,
+                )
+                self._structure_png_store = store
+            store.ingest_png(int(oid), png)
+        elif store is not None:
+            store.remove_oid(int(oid))
+        r = self.logical_row_for_oid(int(oid))
+        if r < 0:
+            return
+        idx = self.index(r, self.STRUCTURE_COL)
+        self.dataChanged.emit(idx, idx, [Qt.DecorationRole, Qt.SizeHintRole, Qt.DisplayRole, Qt.ToolTipRole])
 
     def extra_column_pixmaps_copy(self, oid: int) -> dict[str, QPixmap]:
         """Detached copies of extra pixmap-column images for this oid."""
