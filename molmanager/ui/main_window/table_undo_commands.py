@@ -24,6 +24,7 @@ __all__ = [
     "UndoDeleteColumnCommand",
     "UndoDuplicateColumnCommand",
     "UndoInsertRowCommand",
+    "UndoLogarithmicColumnCommand",
     "collect_delete_row_snapshots",
 ]
 
@@ -321,6 +322,7 @@ class UndoDeleteColumnCommand(QUndoCommand):
         self._hdr = hdr
         self._logical_col = col
         self._was_pixmap = app._table_model.is_pixmap_data_column(hdr)
+        self._was_logarithmic = hdr in getattr(app, "_logarithmic_columns", set())
         self._text_by_oid: dict[int, str] = {}
         self._pixmap_by_oid: dict[int, QPixmap] = {}
         if self._was_pixmap:
@@ -342,6 +344,7 @@ class UndoDeleteColumnCommand(QUndoCommand):
         try:
             app._table_model.remove_column_at(idx)
             app.headers.pop(idx)
+            getattr(app, "_logarithmic_columns", set()).discard(self._hdr)
             _sync_filters_after_column_removed(app, self._hdr)
         finally:
             try:
@@ -368,6 +371,8 @@ class UndoDeleteColumnCommand(QUndoCommand):
                 pairs = list(self._text_by_oid.items())
                 if pairs:
                     app._table_model.set_column_text_by_oids(self._hdr, pairs)
+            if self._was_logarithmic:
+                getattr(app, "_logarithmic_columns", set()).add(self._hdr)
             _sync_bounds_after_column_restored(app, self._hdr)
         finally:
             try:
@@ -375,6 +380,59 @@ class UndoDeleteColumnCommand(QUndoCommand):
             except Exception:
                 pass
         app.status_label.setText(f"Undo: restored column '{self._hdr}'.")
+
+
+class UndoLogarithmicColumnCommand(QUndoCommand):
+    """Undo/redo applying or reversing log10 on a text data column."""
+
+    def __init__(
+        self,
+        app: TableUIMixin,
+        header: str,
+        *,
+        to_log: bool,
+        changed_by_oid: dict[int, str],
+        previous_by_oid: dict[int, str],
+    ) -> None:
+        verb = "Logarithmic" if to_log else "Linear"
+        super().__init__(f"{verb} column '{header}'")
+        self._app = app
+        self._hdr = header
+        self._to_log = bool(to_log)
+        self._changed = {int(k): str(v) for k, v in changed_by_oid.items()}
+        self._previous = {int(k): str(v) for k, v in previous_by_oid.items()}
+
+    def _apply(self, oid_values: dict[int, str], *, logged: bool) -> None:
+        app = self._app
+        if self._hdr not in app.headers:
+            return
+        pairs = list(oid_values.items())
+        if pairs:
+            app._table_model.set_column_text_by_oids(self._hdr, pairs)
+        logs = getattr(app, "_logarithmic_columns", None)
+        if logs is not None:
+            if logged:
+                logs.add(self._hdr)
+            else:
+                logs.discard(self._hdr)
+        sync = getattr(app, "_sync_global_bounds_for_headers", None)
+        if callable(sync):
+            sync([self._hdr])
+        else:
+            app.calculate_global_bounds()
+        mark = getattr(app, "_mark_sqlite_store_dirty", None)
+        if callable(mark):
+            mark()
+
+    def redo(self) -> None:
+        self._apply(self._changed, logged=self._to_log)
+        verb = "log10" if self._to_log else "linear"
+        self._app.status_label.setText(f"Column '{self._hdr}' converted to {verb}.")
+
+    def undo(self) -> None:
+        self._apply(self._previous, logged=not self._to_log)
+        verb = "linear" if self._to_log else "log10"
+        self._app.status_label.setText(f"Undo: column '{self._hdr}' restored to {verb}.")
 
 
 class UndoDuplicateColumnCommand(QUndoCommand):

@@ -25,6 +25,7 @@ from ...utils import (
     parse_molecule_from_cell_text,
     safe_mol_prop_string,
 )
+from ...column_log_transform import column_can_apply_log10, transform_column_values_log10
 from ..table_selection import item_selection_for_view_rows, merge_sorted_row_indices
 from ..compound_table_model import CompoundTableModel
 from ..singleton_modeless_dialog import reuse_or_show_modeless_singleton
@@ -40,6 +41,7 @@ from .table_undo_commands import (
     UndoDeleteRowsCommand,
     UndoDuplicateColumnCommand,
     UndoInsertRowCommand,
+    UndoLogarithmicColumnCommand,
     UndoPasteCellCommand,
 )
 
@@ -1318,6 +1320,16 @@ class TableUIMixin(TableSearchMixin, FilterPanelMixin):
             ren_act = menu.addAction(f"Rename '{old_n}'")
             dup_act = menu.addAction(f"Duplicate '{old_n}'")
             del_act = menu.addAction(f"Delete '{old_n}'")
+        menu.addSeparator()
+        log_act = menu.addAction("Logarithmic")
+        log_act.setCheckable(True)
+        log_act.setChecked(old_n in getattr(self, "_logarithmic_columns", set()))
+        log_act.setEnabled(self._column_can_toggle_logarithmic(old_n))
+        log_act.setToolTip(
+            "Convert positive numeric values to log10. Click again to convert back. "
+            "Disabled when the column has no positive numeric values, or any numeric "
+            "value ≤ 0 (while not already logarithmic)."
+        )
         action = menu.exec_(self.table.horizontalHeader().mapToGlobal(pos))
         if action == sel_act:
             self.table.setCurrentIndex(self._table_model.index(0, col))
@@ -1334,6 +1346,8 @@ class TableUIMixin(TableSearchMixin, FilterPanelMixin):
             self.open_table_search_with_column(col)
         elif color_act is not None and action == color_act:
             self._open_column_color_dialog(col)
+        elif action == log_act:
+            self._toggle_column_logarithmic(old_n)
         elif action == select_all_visible_act:
             self._select_all_visible_rows()
         elif action == select_all_act:
@@ -1355,6 +1369,10 @@ class TableUIMixin(TableSearchMixin, FilterPanelMixin):
             if ok and name:
                 self.headers[col] = name
                 self._table_model.rename_header_at(col, name)
+                logs = getattr(self, "_logarithmic_columns", None)
+                if logs is not None and old_n in logs:
+                    logs.discard(old_n)
+                    logs.add(name)
                 if old_n in self.global_bounds:
                     self.global_bounds[name] = self.global_bounds.pop(old_n)
                 cols = self._filterable_data_column_names()
@@ -1365,6 +1383,42 @@ class TableUIMixin(TableSearchMixin, FilterPanelMixin):
                         f.update_prop_list(cols, old_n, name)
         elif dup_act is not None and action == dup_act:
             self._undo_stack.push(UndoDuplicateColumnCommand(self, col, old_n))
+
+    def _column_can_toggle_logarithmic(self, header_name: str) -> bool:
+        if header_name in ("ID_HIDDEN", "Structure"):
+            return False
+        if self._table_model.is_pixmap_data_column(header_name):
+            return False
+        if header_name in getattr(self, "_logarithmic_columns", set()):
+            return True
+        texts = self._table_model.column_text_by_oid(header_name).values()
+        return column_can_apply_log10(texts)
+
+    def _toggle_column_logarithmic(self, header_name: str) -> None:
+        if not self._column_can_toggle_logarithmic(header_name):
+            return
+        logs = getattr(self, "_logarithmic_columns", None)
+        if logs is None:
+            self._logarithmic_columns = set()
+            logs = self._logarithmic_columns
+        to_log = header_name not in logs
+        current = self._table_model.column_text_by_oid(header_name)
+        changed = transform_column_values_log10(current, to_log=to_log)
+        if not changed and to_log:
+            self.status_label.setText(
+                f"Column '{header_name}' has no positive numeric values to convert."
+            )
+            return
+        previous = {oid: current[oid] for oid in changed}
+        self._undo_stack.push(
+            UndoLogarithmicColumnCommand(
+                self,
+                header_name,
+                to_log=to_log,
+                changed_by_oid=changed,
+                previous_by_oid=previous,
+            )
+        )
 
     def show_row_header_menu(self, pos):
         row = self.table.verticalHeader().logicalIndexAt(pos)
@@ -1838,6 +1892,7 @@ class TableUIMixin(TableSearchMixin, FilterPanelMixin):
         for f in self.filters:
             f.deleteLater()
         self.filters, self.headers, self.mols, self.global_bounds = [], [], {}, {}
+        self._logarithmic_columns = set()
         self.next_oid = 0
         self._structure_field_override = None
         self._export_prep = None

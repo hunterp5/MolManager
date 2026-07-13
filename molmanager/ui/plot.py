@@ -913,19 +913,26 @@ class PlotWidget(QWidget):
             return False
         return mode in ("2D", "3D", "Histogram")
 
-    def _plot_source_row_indices(self) -> list[int]:
-        """Source-model rows for plotting (visible/filtered rows; optional selection-only)."""
+    def _plot_source_row_indices(self):
+        """Source-model rows for plotting (visible/filtered rows; optional selection-only).
+
+        When every row is in scope, returns ``range(rowCount)`` instead of ``None`` so callers
+        can iterate without allocating a full index list.
+        """
         model = self.parent_app._table_model
         only_sel = None
         n_sel_now = len(self.parent_app._selected_logical_rows())
         if n_sel_now > 0 and self.only_selected_cb.isChecked():
             only_sel = list(self.parent_app._selected_logical_rows())
         visible = self.parent_app._visible_source_row_indices()
-        return snapshot_scope_row_indices(
+        rows = snapshot_scope_row_indices(
             model.rowCount(),
             only_selected_rows=only_sel,
             visible_row_indices=visible,
         )
+        if rows is None:
+            return range(model.rowCount())
+        return rows
 
     def _collect_points(self) -> tuple[list[float], list[float], list[float], list[int], str, str, str | None]:
         mode = self._effective_plot_mode()

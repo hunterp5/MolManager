@@ -197,6 +197,11 @@ class SessionMixin:
             "sort_ascending": sort_asc,
             "sort_mode": sort_mode,
             "column_colors": self._table_model.export_column_color_rules(),
+            "logarithmic_columns": sorted(
+                h
+                for h in getattr(self, "_logarithmic_columns", set())
+                if h in self.headers
+            ),
             "confs_sidecar": serialize_confs_sidecar(getattr(self, "_confs_blocks_sidecar", {}) or {}),
         }
 
@@ -388,6 +393,10 @@ class SessionMixin:
         col_colors = doc.get("column_colors")
         if isinstance(col_colors, dict):
             self._table_model.restore_column_color_rules(col_colors)
+        log_cols = doc.get("logarithmic_columns") or []
+        self._logarithmic_columns = {
+            str(h) for h in log_cols if isinstance(h, str) and h in self.headers
+        }
         self.apply_filters()
         rows_n = self._table_model.rowCount()
         self.status_label.setText(loaded_session_status(rows_n))
