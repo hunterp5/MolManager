@@ -265,16 +265,16 @@ def prepare_mol_for_pkasolver(mol: Chem.Mol | None) -> Chem.Mol | None:
 
 def _mp_compute_pka_text(
     task: tuple[str, bytes, bool, bool],
-) -> tuple[str, str]:
+) -> tuple[str, str, list | None, bool]:
     """
-    Child-process entry: load pkasolver, predict one structure, return formatted pKa text.
+    Child-process entry: load pkasolver, predict one structure.
 
-    The 25-model ``QueryModel`` ensemble is cached per worker process (see
-    :func:`get_worker_query_model`) so only inference cost is paid per structure.
+    Returns ``(key, formatted_text, picklable_states_or_none, cacheable)``.
+    ``cacheable`` is False on hard errors so the session cache is not poisoned.
     """
     key, mol_blob, most_basic_only, most_acidic_only = task
     if not mol_blob:
-        return key, "N/A"
+        return key, "N/A", None, True
     with _quieter_pkasolver_dependency_loggers():
         try:
             _ensure_cairosvg_importable()
@@ -285,16 +285,16 @@ def _mp_compute_pka_text(
             qm = get_worker_query_model()
         except Exception:
             logger.exception("pKa subprocess: pkasolver import failed")
-            return key, "Error (see log)"
+            return key, "Error (see log)", None, False
     try:
         mol = Chem.Mol(mol_blob)
     except Exception:
-        return key, "N/A"
+        return key, "N/A", None, True
     if mol is None or mol.GetNumAtoms() == 0:
-        return key, "N/A"
+        return key, "N/A", None, True
     safe = prepare_mol_for_pkasolver(mol)
     if safe is None:
-        return key, "N/A"
+        return key, "N/A", None, True
     try:
         with pkasolver_inference_mode(), _discard_stdout_only(), isolated_sys_argv_for_embedded_cli():
             states = calculate_microstate_pka_values(safe, query_model=qm)
@@ -303,12 +303,16 @@ def _mp_compute_pka_text(
             most_basic_only=most_basic_only,
             most_acidic_only=most_acidic_only,
         )
-        return key, txt
+        if not states:
+            return key, txt, None, True
+        from molmanager.pkasolver_descriptor_support import microstates_to_picklable
+
+        return key, txt, microstates_to_picklable(states), True
     except UnicodeDecodeError:
-        return key, "N/A (SDF metadata)"
+        return key, "N/A (SDF metadata)", None, True
     except Exception:
         logger.exception("pKa subprocess: prediction failed for key=%s", key[:48])
-        return key, "Error (see log)"
+        return key, "Error (see log)", None, False
 
 
 def _format_microstate_pkas(
@@ -428,6 +432,8 @@ class PKaPredictorWorker(QRunnable):
                 return
 
             if use_mp:
+                from molmanager.microstate_cache import store as cache_store
+
                 tasks = [
                     (k, rep[k].ToBinary(), self.most_basic_only, self.most_acidic_only) for k in order
                 ]
@@ -448,8 +454,10 @@ class PKaPredictorWorker(QRunnable):
                             if f.cancelled():
                                 continue
                             try:
-                                key, txt = f.result()
+                                key, txt, picklable, cacheable = f.result()
                                 results_by_key[key] = txt
+                                if cacheable:
+                                    cache_store(key, picklable)
                                 done_cum += len(oids_map.get(key, ()))
                             except Exception:
                                 logger.exception("pKa process-pool task failed")
@@ -463,6 +471,9 @@ class PKaPredictorWorker(QRunnable):
                     for oid in oids_map.get(key, ()):
                         row_text[oid] = txt
             else:
+                from molmanager.microstate_cache import store as cache_store
+                from molmanager.pkasolver_descriptor_support import microstates_to_picklable
+
                 try:
                     if not _acquire_lock_cooperative(_query_model_lock, cancel_ev):
                         cancelled = True
@@ -492,6 +503,7 @@ class PKaPredictorWorker(QRunnable):
                         safe_mol = prepare_mol_for_pkasolver(mol)
                         if safe_mol is None:
                             txt = "N/A"
+                            cache_store(key, None)
                         else:
                             try:
                                 with pkasolver_inference_mode(), _discard_stdout_only(), isolated_sys_argv_for_embedded_cli():
@@ -507,6 +519,10 @@ class PKaPredictorWorker(QRunnable):
                                     most_basic_only=self.most_basic_only,
                                     most_acidic_only=self.most_acidic_only,
                                 )
+                                if not states:
+                                    cache_store(key, None)
+                                else:
+                                    cache_store(key, microstates_to_picklable(states))
                             except UnicodeDecodeError as e:
                                 logger.warning(
                                     "pKa prediction skipped %s row(s) (non-UTF8 structure metadata): %s",
@@ -514,6 +530,7 @@ class PKaPredictorWorker(QRunnable):
                                     e,
                                 )
                                 txt = "N/A (SDF metadata)"
+                                cache_store(key, None)
                             except Exception:
                                 logger.exception(
                                     "pKa prediction failed for %s row(s) (key prefix %.40s…)",

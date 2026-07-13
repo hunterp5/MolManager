@@ -1192,6 +1192,12 @@ class ChemicalTableApp(
             clear_fingerprint_cache()
         except Exception:
             pass
+        try:
+            from ...microstate_cache import clear as clear_microstate_cache
+
+            clear_microstate_cache()
+        except Exception:
+            pass
         store = getattr(self, "_sqlite_store", None)
         if store is not None:
             try:

@@ -123,14 +123,26 @@ def build_microstates_cache_by_key(
     if not order:
         return {}
 
-    cfg = load_config()
-    configured = workers_cfg if workers_cfg is not None else cfg.pka_process_workers
-    use_mp, proc_workers = plan_pkasolver_process_workers(len(order), configured)
-    n_unique = len(order)
-
+    from molmanager.microstate_cache import lookup as cache_lookup
+    from molmanager.microstate_cache import store_many as cache_store_many
     from molmanager.pkasolver_descriptor_support import microstates_for_mol
     from .pka_predictor import _ensure_cairosvg_importable
     from ..tool_progress import report_tool_progress
+
+    cache: dict[str, list | None] = {}
+    need: list[str] = []
+    for key in order:
+        hit, states = cache_lookup(key)
+        if hit:
+            cache[key] = states
+        else:
+            need.append(key)
+
+    cfg = load_config()
+    configured = workers_cfg if workers_cfg is not None else cfg.pka_process_workers
+    use_mp, proc_workers = plan_pkasolver_process_workers(len(need), configured) if need else (False, 1)
+    n_unique = len(order)
+    n_need = len(need)
 
     _ensure_cairosvg_importable()
 
@@ -161,11 +173,15 @@ def build_microstates_cache_by_key(
             force_signal=force,
         )
 
-    _report_pkasolver(0, force=True)
+    _report_pkasolver(len(cache), force=True)
+
+    if not need:
+        _report_pkasolver(len(cache), force=True)
+        logger.debug("pkasolver cache: %s unique structure(s), all session-cache hits", n_unique)
+        return cache
 
     if use_mp:
-        tasks = [(k, rep[k].ToBinary()) for k in order]
-        cache: dict[str, list | None] = {}
+        tasks = [(k, rep[k].ToBinary()) for k in need]
         user_cancelled = False
         pool_failed = False
         ex = register_process_pool(ProcessPoolExecutor(max_workers=proc_workers))
@@ -201,8 +217,8 @@ def build_microstates_cache_by_key(
             shutdown_process_pool_executor(
                 ex, kill_workers=should_terminate_process_pool(cancel_event)
             )
-        if pool_failed or len(cache) < len(order):
-            for key in order:
+        if pool_failed or any(k not in cache for k in need):
+            for key in need:
                 if key in cache:
                     continue
                 if should_terminate_process_pool(cancel_event):
@@ -210,21 +226,27 @@ def build_microstates_cache_by_key(
                 cache[key] = microstates_for_mol(rep[key])
                 _report_pkasolver(len(cache))
         _report_pkasolver(len(cache), force=True)
+        cache_store_many({k: cache[k] for k in need if k in cache})
         logger.debug(
-            "pkasolver cache: %s unique structure(s), process pool=%s",
-            len(order),
+            "pkasolver cache: %s unique (%s missed session cache), process pool=%s",
+            n_unique,
+            n_need,
             proc_workers,
         )
         return cache
 
-    cache = {}
-    for i, key in enumerate(order, start=1):
+    for i, key in enumerate(need, start=1):
         if should_terminate_process_pool(cancel_event):
             break
         cache[key] = microstates_for_mol(rep[key])
-        _report_pkasolver(i)
+        _report_pkasolver(len(cache))
     _report_pkasolver(len(cache), force=True)
-    logger.debug("pkasolver cache: %s unique structure(s), sequential", len(order))
+    cache_store_many({k: cache[k] for k in need if k in cache})
+    logger.debug(
+        "pkasolver cache: %s unique (%s missed session cache), sequential",
+        n_unique,
+        n_need,
+    )
     return cache
 
 

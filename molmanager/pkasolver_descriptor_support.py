@@ -103,8 +103,18 @@ def int_fns_need_pkasolver(int_fns) -> bool:
 
 def microstates_for_mol(mol: Chem.Mol) -> list | None:
     """Return pkasolver microstate list, or ``None`` if pkasolver is unavailable or prediction fails."""
+    from molmanager.microstate_cache import lookup as cache_lookup
+    from molmanager.microstate_cache import store as cache_store
+    from molmanager.workers.structure_grouping import structure_key
+
+    key = structure_key(mol)
+    hit, cached = cache_lookup(key)
+    if hit:
+        return cached
+
     safe = prepare_mol_for_pkasolver(mol)
     if safe is None:
+        cache_store(key, None)
         return None
     with _quieter_pkasolver_dependency_loggers():
         try:
@@ -127,8 +137,11 @@ def microstates_for_mol(mol: Chem.Mol) -> list | None:
                 with pkasolver_inference_mode(), _discard_stdio(), isolated_sys_argv_for_embedded_cli():
                     states = calculate_microstate_pka_values(safe, query_model=qm)
                 if not states:
+                    cache_store(key, None)
                     return None
-                return microstates_to_picklable(states)
+                picklable = microstates_to_picklable(states)
+                cache_store(key, picklable)
+                return picklable
     except Exception:
         logger.debug("microstate pKa prediction failed for descriptor row", exc_info=True)
         return None
