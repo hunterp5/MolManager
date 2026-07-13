@@ -81,8 +81,14 @@ def build_fingerprint_matrix(
     """Full bit-vector matrix from in-memory structures (same fingerprints as Cluster)."""
     from rdkit import DataStructs
 
+    from .memory_guards import check_fp_matrix_workload
     from .workers.fingerprint_similarity import fingerprint_bitvect_for_ui_choice
     from .rdkit_fingerprints import fingerprint_bitvect_for_row
+
+    n_candidates = sum(1 for _oid, mol in mol_rows if mol is not None)
+    guard = check_fp_matrix_workload(n_candidates, n_bits=2048)
+    if not guard.ok:
+        raise ValueError(guard.message)
 
     oids: list[int] = []
     rows: list[np.ndarray] = []

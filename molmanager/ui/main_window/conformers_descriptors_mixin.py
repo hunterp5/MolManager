@@ -82,6 +82,12 @@ class ConformersDescriptorsMixin:
         params = d.params()
         self._conformer_output_options = d.output_options()
         n = len(data)
+        from ...memory_guards import check_conformer_workload
+
+        guard = check_conformer_workload(n, int(getattr(params, "num_confs", 1) or 1))
+        if not guard.ok:
+            QMessageBox.warning(self, "Generate Conformations", guard.message)
+            return
         ps = self._tool_progress_state
         self._begin_tool_progress("Generate conformations", n)
         self.process_queue.enqueue(

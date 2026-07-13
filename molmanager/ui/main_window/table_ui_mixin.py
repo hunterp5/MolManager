@@ -1669,8 +1669,9 @@ class TableUIMixin(TableSearchMixin, FilterPanelMixin):
             else:
                 pm = self.mols.get(oid)
                 mol_copy = Chem.Mol(pm) if pm is not None else None
-                spm = model.structure_pixmap_copy(oid)
-                extra = model.extra_column_pixmaps_copy(oid)
+                png = model.structure_png_bytes(oid)
+                spm = None if png else model.structure_pixmap_copy(oid)
+                extra = model.extra_column_pixmaps_copy(oid) if total_delete <= 1 else {}
                 snapshots.append(
                     DeleteRowSnapshot(
                         orig_row=j,
@@ -1678,6 +1679,7 @@ class TableUIMixin(TableSearchMixin, FilterPanelMixin):
                         cells=cells,
                         mol_copy=mol_copy,
                         structure_pixmap=spm,
+                        structure_png=png,
                         extra_pixmaps=extra,
                         light=False,
                     )
@@ -1938,6 +1940,12 @@ class TableUIMixin(TableSearchMixin, FilterPanelMixin):
         self._confs_blocks_sidecar = {}
         if getattr(self, "_undo_stack", None) is not None:
             self._undo_stack.clear()
+        try:
+            from ...fingerprint_cache import clear as clear_fingerprint_cache
+
+            clear_fingerprint_cache()
+        except Exception:
+            pass
         self._table_model.clear()
         if getattr(self, "_table_stack", None) is not None:
             self._table_stack.setCurrentIndex(1)

@@ -124,6 +124,12 @@ class BulkSimilarityDialog(QDialog):
         rows = self._selected_mols_or_warn()
         if not rows:
             return
+        from ...memory_guards import check_cluster_workload
+
+        guard = check_cluster_workload(len(rows))
+        if not guard.ok:
+            QMessageBox.warning(self, "Bulk Similarity", guard.message)
+            return
         fp_choice = self.fp_combo.currentText()
         metric = self.metric_combo.currentText().strip() or "Tanimoto"
         top_k = int(self.top_k_spin.value())

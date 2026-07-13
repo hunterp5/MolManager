@@ -96,7 +96,11 @@ class SqliteTableStore:
         finally:
             self._bulk_loading = False
 
-    def rebuild(self, headers: list[str], rows: list[tuple[int, dict[str, str]]]) -> None:
+    def rebuild(
+        self,
+        headers: list[str],
+        rows: list[tuple[int, dict[str, str]]],
+    ) -> None:
         if self._bulk_loading:
             try:
                 self._conn.rollback()
@@ -107,6 +111,31 @@ class SqliteTableStore:
         self._headers = list(cols)
         self._create_table_rows_schema(cols)
         self._insert_rows_payload(cols, rows)
+        self._conn.cursor().execute("CREATE INDEX IF NOT EXISTS idx_table_rows_oid ON table_rows(oid)")
+        self._conn.commit()
+
+    def start_stream_rebuild(self, headers: list[str]) -> None:
+        """Begin a disk-backed rebuild (no full in-RAM entries list)."""
+        if self._bulk_loading:
+            try:
+                self._conn.rollback()
+            except Exception:
+                pass
+            self._bulk_loading = False
+        cols = self._data_columns(headers)
+        self._headers = list(cols)
+        self._create_table_rows_schema(cols)
+        self._conn.commit()
+
+    def append_stream_rows(self, rows: list[tuple[int, dict[str, str]]]) -> None:
+        """Append a chunk during :meth:`start_stream_rebuild`."""
+        if not rows:
+            return
+        self._insert_rows_payload(self._headers, rows)
+        self._conn.commit()
+
+    def finish_stream_rebuild(self) -> None:
+        """Create the oid index after streaming row inserts."""
         self._conn.cursor().execute("CREATE INDEX IF NOT EXISTS idx_table_rows_oid ON table_rows(oid)")
         self._conn.commit()
 

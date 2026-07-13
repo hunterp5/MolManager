@@ -115,6 +115,14 @@ class MolManagerConfig:
     table_selection_chunk_rows: int
     table_delete_batch_min: int
     table_delete_chunk_rows: int
+    table_undo_limit: int
+    structure_render_png_max_entries: int
+    memory_guard_conf_max_rows: int
+    memory_guard_conf_max_row_confs: int
+    memory_guard_cluster_max_rows: int
+    memory_guard_fp_matrix_max_cells: int
+    memory_guard_enum_max_products: int
+    memory_guard_dimred_max_points: int
     recomp_constraint_candidate_multiplier: int
     recomp_constraint_min_candidates: int
 
@@ -221,10 +229,35 @@ def load_config() -> MolManagerConfig:
             "MOLMANAGER_TABLE_SELECTION_CHUNK_ROWS", 2000, lo=64, hi=100_000
         ),
         table_delete_batch_min=_env_int(
-            "MOLMANAGER_TABLE_DELETE_BATCH_MIN", 500, lo=1, hi=10_000_000
+            "MOLMANAGER_TABLE_DELETE_BATCH_MIN", 50, lo=1, hi=10_000_000
         ),
         table_delete_chunk_rows=_env_int(
             "MOLMANAGER_TABLE_DELETE_CHUNK_ROWS", 2000, lo=64, hi=100_000
+        ),
+        table_undo_limit=_env_int("MOLMANAGER_TABLE_UNDO_LIMIT", 50, lo=1, hi=500),
+        structure_render_png_max_entries=_env_int(
+            "MOLMANAGER_STRUCTURE_RENDER_PNG_MAX", 20_000, lo=0, hi=10_000_000
+        ),
+        memory_guard_conf_max_rows=_env_int(
+            "MOLMANAGER_MEMORY_GUARD_CONF_MAX_ROWS", 5_000, lo=1, hi=10_000_000
+        ),
+        memory_guard_conf_max_row_confs=_env_int(
+            "MOLMANAGER_MEMORY_GUARD_CONF_MAX_ROW_CONFS", 100_000, lo=100, hi=50_000_000
+        ),
+        memory_guard_cluster_max_rows=_env_int(
+            "MOLMANAGER_MEMORY_GUARD_CLUSTER_MAX_ROWS", 25_000, lo=100, hi=10_000_000
+        ),
+        memory_guard_fp_matrix_max_cells=_env_int(
+            "MOLMANAGER_MEMORY_GUARD_FP_MATRIX_MAX_CELLS",
+            50_000_000,
+            lo=100_000,
+            hi=2_000_000_000,
+        ),
+        memory_guard_enum_max_products=_env_int(
+            "MOLMANAGER_MEMORY_GUARD_ENUM_MAX_PRODUCTS", 10_000, lo=10, hi=50_000
+        ),
+        memory_guard_dimred_max_points=_env_int(
+            "MOLMANAGER_MEMORY_GUARD_DIMRED_MAX_POINTS", 10_000, lo=100, hi=50_000
         ),
         recomp_constraint_candidate_multiplier=_env_int(
             "MOLMANAGER_RECOMP_CONSTRAINT_CANDIDATE_MULT", 100, lo=10, hi=10_000

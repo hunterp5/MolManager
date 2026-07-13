@@ -841,8 +841,11 @@ class FragmentRecompositionDialog(QDialog):
         form.addRow("Max coupling depth:", self.max_depth_sb)
 
         self.max_products_sb = QSpinBox()
-        self.max_products_sb.setRange(10, 50_000)
-        self.max_products_sb.setValue(2000)
+        from ...config import load_config
+
+        max_prod_cap = int(load_config().memory_guard_enum_max_products)
+        self.max_products_sb.setRange(10, max_prod_cap)
+        self.max_products_sb.setValue(min(2000, max_prod_cap))
         self.max_products_sb.setToolTip(
             "Stop after this many accepted product SMILES that meet generation constraints."
         )

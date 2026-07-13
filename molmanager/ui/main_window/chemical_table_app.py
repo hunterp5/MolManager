@@ -182,7 +182,7 @@ class ChemicalTableApp(
         self._import_render_goal = 0
         self._import_building_progress_shown = False
         self._undo_stack = QUndoStack(self)
-        self._undo_stack.setUndoLimit(200)
+        self._undo_stack.setUndoLimit(load_config().table_undo_limit)
         self._filter_proxy_model: FilterProxyModel | None = None
         self.init_ui()
         self._apply_filters_timer = QTimer(self)
@@ -1186,6 +1186,12 @@ class ChemicalTableApp(
                 clear()
 
         # Avoid blocking on shutdown; cooperative cancel + pool termination should be enough.
+        try:
+            from ...fingerprint_cache import clear as clear_fingerprint_cache
+
+            clear_fingerprint_cache()
+        except Exception:
+            pass
         store = getattr(self, "_sqlite_store", None)
         if store is not None:
             try:

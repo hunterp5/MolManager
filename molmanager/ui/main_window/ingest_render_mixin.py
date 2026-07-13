@@ -349,7 +349,7 @@ class IngestRenderMixin:
             self._sqlite_rebuild_in_progress = False
 
     def _schedule_sqlite_rebuild(self) -> None:
-        """Export in UI chunks, then rebuild the SQLite mirror in a background worker."""
+        """Export in UI chunks directly into a temp SQLite DB, then index in a worker."""
         store = getattr(self, "_sqlite_store", None)
         if store is None or self._sqlite_rebuild_in_progress:
             return
@@ -379,15 +379,17 @@ class IngestRenderMixin:
         self._sqlite_rebuild_bg_job_id = job_id
         register_background_job(self, job_id, f"Indexing table ({n_rows:,} rows)")
         chunk = max(500, load_config().ingest_gui_chunk_size)
+        stream_store = SqliteTableStore(db_path)
+        stream_store.start_stream_rebuild(list(self.headers))
         self._sqlite_export_ctx = {
             "gen": gen,
             "data_headers": data_headers,
-            "entries": [],
             "row_idx": 0,
             "n_rows": n_rows,
             "chunk": chunk,
             "db_path": str(db_path),
             "signals": sigs,
+            "stream_store": stream_store,
         }
         self.status_label.setText(f"Indexing table… (0/{n_rows:,} rows)")
         QTimer.singleShot(0, self._sqlite_export_chunk_step)
@@ -395,8 +397,22 @@ class IngestRenderMixin:
     def _sqlite_export_chunk_step(self) -> None:
         ctx = getattr(self, "_sqlite_export_ctx", None)
         if not ctx or ctx.get("gen") != getattr(self, "_sqlite_rebuild_gen", -1):
+            if ctx is not None:
+                stream = ctx.get("stream_store")
+                if stream is not None:
+                    try:
+                        stream.close()
+                    except Exception:
+                        pass
+                self._sqlite_export_ctx = None
             return
         if not self._sqlite_rebuild_in_progress:
+            stream = ctx.get("stream_store")
+            if stream is not None:
+                try:
+                    stream.close()
+                except Exception:
+                    pass
             self._sqlite_export_ctx = None
             return
         data_headers = ctx["data_headers"]
@@ -404,22 +420,36 @@ class IngestRenderMixin:
         n_rows = int(ctx["n_rows"])
         chunk = int(ctx["chunk"])
         end = min(row_idx + chunk, n_rows)
-        ctx["entries"].extend(self._table_model.export_rows_for_sqlite_slice(data_headers, row_idx, end))
+        stream_store: SqliteTableStore = ctx["stream_store"]
+        slice_rows = self._table_model.export_rows_for_sqlite_slice(data_headers, row_idx, end)
+        stream_store.append_stream_rows(slice_rows)
         ctx["row_idx"] = end
         self.status_label.setText(f"Indexing table… ({end:,}/{n_rows:,} rows)")
         if end < n_rows:
             QTimer.singleShot(0, self._sqlite_export_chunk_step)
             return
         gen = int(ctx["gen"])
-        entries = ctx["entries"]
         db_path = ctx["db_path"]
         sigs = ctx["signals"]
+        try:
+            stream_store.close()
+        except Exception:
+            pass
         self._sqlite_export_ctx = None
         pool = getattr(self, "threadpool", None)
         if pool is None:
             self._sqlite_rebuild_in_progress = False
             return
-        pool.start(SqliteRebuildWorker(gen, list(self.headers), entries, db_path, sigs))
+        pool.start(
+            SqliteRebuildWorker(
+                gen,
+                list(self.headers),
+                None,
+                db_path,
+                sigs,
+                stream_finalize=True,
+            )
+        )
 
     def _unregister_sqlite_rebuild_background_job(self, job_gen: int) -> None:
         from ..background_jobs import unregister_background_job
@@ -687,7 +717,10 @@ class IngestRenderMixin:
             )
             if lazy_structure:
                 cfg = load_config()
-                store = StructureRenderStore(max_decoded_pixmaps=cfg.structure_render_pixmap_lru)
+                store = StructureRenderStore(
+                    max_decoded_pixmaps=cfg.structure_render_pixmap_lru,
+                    max_png_entries=cfg.structure_render_png_max_entries,
+                )
                 png_items: list[tuple[int, bytes]] = []
                 for oid in ordered:
                     rec = pending.get(oid)

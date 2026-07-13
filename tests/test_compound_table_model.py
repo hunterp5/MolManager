@@ -255,6 +255,18 @@ def test_remove_rows_by_oids_bulk(model: CompoundTableModel):
     assert model.logical_row_for_oid(3) < 0
 
 
+def test_remove_row_clears_structure_png_store(model: CompoundTableModel):
+    from molmanager.structure_render_store import StructureRenderStore
+
+    model.append_row(5, {"SMILES": "CC", "MW": "30"})
+    store = StructureRenderStore(max_decoded_pixmaps=8)
+    store.ingest_png(5, b"png-5")
+    model.set_structure_png_store(store)
+    assert store.has_png(5)
+    model.remove_row_at(0)
+    assert not store.has_png(5)
+
+
 def test_insert_rows_batch_restores_order(model: CompoundTableModel):
     model.append_row(10, {"SMILES": "A", "MW": "1"})
     model.append_row(30, {"SMILES": "C", "MW": "3"})

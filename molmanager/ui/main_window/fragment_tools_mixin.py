@@ -299,6 +299,12 @@ class FragmentToolsMixin:
 
     def _on_fragment_recomposition_dialog_accepted(self, d) -> None:
         p = d.params()
+        from ...memory_guards import check_product_enumeration
+
+        guard = check_product_enumeration(p.max_products)
+        if not guard.ok:
+            QMessageBox.warning(self, p.tool_title, guard.message)
+            return
         only_selected = d.only_selected_rows()
         if self._abort_if_only_selected_but_empty(
             only_selected, self._selected_oids_set(), p.tool_title

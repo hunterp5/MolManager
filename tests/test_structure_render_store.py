@@ -12,3 +12,10 @@ def test_structure_render_store_ingest_remove_and_trim():
     assert not store.has_png(2)
     store.trim_decoded_cache(keep_oids={1})
     assert len(store._lru) == 0
+
+
+def test_structure_render_store_evicts_oldest_png_when_capped():
+    store = StructureRenderStore(max_decoded_pixmaps=8, max_png_entries=3)
+    store.ingest_batch([(1, b"1"), (2, b"2"), (3, b"3"), (4, b"4")])
+    assert len(store) == 3
+    assert list(store._png.keys()) == [2, 3, 4]

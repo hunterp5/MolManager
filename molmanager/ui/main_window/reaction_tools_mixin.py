@@ -25,6 +25,12 @@ class ReactionToolsMixin:
 
     def _on_reaction_enumeration_dialog_accepted(self, d) -> None:
         p = d.params()
+        from ...memory_guards import check_product_enumeration
+
+        guard = check_product_enumeration(p.max_products)
+        if not guard.ok:
+            QMessageBox.warning(self, p.tool_title, guard.message)
+            return
         ps = self._tool_progress_state
         self._begin_tool_progress(p.tool_title, p.max_products)
         self.process_queue.enqueue(
