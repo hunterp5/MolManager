@@ -130,6 +130,7 @@ class ChemicalTableApp(
             ren_cap = max(2, min(cap, 8))
         self._render_threadpool.setMaxThreadCount(ren_cap)
         self.mols, self.headers, self.filters, self.global_bounds = {}, [], [], {}
+        self._logarithmic_columns: set[str] = set()
         self.zoomed_ids = set()
         self.signals = WorkerSignals()
         _qc = Qt.QueuedConnection

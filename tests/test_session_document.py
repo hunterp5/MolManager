@@ -79,3 +79,18 @@ def test_session_document_roundtrip_restores_column_coloring(qapp):  # noqa: ARG
     spec = w2._table_model.column_color_rule_spec("MW")
     assert isinstance(spec, dict)
     assert spec.get("mode") == "numeric3"
+
+
+def test_session_document_roundtrip_restores_logarithmic_columns(qapp):  # noqa: ARG001
+    w = ChemicalTableApp()
+    w.headers = ["ID_HIDDEN", "Structure", "SMILES", "MW"]
+    w._table_model.set_headers(list(w.headers))
+    w._table_model.append_row(0, {"SMILES": "CC", "MW": "2"})
+    w._logarithmic_columns = {"MW"}
+    doc = w._build_session_document()
+    assert doc["logarithmic_columns"] == ["MW"]
+
+    w2 = ChemicalTableApp()
+    w2._apply_session_document(doc)
+    assert "MW" in w2._logarithmic_columns
+

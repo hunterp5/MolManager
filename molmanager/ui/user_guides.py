@@ -325,6 +325,8 @@ column shows 2D images when structures are available.</p>
 <li>Sort ascending or descending.</li>
 <li>Rename, duplicate, or delete the column.</li>
 <li><b>Select</b> — pick the first row for each distinct value in that column.</li>
+<li><b>Logarithmic</b> — convert positive numeric values to log<sub>10</sub>; click again to convert back.
+Disabled on columns without convertible positive numbers.</li>
 </ul>
 <h3>Cell or row (right-click a cell)</h3>
 <ul>

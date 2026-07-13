@@ -23,6 +23,7 @@ from molmanager.ui.medchem_space_plot import build_boiled_egg_figure, build_gold
 
 
 def test_snapshot_scope_row_indices():
+    # None means "all rows [0, row_count)" — plotters must treat that as iterable.
     assert snapshot_scope_row_indices(10) is None
     assert snapshot_scope_row_indices(10, visible_row_indices=[2, 4]) == [2, 4]
     assert snapshot_scope_row_indices(10, only_selected_rows=[1, 2, 8]) == [1, 2, 8]
