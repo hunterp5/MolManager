@@ -61,6 +61,45 @@ def _unwrap_quoted_term(term: str) -> tuple[bool, str]:
 
 _OR_SEPARATORS = frozenset({",", "|"})
 _AND_SEPARATORS = frozenset({"&"})
+# Daylight SMARTS bond primitives / operators that may appear outside [...].
+_SMARTS_BOND_EXPR_CHARS = frozenset("-=#:~@/\\!")
+
+
+def _prev_significant_char(text: str, index: int) -> str:
+    j = index - 1
+    while j >= 0 and text[j].isspace():
+        j -= 1
+    return text[j] if j >= 0 else ""
+
+
+def _next_significant_char(text: str, index: int) -> str:
+    j = index + 1
+    while j < len(text) and text[j].isspace():
+        j += 1
+    return text[j] if j < len(text) else ""
+
+
+def _is_smarts_internal_logic_op(text: str, index: int, op: str) -> bool:
+    """
+    True when ``,`` / ``&`` at *index* belongs to Daylight SMARTS atom/bond logic.
+
+    Inside ``[...]`` (caller tracks bracket depth). Outside brackets, Daylight allows
+    bond expressions such as ``=,`` / ``@;!:`` between atoms — those must not be treated
+    as search-level OR/AND separators.
+    """
+    if op == "|":
+        # Pipe is not a Daylight SMARTS logical operator; keep as search OR.
+        return False
+    if op not in {",", "&"}:
+        return False
+    prev = _prev_significant_char(text, index)
+    nxt = _next_significant_char(text, index)
+    if prev in _SMARTS_BOND_EXPR_CHARS or nxt in _SMARTS_BOND_EXPR_CHARS:
+        return True
+    # e.g. ]=,#[  after closing an atom bracket
+    if prev == "]" and nxt in _SMARTS_BOND_EXPR_CHARS:
+        return True
+    return False
 
 
 def _flush_and_between_quoted_literals(text: str, index: int) -> bool:
@@ -86,6 +125,7 @@ def _split_or_branches(text: str) -> list[str]:
 
     ``&`` ends an AND-term within the branch but does not start a new OR branch.
     Quote-adjacent ``&`` (``"a"&"b"``) is not copied into the branch text so AND parsing works.
+    Daylight SMARTS ``,`` / ``&`` inside ``[...]`` or bond expressions (e.g. ``=,``) do not split.
     """
     s = text or ""
     if not s.strip():
@@ -93,7 +133,8 @@ def _split_or_branches(text: str) -> list[str]:
     branches: list[str] = []
     branch_terms: list[str] = []
     buf: list[str] = []
-    depth = 0
+    paren_depth = 0
+    bracket_depth = 0
     in_quote: str | None = None
     segment_quoted = False
     i = 0
@@ -128,29 +169,46 @@ def _split_or_branches(text: str) -> list[str]:
             segment_quoted = True
             i += 1
             continue
+        if ch == "[":
+            bracket_depth += 1
+            buf.append(ch)
+            i += 1
+            continue
+        if ch == "]":
+            bracket_depth = max(0, bracket_depth - 1)
+            buf.append(ch)
+            i += 1
+            continue
         if ch == "(":
-            depth += 1
+            paren_depth += 1
             buf.append(ch)
             i += 1
             continue
         if ch == ")":
-            depth = max(0, depth - 1)
+            paren_depth = max(0, paren_depth - 1)
             buf.append(ch)
             i += 1
             continue
-        if depth == 0:
+        top_level = paren_depth == 0 and bracket_depth == 0
+        if top_level:
             if ch in _OR_SEPARATORS:
+                if ch == "," and _is_smarts_internal_logic_op(s, i, ","):
+                    buf.append(ch)
+                    i += 1
+                    continue
                 _flush_branch()
                 i += 1
                 continue
             if ch == "&":
                 if _flush_and_between_quoted_literals(s, i):
                     _flush_term()
+                elif _is_smarts_internal_logic_op(s, i, "&"):
+                    buf.append(ch)
                 else:
                     buf.append(ch)
                 i += 1
                 continue
-        if depth == 0 and ch in "<>":
+        if top_level and ch in "<>":
             if ch == "<" and i + 1 < n and s[i + 1] == ">":
                 buf.append("<>")
                 i += 2
@@ -163,7 +221,7 @@ def _split_or_branches(text: str) -> list[str]:
             buf.append(ch)
             i += 1
             continue
-        if depth == 0 and ch == "!" and i + 1 < n and s[i + 1] == "=":
+        if top_level and ch == "!" and i + 1 < n and s[i + 1] == "=":
             buf.append("!=")
             i += 2
             continue
@@ -180,10 +238,11 @@ def _split_top_level(
     flush_on: frozenset[str] | None = None,
 ) -> list[str]:
     """
-    Split *text* on separator characters at parenthesis depth zero.
+    Split *text* on separator characters at parenthesis/bracket depth zero.
 
     Comparison prefixes (``>=``, ``<=``, ``<>``, ``!=``) and numeric ``>`` / ``<`` are not split points.
     Commas, ``|``, and ``&`` inside ``"..."`` / ``'...'`` literals do not split.
+    Daylight SMARTS operators inside ``[...]`` or bond expressions do not split.
 
     *flush_on* ends the current segment without keeping the character (used when splitting AND
     terms inside one OR branch so ``,``/``|`` are not absorbed).
@@ -193,7 +252,8 @@ def _split_top_level(
         return []
     parts: list[str] = []
     buf: list[str] = []
-    depth = 0
+    paren_depth = 0
+    bracket_depth = 0
     in_quote: str | None = None
     segment_quoted = False
     i = 0
@@ -224,26 +284,37 @@ def _split_top_level(
             segment_quoted = True
             i += 1
             continue
+        if ch == "[":
+            bracket_depth += 1
+            buf.append(ch)
+            i += 1
+            continue
+        if ch == "]":
+            bracket_depth = max(0, bracket_depth - 1)
+            buf.append(ch)
+            i += 1
+            continue
         if ch == "(":
-            depth += 1
+            paren_depth += 1
             buf.append(ch)
             i += 1
             continue
         if ch == ")":
-            depth = max(0, depth - 1)
+            paren_depth = max(0, paren_depth - 1)
             buf.append(ch)
             i += 1
             continue
-        if depth == 0 and in_quote is None:
-            if ch in separators:
+        top_level = paren_depth == 0 and bracket_depth == 0 and in_quote is None
+        if top_level:
+            if ch in separators and not _is_smarts_internal_logic_op(s, i, ch):
                 _flush()
                 i += 1
                 continue
-            if flush_on and ch in flush_on:
+            if flush_on and ch in flush_on and not _is_smarts_internal_logic_op(s, i, ch):
                 _flush()
                 i += 1
                 continue
-        if depth == 0 and ch in "<>":
+        if top_level and ch in "<>":
             if ch == "<" and i + 1 < n and s[i + 1] == ">":
                 buf.append("<>")
                 i += 2
@@ -256,7 +327,7 @@ def _split_top_level(
             buf.append(ch)
             i += 1
             continue
-        if depth == 0 and ch == "!" and i + 1 < n and s[i + 1] == "=":
+        if top_level and ch == "!" and i + 1 < n and s[i + 1] == "=":
             buf.append("!=")
             i += 2
             continue
@@ -273,6 +344,8 @@ def parse_search_term_groups(query: str) -> list[list[str]]:
     * ``|`` and ``,`` separate OR branches (comma defaults to OR).
     * ``&`` separates AND terms within one branch.
     * Parentheses group a sub-expression without splitting inside them.
+    * Square brackets protect Daylight SMARTS atom expressions (``[F,Cl]``, ``[n&H1]``).
+    * Bond-level SMARTS logic outside brackets (e.g. ``=,``) is not treated as a separator.
     * String literals use ``"..."`` or ``'...'`` so operators inside the text are not split.
     """
     q = (query or "").strip()

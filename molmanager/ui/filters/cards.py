@@ -398,7 +398,7 @@ class SubstructureFilterCard(_FilterCardEnableInvertMixin, QFrame):
         _fc_install_card_shell(self, _FILTER_CARD_MIN_HEIGHT_SUBSTRUCTURE)
         l = _fc_card_layout(self)
         self.smarts_edit = QLineEdit()
-        self.smarts_edit.setPlaceholderText("SMARTS, e.g. c1ccccc1")
+        self.smarts_edit.setPlaceholderText("SMARTS, e.g. [F,Cl], [!C;R], or [M]")
         self.smarts_edit.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         self.smarts_edit.setMinimumWidth(0)
         self.smarts_edit.textChanged.connect(self._on_change)
@@ -411,6 +411,8 @@ class SubstructureFilterCard(_FilterCardEnableInvertMixin, QFrame):
         self.changed.emit()
 
     def _compiled_query(self):
+        from ...smarts_patterns import mol_from_smarts
+
         s = (self.smarts_edit.text() or "").strip()
         if not s:
             self._last_smarts = ""
@@ -418,7 +420,7 @@ class SubstructureFilterCard(_FilterCardEnableInvertMixin, QFrame):
             return None
         if s == self._last_smarts:
             return self._last_query
-        q = Chem.MolFromSmarts(s)
+        q = mol_from_smarts(s)
         self._last_smarts = s
         self._last_query = q
         return q

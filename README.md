@@ -266,7 +266,7 @@ Most Python packages are already installed by **Step 6b**. The items below are b
 
 ### pKa / PyTorch repair
 
-If **Tools → pKa Predictor** fails with a PyTorch version error (often after installing another package that upgrades torch), run this in the **same** venv — do **not** create a second environment:
+If **Tools → Predict pKa** fails with a PyTorch version error (often after installing another package that upgrades torch), run this in the **same** venv — do **not** create a second environment:
 
 **Windows:**
 

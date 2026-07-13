@@ -140,3 +140,21 @@ def test_case_sensitive_sqlite_uses_instr_not_like():
 def test_substructure_not_prefix():
     pat, neg = parse_substructure_term("NOT c1ccccc1")
     assert neg and pat == "c1ccccc1"
+
+
+def test_daylight_smarts_logic_not_split_by_search_ops():
+    """Daylight atom/bond logic (!, &, ,, ;) must stay one SMARTS term (not search OR/AND)."""
+    assert parse_search_term_groups("[F,Cl,Br,I]") == [["[F,Cl,Br,I]"]]
+    assert parse_search_term_groups("[n&H1]") == [["[n&H1]"]]
+    assert parse_search_term_groups("[!C;R]") == [["[!C;R]"]]
+    assert parse_search_term_groups("[c,n&H1]") == [["[c,n&H1]"]]
+    assert parse_search_term_groups("[c,n;H1]") == [["[c,n;H1]"]]
+    assert parse_search_term_groups("[C,c]=,#[C,c]") == [["[C,c]=,#[C,c]"]]
+    assert parse_search_term_groups("*@;!:*") == [["*@;!:*"]]
+    assert parse_search_term_groups("[$(*C);$(*CC)]") == [["[$(*C);$(*CC)]"]]
+
+
+def test_daylight_smarts_still_allows_search_or_and():
+    assert parse_search_term_groups("c1ccccc1, [OH]") == [["c1ccccc1"], ["[OH]"]]
+    assert parse_search_term_groups("c1ccccc1 & [OH]") == [["c1ccccc1", "[OH]"]]
+    assert parse_search_term_groups("[F,Cl]|[Br,I]") == [["[F,Cl]"], ["[Br,I]"]]

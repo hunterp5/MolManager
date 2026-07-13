@@ -40,7 +40,9 @@ class SubstructureFilterWorker(QRunnable):
             if not s:
                 self.signals.finished.emit(self.job_gen, frozenset())
                 return
-            q = Chem.MolFromSmarts(s)
+            from ..smarts_patterns import mol_from_smarts
+
+            q = mol_from_smarts(s)
             if q is None:
                 self.signals.finished.emit(self.job_gen, frozenset())
                 return

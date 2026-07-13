@@ -38,7 +38,7 @@ LOGD_LOGS_ION = (
     "LogD 7.4 and LogS 7.4 at pH 7.4: RDKit Wildman–Crippen log P (rdkit.Chem.Crippen.MolLogP) "
     "combined with the mole fraction of net-neutral protomer states at pH 7.4 from pkasolver "
     "microstates, using the same independent-site Henderson–Hasselbalch pooling as "
-    "Tools → Generate Protomers (approximate; not Schrödinger Epik-grade)."
+    "Tools → Prepare Structures → Protonate Structures → Generate Protomers (approximate; not Schrödinger Epik-grade)."
 )
 
 PHARM2D_GOBBI = (
@@ -134,7 +134,7 @@ def descriptor_dialog_footer_html() -> str:
         '<a href="https://doi.org/10.1021/cn100008c">Wager et al., ACS Chem. Neurosci. 2010</a> '
         '(<a href="https://www.ncbi.nlm.nih.gov/pmc/articles/PMC3368654/">PMC3368654</a>).<br>'
         "<b>LogD / LogS at pH 7.4:</b> RDKit <code>Crippen.MolLogP</code> + neutral protomer fractions "
-        "from pkasolver (same HH-style pooling as <i>Tools → Generate Protomers</i>).<br>"
+        "from pkasolver (same HH-style pooling as <i>Tools → Prepare Structures → Protonate Structures → Generate Protomers</i>).<br>"
         "<b>QED:</b> "
         '<a href="https://doi.org/10.1038/nchem.1243">Bickerton et al., Nat. Chem. 2012</a> (RDKit QED).<br>'
         "<b>Ro5:</b> Lipinski et al., Adv. Drug Deliv. Rev. 1997 (RDKit Lipinski counts).<br>"
@@ -143,7 +143,7 @@ def descriptor_dialog_footer_html() -> str:
 
 
 def pka_dialog_footer_html() -> str:
-    """Rich text for the pKa Predictor dialog."""
+    """Rich text for the Predict pKa dialog."""
     return (
         "<small><b>Method</b>: neural-network microstate pKas from "
         '<a href="https://doi.org/10.3389/fchem.2022.866585">Mayr et al., Front. Chem. 2022</a> '

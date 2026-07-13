@@ -704,12 +704,6 @@ class ChemicalTableApp(
                 None,
             ),
             (
-                "Neutralize…",
-                self.run_neutralize,
-                "Adjust protonation so the net formal charge is zero (RDKit Uncharger); updates the target column.",
-                None,
-            ),
-            (
                 "Add Explicit Hydrogens…",
                 self.run_add_explicit_hydrogens,
                 "Expand implicit hydrogens to explicit H atoms in the target column (RDKit AddHs).",
@@ -719,12 +713,6 @@ class ChemicalTableApp(
                 "Remove Explicit Hydrogens…",
                 self.run_remove_explicit_hydrogens,
                 "Remove explicit H atoms from structures in the target column (RDKit RemoveHs).",
-                None,
-            ),
-            (
-                "Protonate…",
-                self.run_protonate,
-                "Generate the dominant protomer (pkasolver) into a new column and render it.",
                 None,
             ),
             (
@@ -742,6 +730,29 @@ class ChemicalTableApp(
                 self._bind_hotkey(hk_id, act)
             act.setToolTip(tip)
             prepare_menu.addAction(act)
+
+        protonate_menu = prepare_menu.addMenu("Protonate Structures")
+        protonate_menu.setToolTipsVisible(True)
+        for title, slot, tip in (
+            (
+                "Protonate…",
+                self.run_protonate,
+                "Generate the dominant protomer (pkasolver) into a new column and render it.",
+            ),
+            (
+                "Generate Protomers…",
+                self.open_protomer_generator,
+                "Enumerate protomers or tautomers from structures and add results to the table.",
+            ),
+            (
+                "Neutralize…",
+                self.run_neutralize,
+                "Adjust protonation so the net formal charge is zero (RDKit Uncharger); updates the target column.",
+            ),
+        ):
+            act = QAction(title, self, triggered=slot)
+            act.setToolTip(tip)
+            protonate_menu.addAction(act)
 
         self._act_custom_calc = self._bind_hotkey(
             "tools.calculator",
@@ -802,7 +813,7 @@ class ChemicalTableApp(
 
         for title, slot, tip, hk_id in (
             (
-                "pKa Predictor…",
+                "Predict pKa…",
                 self.open_pka_predictor,
                 "Estimate ionization / pKa-related properties when the predictor is available.",
                 None,
@@ -817,12 +828,6 @@ class ChemicalTableApp(
                 "QSAR…",
                 self.open_qsar_dialog,
                 "Train regression or classification models on activity vs descriptors or fingerprints.",
-                None,
-            ),
-            (
-                "Generate Protomers…",
-                self.open_protomer_generator,
-                "Enumerate protomers or tautomers from structures and add results to the table.",
                 None,
             ),
         ):

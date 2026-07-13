@@ -29,7 +29,7 @@ class PKaPredictorDialog(QDialog):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.parent_app = parent
-        self.setWindowTitle("pKa Predictor")
+        self.setWindowTitle("Predict pKa")
         self.setMinimumWidth(320)
         n_sel = len(parent._selected_logical_rows()) if parent is not None else 0
         self._have_selection = n_sel > 0
@@ -144,11 +144,11 @@ class PKaPredictorDialog(QDialog):
         if self.mode_combo.currentIndex() == 1:
             smi = (self.smiles_edit.text() or "").strip()
             if not smi:
-                QMessageBox.warning(self, "pKa Predictor", "Enter a SMILES string.")
+                QMessageBox.warning(self, "Predict pKa", "Enter a SMILES string.")
                 return
             mol = parse_molecule_from_cell_text(smi)
             if mol is None:
-                QMessageBox.warning(self, "pKa Predictor", "Could not parse SMILES.")
+                QMessageBox.warning(self, "Predict pKa", "Could not parse SMILES.")
                 return
             rows: list[tuple[int | None, Chem.Mol | None]] = [(None, mol)]
         else:
@@ -157,7 +157,7 @@ class PKaPredictorDialog(QDialog):
             if only_selected and not allowed:
                 QMessageBox.warning(
                     self,
-                    "pKa Predictor",
+                    "Predict pKa",
                     "\u201cOnly selected rows\u201d is checked but nothing is selected.",
                 )
                 return
@@ -166,7 +166,7 @@ class PKaPredictorDialog(QDialog):
             if not rows_m:
                 QMessageBox.information(
                     self,
-                    "pKa Predictor",
+                    "Predict pKa",
                     "No valid structures were found for this scope and source.",
                 )
                 return
