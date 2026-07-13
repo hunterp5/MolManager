@@ -1946,6 +1946,12 @@ class TableUIMixin(TableSearchMixin, FilterPanelMixin):
             clear_fingerprint_cache()
         except Exception:
             pass
+        try:
+            from ...microstate_cache import clear as clear_microstate_cache
+
+            clear_microstate_cache()
+        except Exception:
+            pass
         self._table_model.clear()
         if getattr(self, "_table_stack", None) is not None:
             self._table_stack.setCurrentIndex(1)
