@@ -1,4 +1,4 @@
-"""PCA, t-SNE, and UMAP dialogs (Data menu)."""
+"""PCA, t-SNE, UMAP, and SOM dialogs (Data menu)."""
 
 from __future__ import annotations
 
@@ -15,6 +15,9 @@ class DimensionReductionMixin:
 
     def open_umap_dialog(self) -> None:
         self._open_dimension_reduction_dialog("umap")
+
+    def open_som_dialog(self) -> None:
+        self._open_dimension_reduction_dialog("som")
 
     def _open_dimension_reduction_dialog(self, kind: str) -> None:
         if not self.headers or self._table_model.rowCount() == 0:
@@ -36,12 +39,21 @@ class DimensionReductionMixin:
             attr = "_tsne_dialog"
             factory = lambda: TSNEVisualizationDialog(self)
             destroyed = self._on_tsne_dialog_destroyed
-        else:
+        elif kind == "umap":
             from ..dialogs.dimensionality_reduction import UMAPVisualizationDialog
 
             attr = "_umap_dialog"
             factory = lambda: UMAPVisualizationDialog(self)
             destroyed = self._on_umap_dialog_destroyed
+        elif kind == "som":
+            from ..dialogs.dimensionality_reduction import SOMVisualizationDialog
+
+            attr = "_som_dialog"
+            factory = lambda: SOMVisualizationDialog(self)
+            destroyed = self._on_som_dialog_destroyed
+        else:
+            QMessageBox.warning(self, "Data", f"Unknown embedding method: {kind!r}")
+            return
 
         dlg = getattr(self, attr, None)
         if dlg is not None:
@@ -76,3 +88,6 @@ class DimensionReductionMixin:
 
     def _on_umap_dialog_destroyed(self) -> None:
         self._umap_dialog = None
+
+    def _on_som_dialog_destroyed(self) -> None:
+        self._som_dialog = None

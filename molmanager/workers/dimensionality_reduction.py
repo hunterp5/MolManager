@@ -1,4 +1,4 @@
-"""Background PCA / t-SNE / UMAP jobs."""
+"""Background PCA / t-SNE / UMAP / SOM jobs."""
 
 from __future__ import annotations
 
@@ -13,6 +13,7 @@ from ..dimensionality_reduction import (
     DimensionReductionResult,
     build_reduction_result,
     run_pca,
+    run_som,
     run_tsne,
     run_umap,
 )
@@ -129,6 +130,32 @@ def _compute(params: dict) -> DimensionReductionResult:
         title = "UMAP Visualization"
         return build_reduction_result(
             "umap",
+            coords,
+            df_sub,
+            oids_sub,
+            used_idx,
+            title=title,
+            summary=fp_note + summary,
+            color_column=color_column,
+        )
+    if method == "som":
+        sigma_raw = params.get("sigma")
+        sigma = None if sigma_raw is None or float(sigma_raw) <= 0 else float(sigma_raw)
+        coords, used_idx, summary = run_som(
+            X,
+            standardize=standardize,
+            grid_width=int(params.get("grid_width", 10)),
+            grid_height=int(params.get("grid_height", 10)),
+            n_epochs=int(params.get("n_epochs", 50)),
+            learning_rate=float(params.get("learning_rate", 0.5)),
+            sigma=sigma,
+            random_state=int(params.get("random_state", 42)),
+            max_points=params.get("max_points"),
+            jitter=float(params.get("jitter", 0.35)),
+        )
+        title = "Self-Organizing Map"
+        return build_reduction_result(
+            "som",
             coords,
             df_sub,
             oids_sub,

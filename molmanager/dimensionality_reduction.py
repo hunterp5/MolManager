@@ -1,4 +1,4 @@
-"""Numeric matrix preparation and sklearn PCA / t-SNE / UMAP (no Qt)."""
+"""Numeric matrix preparation and sklearn PCA / t-SNE / UMAP plus NumPy Kohonen SOM (no Qt)."""
 
 from __future__ import annotations
 
@@ -240,6 +240,109 @@ def run_umap(
         f"n_neighbors: {n_neigh}\n"
         f"min_dist: {min_dist}\n"
         f"Random state: {random_state}"
+    )
+    return coords, used_idx, summary
+
+
+def run_som(
+    X: np.ndarray,
+    *,
+    standardize: bool = True,
+    grid_width: int = 10,
+    grid_height: int = 10,
+    n_epochs: int = 50,
+    learning_rate: float = 0.5,
+    sigma: float | None = None,
+    random_state: int = 42,
+    max_points: int | None = 2500,
+    jitter: float = 0.35,
+) -> tuple[np.ndarray, np.ndarray, str]:
+    """
+    Train a rectangular Kohonen self-organizing map and return BMU grid coordinates.
+
+    Plot coordinates are BMU column (X) and row (Y), with optional jitter so points that
+    share a node are slightly separated. No extra package dependency (NumPy only).
+    """
+    n_samples = X.shape[0]
+    used_idx = np.arange(n_samples)
+    note = ""
+    if max_points is not None and n_samples > int(max_points):
+        rng = np.random.default_rng(int(random_state))
+        used_idx = np.sort(rng.choice(n_samples, size=int(max_points), replace=False))
+        note = f"Subsampled {int(max_points)} of {n_samples} rows (fixed seed {random_state}).\n\n"
+
+    Xs = _standardize(X[used_idx], standardize).astype(np.float64, copy=False)
+    n_used, n_features = Xs.shape
+    gw = max(2, int(grid_width))
+    gh = max(2, int(grid_height))
+    n_nodes = gw * gh
+    if n_nodes > 2_500:
+        raise ValueError(
+            f"SOM grid {gw}×{gh} ({n_nodes:,} nodes) exceeds 2,500. "
+            "Reduce map width/height."
+        )
+    epochs = max(1, int(n_epochs))
+    lr0 = max(1e-6, float(learning_rate))
+    sigma0 = float(sigma) if sigma is not None and float(sigma) > 0 else max(gw, gh) / 2.0
+    sigma0 = max(0.5, sigma0)
+
+    rng = np.random.default_rng(int(random_state))
+    # Sample subspace for weight init so maps start near the data cloud.
+    init_n = min(n_used, max(n_nodes, 8))
+    init_pick = rng.choice(n_used, size=init_n, replace=False)
+    weights = Xs[init_pick][rng.integers(0, init_n, size=n_nodes)].reshape(gh, gw, n_features).copy()
+
+    yy, xx = np.indices((gh, gw))
+    order = np.arange(n_used)
+    for epoch in range(epochs):
+        frac = epoch / max(1, epochs - 1) if epochs > 1 else 1.0
+        lr = lr0 * (1.0 - frac)
+        sig = max(0.35, sigma0 * (1.0 - frac))
+        rng.shuffle(order)
+        inv_2sig2 = 1.0 / (2.0 * sig * sig)
+        for i in order:
+            sample = Xs[i]
+            diff = weights - sample
+            dist2 = np.einsum("ijk,ijk->ij", diff, diff)
+            by, bx = np.unravel_index(int(np.argmin(dist2)), (gh, gw))
+            d2 = (yy - by) ** 2 + (xx - bx) ** 2
+            neigh = np.exp(-d2 * inv_2sig2)[..., None]
+            weights += lr * neigh * (sample - weights)
+
+    flat_w = weights.reshape(n_nodes, n_features)
+    # Batched BMU assignment
+    # ||x - w||^2 = ||x||^2 + ||w||^2 - 2 x·w
+    x_sq = np.einsum("ij,ij->i", Xs, Xs)[:, None]
+    w_sq = np.einsum("ij,ij->i", flat_w, flat_w)[None, :]
+    dots = Xs @ flat_w.T
+    bmu_flat = np.argmin(x_sq + w_sq - 2.0 * dots, axis=1)
+    bmu_y = bmu_flat // gw
+    bmu_x = bmu_flat % gw
+    if jitter and float(jitter) > 0:
+        j = float(jitter)
+        coords = np.column_stack(
+            [
+                bmu_x.astype(float) + rng.uniform(-j, j, size=n_used),
+                bmu_y.astype(float) + rng.uniform(-j, j, size=n_used),
+            ]
+        )
+    else:
+        coords = np.column_stack([bmu_x.astype(float), bmu_y.astype(float)])
+
+    occupied = int(np.unique(bmu_flat).size)
+    counts = np.bincount(bmu_flat, minlength=n_nodes)
+    summary = (
+        f"{note}"
+        f"Samples used: {n_used}\n"
+        f"Features: {n_features}\n"
+        f"Grid: {gw} × {gh} ({n_nodes} nodes)\n"
+        f"Occupied nodes: {occupied} ({100.0 * occupied / n_nodes:.1f}%)\n"
+        f"Max node occupancy: {int(counts.max())}\n"
+        f"Epochs: {epochs}\n"
+        f"Initial learning rate: {lr0}\n"
+        f"Initial sigma: {sigma0:.2f}\n"
+        f"Random state: {random_state}\n"
+        f"Plot: BMU column (X) vs row (Y)" + (" with jitter" if jitter else "")
     )
     return coords, used_idx, summary
 

@@ -1,4 +1,4 @@
-"""Build Plotly figures for PCA / t-SNE / UMAP result dialogs."""
+"""Build Plotly figures for PCA / t-SNE / UMAP / SOM result dialogs."""
 
 from __future__ import annotations
 
@@ -44,6 +44,8 @@ def build_dimension_reduction_figure(
         x_label, y_label = "PC1", "PC2"
     elif result.method == "umap":
         x_label, y_label = "UMAP 1", "UMAP 2"
+    elif result.method == "som":
+        x_label, y_label = "SOM column", "SOM row"
     else:
         x_label, y_label = "t-SNE 1", "t-SNE 2"
     marker = scatter_marker_from_column_values(
