@@ -1,4 +1,4 @@
-"""PCA, t-SNE, and UMAP visualization dialogs (Data menu)."""
+"""PCA, t-SNE, UMAP, and SOM visualization dialogs (Data menu)."""
 
 from __future__ import annotations
 
@@ -198,7 +198,12 @@ class DimensionReductionPanel(QWidget):
         return _DIMRED_FLOATING_DIALOGS[self._method](parent_app, panel=self)
 
     def _run_button_label(self) -> str:
-        labels = {"pca": "Run PCA", "tsne": "Run t-SNE", "umap": "Run UMAP"}
+        labels = {
+            "pca": "Run PCA",
+            "tsne": "Run t-SNE",
+            "umap": "Run UMAP",
+            "som": "Run SOM",
+        }
         return labels.get(self._method, "Run")
 
     def _build_method_options(self, form: QFormLayout) -> None:
@@ -683,8 +688,97 @@ class UMAPVisualizationDialog(DimensionReductionDialog):
         super().__init__(parent, panel=panel or UMAPPlotPanel(parent))
 
 
+class SOMPlotPanel(DimensionReductionPanel):
+    """Kohonen self-organizing map of numeric columns and/or fingerprints."""
+
+    def __init__(self, parent: ChemicalTableApp | None = None):
+        super().__init__(parent, window_title="Self-Organizing Map", method="som")
+
+    def _build_method_options(self, form: QFormLayout) -> None:
+        self.som_grid_w = QSpinBox()
+        self.som_grid_w.setRange(2, 40)
+        self.som_grid_w.setValue(10)
+        self.som_grid_w.setToolTip("Number of map columns (X). Nodes = width × height (max 2,500).")
+        form.addRow("Map width:", self.som_grid_w)
+
+        self.som_grid_h = QSpinBox()
+        self.som_grid_h.setRange(2, 40)
+        self.som_grid_h.setValue(10)
+        self.som_grid_h.setToolTip("Number of map rows (Y). Nodes = width × height (max 2,500).")
+        form.addRow("Map height:", self.som_grid_h)
+
+        self.som_epochs = QSpinBox()
+        self.som_epochs.setRange(5, 500)
+        self.som_epochs.setValue(50)
+        self.som_epochs.setToolTip("Training epochs; each epoch presents every sample once.")
+        form.addRow("Epochs:", self.som_epochs)
+
+        self.som_lr = QDoubleSpinBox()
+        self.som_lr.setRange(0.01, 1.0)
+        self.som_lr.setDecimals(2)
+        self.som_lr.setSingleStep(0.05)
+        self.som_lr.setValue(0.5)
+        self.som_lr.setToolTip("Initial learning rate (decays linearly to near zero).")
+        form.addRow("Learning rate:", self.som_lr)
+
+        self.som_sigma = QDoubleSpinBox()
+        self.som_sigma.setRange(0.0, 40.0)
+        self.som_sigma.setDecimals(1)
+        self.som_sigma.setSingleStep(0.5)
+        self.som_sigma.setValue(0.0)
+        self.som_sigma.setSpecialValueText("auto (½ max side)")
+        self.som_sigma.setToolTip(
+            "Initial neighborhood radius in node units. 0 = half the longer map side."
+        )
+        form.addRow("Sigma:", self.som_sigma)
+
+        self.som_jitter = QDoubleSpinBox()
+        self.som_jitter.setRange(0.0, 0.5)
+        self.som_jitter.setDecimals(2)
+        self.som_jitter.setSingleStep(0.05)
+        self.som_jitter.setValue(0.35)
+        self.som_jitter.setToolTip(
+            "Jitter BMU coordinates so compounds on the same node do not stack exactly."
+        )
+        form.addRow("Point jitter:", self.som_jitter)
+
+        self.som_max_points = QSpinBox()
+        from ...config import load_config
+
+        dimred_cap = int(load_config().memory_guard_dimred_max_points)
+        self.som_max_points.setRange(100, dimred_cap)
+        self.som_max_points.setValue(min(2500, dimred_cap))
+        self.som_max_points.setToolTip(
+            "Subsample to this many rows when the table is larger (keeps training responsive)."
+        )
+        form.addRow("Max points:", self.som_max_points)
+
+        self.som_seed = QSpinBox()
+        self.som_seed.setRange(0, 999_999)
+        self.som_seed.setValue(42)
+        form.addRow("Random seed:", self.som_seed)
+
+    def _method_params(self) -> dict:
+        return {
+            "grid_width": int(self.som_grid_w.value()),
+            "grid_height": int(self.som_grid_h.value()),
+            "n_epochs": int(self.som_epochs.value()),
+            "learning_rate": float(self.som_lr.value()),
+            "sigma": float(self.som_sigma.value()),
+            "jitter": float(self.som_jitter.value()),
+            "max_points": int(self.som_max_points.value()),
+            "random_state": int(self.som_seed.value()),
+        }
+
+
+class SOMVisualizationDialog(DimensionReductionDialog):
+    def __init__(self, parent: ChemicalTableApp | None = None, *, panel: DimensionReductionPanel | None = None):
+        super().__init__(parent, panel=panel or SOMPlotPanel(parent))
+
+
 _DIMRED_FLOATING_DIALOGS = {
     "pca": PCADialog,
     "tsne": TSNEVisualizationDialog,
     "umap": UMAPVisualizationDialog,
+    "som": SOMVisualizationDialog,
 }

@@ -9,6 +9,7 @@ from molmanager.dimensionality_reduction import (
     is_fingerprint_bitcount_column,
     prepare_numeric_matrix,
     run_pca,
+    run_som,
     run_tsne,
     run_umap,
 )
@@ -49,6 +50,34 @@ def test_run_tsne_subsample_note():
     assert coords.shape == (30, 2)
     assert len(used) == 30
     assert "Subsampled" in summary
+
+
+def test_run_som_returns_grid_coords_and_summary():
+    rng = np.random.default_rng(3)
+    X = rng.normal(size=(60, 5))
+    coords, used, summary = run_som(
+        X,
+        grid_width=5,
+        grid_height=4,
+        n_epochs=8,
+        max_points=40,
+        random_state=0,
+        jitter=0.2,
+    )
+    assert coords.shape == (40, 2)
+    assert len(used) == 40
+    assert "Subsampled" in summary
+    assert "Grid: 5 × 4" in summary
+    assert coords[:, 0].min() >= -0.2
+    assert coords[:, 0].max() < 5.2
+    assert coords[:, 1].min() >= -0.2
+    assert coords[:, 1].max() < 4.2
+
+
+def test_run_som_rejects_oversized_grid():
+    X = np.random.default_rng(0).normal(size=(20, 3))
+    with pytest.raises(ValueError, match="exceeds 2,500"):
+        run_som(X, grid_width=51, grid_height=50, n_epochs=1)
 
 
 def test_tsne_single_feature_uses_random_init():

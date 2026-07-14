@@ -966,6 +966,13 @@ class ChemicalTableApp(
         data_menu.addAction(
             QAction("UMAP Visualization…", self, triggered=self.open_umap_dialog)
         )
+        data_menu.addAction(
+            QAction(
+                "Self-Organizing Map…",
+                self,
+                triggered=self.open_som_dialog,
+            )
+        )
         data_menu.addSeparator()
         data_menu.addAction(
             QAction("BOILED-Egg plot…", self, triggered=self.open_boiled_egg_plot)

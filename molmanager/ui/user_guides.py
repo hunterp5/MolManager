@@ -152,7 +152,7 @@ GUIDE_SECTIONS: tuple[GuideSection, ...] = (
             GuideEntry(
                 "data_viz",
                 "Embeddings & medchem plots",
-                "PCA, t-SNE, UMAP, BOILED-Egg",
+                "PCA, t-SNE, UMAP, SOM, BOILED-Egg",
                 "Dimensionality reduction and medicinal chemistry plots.",
             ),
         ),
@@ -254,7 +254,7 @@ work continues.</p>
 <li><b>Edit</b> — undo/redo, copy/paste, delete rows, invert or clear selection.</li>
 <li><b>Tools</b> — prepare structures, calculate descriptors, fingerprints, clustering, pKa,
 protomers, docking, filters, search, calculator, and sketcher.</li>
-<li><b>Data</b> — analyze the table, PCA / t-SNE / UMAP, medchem plots (BOILED-Egg, Golden Triangle),
+<li><b>Data</b> — analyze the table, PCA / t-SNE / UMAP / SOM, medchem plots (BOILED-Egg, Golden Triangle),
 radar chart, and the plotter.</li>
 <li><b>External</b> — SQL databases, PubChem, ChEMBL, and patent chemistry (SureChEMBL).</li>
 </ul>
@@ -469,6 +469,8 @@ to select matching rows when plot sync is enabled.</p>
 <li><b>Principal Component Analysis</b> — linear projection of chosen descriptor columns.</li>
 <li><b>t-SNE</b> — nonlinear 2D embedding (slower on very large sets).</li>
 <li><b>UMAP</b> — alternative nonlinear embedding with tunable neighborhood size.</li>
+<li><b>Self-Organizing Map</b> — Kohonen map of descriptors and/or fingerprints onto a 2D grid
+(plot shows BMU column vs row).</li>
 </ul>
 <h3>Medicinal chemistry property space</h3>
 <ul>
