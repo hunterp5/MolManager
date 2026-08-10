@@ -2,8 +2,8 @@ from __future__ import annotations
 
 import re
 
-from PyQt5.QtCore import QEvent, QPoint, Qt, QTimer
-from PyQt5.QtGui import QCursor, QFont, QKeySequence
+from PyQt5.QtCore import QEvent, QPoint, QSize, Qt, QTimer
+from PyQt5.QtGui import QCursor, QFont, QIcon, QKeySequence
 from PyQt5.QtWidgets import (
     QAction,
     QApplication,
@@ -13,12 +13,14 @@ from PyQt5.QtWidgets import (
     QFrame,
     QGridLayout,
     QHBoxLayout,
+    QInputDialog,
     QLabel,
     QMenu,
     QMenuBar,
     QMessageBox,
     QPushButton,
     QShortcut,
+    QSizePolicy,
     QVBoxLayout,
     QWidget,
 )
@@ -28,8 +30,67 @@ from rdkit import Chem
 from ...workers import ExportWorker
 
 from ..qt_widget_utils import make_window_minimizable
-from .constants import SKETCH_ELEMENT_SYMBOLS, TOOLBAR_ELEMENT_SYMBOLS, WILDCARD_ELEMENT
+from .chem import _parse_periodic_element_symbol
+from .constants import TOOLBAR_ELEMENT_GROUPS, WILDCARD_ELEMENT
+from .toolbar_glyphs import (
+    TOOLBAR_RING_TEMPLATES,
+    bond_dative_icon,
+    bond_double_icon,
+    bond_hash_icon,
+    bond_plain_icon,
+    bond_triple_icon,
+    bond_wavy_icon,
+    bond_wedge_icon,
+    charge_minus_icon,
+    charge_plus_icon,
+    clear_sketch_icon,
+    mode_draw_icon,
+    mode_erase_icon,
+    mode_select_icon,
+    ring_icon,
+)
+from .bonds import (
+    BOND_STEREO_DATIVE,
+    BOND_STEREO_HASH,
+    BOND_STEREO_PLAIN,
+    BOND_STEREO_WAVY,
+    BOND_STEREO_WEDGE,
+)
 from .widget import SketchWidget
+
+
+def _toolbar_vsep() -> QFrame:
+    line = QFrame()
+    line.setFrameShape(QFrame.VLine)
+    line.setFrameShadow(QFrame.Sunken)
+    line.setFixedWidth(8)
+    return line
+
+
+def _toolbar_hsep() -> QFrame:
+    line = QFrame()
+    line.setFrameShape(QFrame.HLine)
+    line.setFrameShadow(QFrame.Sunken)
+    line.setFixedHeight(8)
+    return line
+
+
+def _glyph_tool_button(
+    icon: QIcon,
+    tip: str,
+    *,
+    checkable: bool = True,
+    size: int = 34,
+) -> QPushButton:
+    b = QPushButton()
+    b.setIcon(icon)
+    b.setIconSize(QSize(size - 6, size - 6))
+    b.setFixedSize(size, size)
+    b.setCheckable(checkable)
+    b.setToolTip(tip)
+    b.setStyleSheet("padding: 1px;")
+    b.setFocusPolicy(Qt.NoFocus)
+    return b
 
 
 def _sketcher_preferred_dialog_size() -> tuple[int, int]:
@@ -54,24 +115,15 @@ class SketcherDialog(QDialog):
         self.setModal(False)
         self.setWindowModality(Qt.NonModal)
         self.setAttribute(Qt.WA_DeleteOnClose, True)
-        # Erase / Select: hidden widgets carry state for shortcuts and toggles (see canvas menu).
-        self.tb_erase = QPushButton(self)
-        self.tb_erase.setCheckable(True)
-        self.tb_erase.setVisible(False)
-        self.tb_erase.toggled.connect(self._toggle_erase)
-        self.select_btn = QPushButton(self)
-        self.select_btn.setCheckable(True)
-        self.select_btn.setVisible(False)
-        self.select_btn.toggled.connect(self._toggle_select)
 
         l = QVBoxLayout(self)
-        top = QHBoxLayout()
-        top.addStretch()
+        l.setContentsMargins(0, 0, 0, 0)
+        l.setSpacing(0)
 
         menubar = QMenuBar(self)
         file_menu = menubar.addMenu("File")
-        export_act = QAction("Export sketch…", self)
-        export_act.triggered.connect(self._export_sketch)
+        export_act = QAction("Save Sketch…", self)
+        export_act.triggered.connect(self._save_sketch)
         file_menu.addAction(export_act)
         export_table_act = QAction("Export to Table", self)
         export_table_act.triggered.connect(self._add_to_table)
@@ -79,31 +131,57 @@ class SketcherDialog(QDialog):
         export_table_act.setShortcutContext(Qt.WindowShortcut)
         file_menu.addAction(export_table_act)
 
-        # Mode tools: Draw / Erase / Select (right-click empty canvas; mutually exclusive checks).
+        edit_menu = menubar.addMenu("Edit")
+        undo_act = QAction("Undo", self)
+        undo_act.setShortcut(QKeySequence.Undo)
+        undo_act.setShortcutContext(Qt.WindowShortcut)
+        undo_act.setToolTip("Undo the last sketch change (Ctrl+Z).")
+        undo_act.triggered.connect(self._undo_sketch)
+        edit_menu.addAction(undo_act)
+        redo_act = QAction("Redo", self)
+        redo_act.setShortcut(QKeySequence.Redo)
+        redo_act.setShortcutContext(Qt.WindowShortcut)
+        redo_act.setToolTip("Redo the last undone sketch change (Ctrl+Y / Ctrl+Shift+Z).")
+        redo_act.triggered.connect(self._redo_sketch)
+        edit_menu.addAction(redo_act)
+
+        # Mode tools: Draw / Erase / Select (toolbar + right-click empty canvas; mutually exclusive checks).
+        self.tb_draw = _glyph_tool_button(
+            mode_draw_icon(),
+            "Draw with the carbon tool (Ctrl+D). "
+            "Right-click empty canvas for templates, cleanup, and other commands.",
+        )
+        self.tb_draw.setChecked(True)
+        self.tb_draw.clicked.connect(lambda *_: self._enter_draw_mode())
+
+        self.tb_erase = _glyph_tool_button(mode_erase_icon(), "Erase atoms and bonds (Ctrl+E).")
+        self.tb_erase.toggled.connect(self._toggle_erase)
+
+        self.select_btn = _glyph_tool_button(
+            mode_select_icon(),
+            "Select and move atoms/bonds (Ctrl+T). "
+            "Hold Shift to add or remove atoms/bonds from the selection.",
+        )
+        self.select_btn.toggled.connect(self._toggle_select)
+
         self._act_mode_draw = QAction("Draw", self)
         self._act_mode_draw.setCheckable(True)
         self._act_mode_draw.setChecked(True)
-        self._act_mode_draw.setToolTip(
-            "Draw with the carbon tool (Ctrl+D). "
-            "Right-click empty canvas for templates, cleanup, and other commands."
-        )
+        self._act_mode_draw.setToolTip(self.tb_draw.toolTip())
         self._act_mode_draw.setShortcut(QKeySequence("Ctrl+D"))
         self._act_mode_draw.setShortcutContext(Qt.WindowShortcut)
         self._act_mode_draw.toggled.connect(self._on_menu_mode_draw)
 
         self._act_mode_erase = QAction("Erase", self)
         self._act_mode_erase.setCheckable(True)
-        self._act_mode_erase.setToolTip("Erase atoms and bonds (Ctrl+E).")
+        self._act_mode_erase.setToolTip(self.tb_erase.toolTip())
         self._act_mode_erase.setShortcut(QKeySequence("Ctrl+E"))
         self._act_mode_erase.setShortcutContext(Qt.WindowShortcut)
         self._act_mode_erase.toggled.connect(self._on_menu_mode_erase)
 
         self._act_mode_select = QAction("Select", self)
         self._act_mode_select.setCheckable(True)
-        self._act_mode_select.setToolTip(
-            "Select and move atoms/bonds (Ctrl+T). "
-            "Hold Shift to add or remove atoms/bonds from the selection."
-        )
+        self._act_mode_select.setToolTip(self.select_btn.toolTip())
         self._act_mode_select.setShortcut(QKeySequence("Ctrl+T"))
         self._act_mode_select.setShortcutContext(Qt.WindowShortcut)
         self._act_mode_select.toggled.connect(self._on_menu_mode_select)
@@ -156,19 +234,20 @@ class SketcherDialog(QDialog):
         fit_v_act.setToolTip("Scale and center so the whole sketch fits in the canvas with margin.")
         fit_v_act.triggered.connect(self._on_view_fit_structure)
         view_menu.addAction(fit_v_act)
+        center_draw_act = QAction("Center Drawing", self)
+        center_draw_act.setToolTip("Move the whole sketch so it is centered in the canvas (undo: Ctrl+Z).")
+        center_draw_act.triggered.connect(self._on_center_molecule)
+        view_menu.addAction(center_draw_act)
+        view_menu.addSeparator()
+        self._act_show_lone_pairs = QAction("Show Lone Pairs", self)
+        self._act_show_lone_pairs.setCheckable(True)
+        self._act_show_lone_pairs.setToolTip(
+            "Draw Lewis lone pairs (dot pairs) on heteroatoms using valence electrons and bonding."
+        )
+        self._act_show_lone_pairs.toggled.connect(self._on_toggle_show_lone_pairs)
+        view_menu.addAction(self._act_show_lone_pairs)
 
         tools = menubar.addMenu("Tools")
-
-        elements_menu = tools.addMenu("Elements")
-        elements_menu.setToolTip("Choose any supported element for drawing (toolbar shows a med-chem subset).")
-        for el in SKETCH_ELEMENT_SYMBOLS:
-            el_act = QAction(el, self)
-            el_act.triggered.connect(lambda _=False, e=el: self._select_element_tool(e))
-            elements_menu.addAction(el_act)
-        wild_act = QAction("Wildcard (*)", self)
-        wild_act.triggered.connect(self._select_wildcard_element_tool)
-        elements_menu.addSeparator()
-        elements_menu.addAction(wild_act)
 
         copy_act = QAction("Copy SMILES", self)
         copy_act.triggered.connect(self._copy_smiles)
@@ -177,16 +256,83 @@ class SketcherDialog(QDialog):
         copy_smarts_act = QAction("Copy SMARTS", self)
         copy_smarts_act.triggered.connect(self._copy_smarts)
         tools.addAction(copy_smarts_act)
-        tools.addSeparator()
-        center_mol_act = QAction("Center molecule", self)
-        center_mol_act.setToolTip("Move the whole sketch so it is centered in the canvas (undo: Ctrl+Z).")
-        center_mol_act.triggered.connect(self._on_center_molecule)
-        tools.addAction(center_mol_act)
 
         l.setMenuBar(menubar)
-        l.addLayout(top)
+
+        # --- Top glyph toolbar: modes, bonds, rings, charge ---
+        top_bar = QHBoxLayout()
+        top_bar.setSpacing(4)
+        top_bar.setContentsMargins(6, 4, 6, 4)
+
+        top_bar.addWidget(self.tb_draw)
+        top_bar.addWidget(self.tb_erase)
+        top_bar.addWidget(self.select_btn)
+        self.tb_clear = _glyph_tool_button(
+            clear_sketch_icon(),
+            "Clear the sketch (also in the right-click empty-canvas menu).",
+            checkable=False,
+        )
+        self.tb_clear.clicked.connect(self._clear_sketch)
+        top_bar.addWidget(self.tb_clear)
+        top_bar.addWidget(_toolbar_vsep())
+
+        self._bond_tool_group = QButtonGroup(self)
+        self._bond_tool_group.setExclusive(True)
+        self._bond_tool_buttons: list[tuple[QPushButton, int, int]] = []
+
+        def _add_bond_tool(icon, tip: str, order: int, stereo: int, *, checked: bool = False) -> QPushButton:
+            btn = _glyph_tool_button(icon, tip)
+            btn.setChecked(checked)
+            btn.clicked.connect(lambda _=False, o=order, s=stereo: self._on_bond_tool(o, s))
+            self._bond_tool_group.addButton(btn)
+            self._bond_tool_buttons.append((btn, order, stereo))
+            top_bar.addWidget(btn)
+            return btn
+
+        self.bond_plain = _add_bond_tool(
+            bond_plain_icon(), "Single bond (plain).", 1, BOND_STEREO_PLAIN, checked=True
+        )
+        self.bond_double = _add_bond_tool(bond_double_icon(), "Double bond.", 2, BOND_STEREO_PLAIN)
+        self.bond_triple = _add_bond_tool(bond_triple_icon(), "Triple bond.", 3, BOND_STEREO_PLAIN)
+        self.bond_wedge = _add_bond_tool(bond_wedge_icon(), "Wedge bond (solid stereo).", 1, BOND_STEREO_WEDGE)
+        self.bond_hash = _add_bond_tool(bond_hash_icon(), "Hash bond (dashed stereo).", 1, BOND_STEREO_HASH)
+        self.bond_wavy = _add_bond_tool(
+            bond_wavy_icon(), "Wavy bond (unspecified / undetermined stereochemistry).", 1, BOND_STEREO_WAVY
+        )
+        self.bond_dative = _add_bond_tool(
+            bond_dative_icon(), "Dative / coordinate bond (arrow from donor to acceptor).", 1, BOND_STEREO_DATIVE
+        )
+        top_bar.addWidget(_toolbar_vsep())
+
+        self._ring_button_group = QButtonGroup(self)
+        self._ring_button_group.setExclusive(False)
+        self._ring_btn_by_key: dict[str, QPushButton] = {}
+        for key, n_atoms, aromatic, tip in TOOLBAR_RING_TEMPLATES:
+            rb = _glyph_tool_button(ring_icon(n_atoms, aromatic=aromatic), tip)
+            rb.clicked.connect(lambda checked=False, k=key: self._on_ring_tool_clicked(k, checked))
+            self._ring_button_group.addButton(rb)
+            self._ring_btn_by_key[key] = rb
+            top_bar.addWidget(rb)
+        top_bar.addWidget(_toolbar_vsep())
+
+        self.charge_plus = _glyph_tool_button(charge_plus_icon(), "Set formal charge +1 on the next atom click.")
+        self.charge_plus.clicked.connect(lambda checked: self._toggle_charge(1 if checked else None))
+        self.charge_minus = _glyph_tool_button(charge_minus_icon(), "Set formal charge −1 on the next atom click.")
+        self.charge_minus.clicked.connect(lambda checked: self._toggle_charge(-1 if checked else None))
+        top_bar.addWidget(self.charge_plus)
+        top_bar.addWidget(self.charge_minus)
+        top_bar.addStretch(1)
+
+        top_toolbar = QWidget()
+        top_toolbar.setObjectName("SketcherTopToolbar")
+        top_toolbar.setStyleSheet("#SketcherTopToolbar { background-color: palette(window); border: none; }")
+        top_toolbar.setLayout(top_bar)
+        top_toolbar.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Fixed)
+        l.addWidget(top_toolbar)
 
         main_h = QHBoxLayout()
+        main_h.setContentsMargins(0, 0, 0, 0)
+        main_h.setSpacing(0)
 
         def _toolbar_header(text: str) -> QLabel:
             lab = QLabel(text)
@@ -195,125 +341,91 @@ class SketcherDialog(QDialog):
             )
             return lab
 
-        def _toolbar_rule() -> QFrame:
-            line = QFrame()
-            line.setFrameShape(QFrame.HLine)
-            line.setFrameShadow(QFrame.Sunken)
-            line.setMaximumHeight(1)
-            return line
-
         toolbar_outer = QVBoxLayout()
         toolbar_outer.setSpacing(8)
         toolbar_outer.setContentsMargins(8, 6, 8, 10)
 
-        # --- Mode (Erase / Select / Draw; shortcuts + right-click empty canvas menu) ---
-        toolbar_outer.addWidget(_toolbar_header("Mode"))
-        self.tb_clear = QPushButton("Clear")
-        self.tb_clear.setMinimumHeight(28)
-        self.tb_clear.setToolTip("Clear the sketch (also in the right-click empty-canvas menu).")
-        self.tb_clear.clicked.connect(self._clear_sketch)
-        toolbar_outer.addWidget(self.tb_clear)
-
-        toolbar_outer.addWidget(_toolbar_rule())
-
-        # --- Charge ---
-        self.charge_plus = QPushButton("+")
-        self.charge_plus.setCheckable(True)
-        self.charge_plus.setMinimumHeight(28)
-        self.charge_plus.clicked.connect(lambda checked: self._toggle_charge(1 if checked else None))
-        self.charge_minus = QPushButton("-")
-        self.charge_minus.setCheckable(True)
-        self.charge_minus.setMinimumHeight(28)
-        self.charge_minus.clicked.connect(lambda checked: self._toggle_charge(-1 if checked else None))
-        toolbar_outer.addWidget(_toolbar_header("Charge"))
-        row_ch = QHBoxLayout()
-        row_ch.setSpacing(6)
-        row_ch.addWidget(self.charge_plus, 1)
-        row_ch.addWidget(self.charge_minus, 1)
-        toolbar_outer.addLayout(row_ch)
-
-        toolbar_outer.addWidget(_toolbar_rule())
-
-        # --- Elements (med-chem toolbar subset; full list under Tools → Elements; fixed grid, no scroll) ---
+        # --- Elements by informal PT family; Custom: * wildcard and ? any-element ---
         self.element_buttons: list[QPushButton] = []
         self._element_btn_by_symbol: dict[str, QPushButton] = {}
         self._element_button_group = QButtonGroup(self)
         self._element_button_group.setExclusive(True)
-        toolbar_outer.addWidget(_toolbar_header("Elements"))
         el_grid = QGridLayout()
         el_grid.setHorizontalSpacing(4)
-        el_grid.setVerticalSpacing(4)
-        el_ncols = 5
+        el_grid.setVerticalSpacing(2)
+        el_ncols = 4
         btn_font = QFont("Sans", 8, QFont.Bold)
         btn_font.setStyleHint(QFont.SansSerif)
-        for i, el in enumerate(TOOLBAR_ELEMENT_SYMBOLS):
-            b = QPushButton(el)
-            b.setCheckable(True)
-            b.setProperty("sketch_element", el)
-            b.setFont(btn_font)
-            b.setFixedSize(28, 26)
-            b.setStyleSheet("padding: 0px;")
-            row, col = i // el_ncols, i % el_ncols
-            if el == "C":
-                b.setToolTip(
-                    "Carbon: click empty space to place C; click another C to extend a chain; "
-                    "click any other atom to replace it with carbon. More elements: Tools → Elements."
-                )
-            else:
-                b.setToolTip(f"Place {el}. More elements: Tools → Elements.")
-            b.clicked.connect(lambda checked, e=el: self._on_element_tool_clicked(e, checked))
-            self._element_button_group.addButton(b)
-            el_grid.addWidget(b, row, col)
-            self.element_buttons.append(b)
-            self._element_btn_by_symbol[el] = b
+        grid_row = 0
+        for gi, (group_title, symbols) in enumerate(TOOLBAR_ELEMENT_GROUPS):
+            if gi > 0:
+                el_grid.addWidget(_toolbar_hsep(), grid_row, 0, 1, el_ncols)
+                grid_row += 1
+            el_grid.addWidget(_toolbar_header(group_title), grid_row, 0, 1, el_ncols)
+            grid_row += 1
+            for i, el in enumerate(symbols):
+                b = QPushButton(el)
+                b.setCheckable(True)
+                b.setProperty("sketch_element", el)
+                b.setFont(btn_font)
+                b.setFixedSize(28, 26)
+                b.setStyleSheet("padding: 0px;")
+                row, col = i // el_ncols, i % el_ncols
+                if el == "C":
+                    b.setToolTip(
+                        "Carbon: click empty space to place C; click another C to extend a chain; "
+                        "click any other atom to replace it with carbon."
+                    )
+                elif el == "D":
+                    b.setToolTip("Deuterium (hydrogen isotope).")
+                else:
+                    b.setToolTip(f"Place {el} ({group_title}).")
+                b.clicked.connect(lambda checked, e=el: self._on_element_tool_clicked(e, checked))
+                self._element_button_group.addButton(b)
+                el_grid.addWidget(b, grid_row + row, col)
+                self.element_buttons.append(b)
+                self._element_btn_by_symbol[el] = b
+            grid_row += (len(symbols) + el_ncols - 1) // el_ncols
+
+        el_grid.addWidget(_toolbar_hsep(), grid_row, 0, 1, el_ncols)
+        grid_row += 1
+        el_grid.addWidget(_toolbar_header("Custom"), grid_row, 0, 1, el_ncols)
+        grid_row += 1
+
         self.tb_wildcard = QPushButton("*")
         self.tb_wildcard.setCheckable(True)
         self.tb_wildcard.setFont(btn_font)
         self.tb_wildcard.setToolTip(
-            "Wildcard atom: SMARTS query over selected elements. Right-click a wildcard to edit choices. "
-            "Tools → Elements for the full palette."
+            "Wildcard atom: SMARTS query over selected elements. Right-click a wildcard to edit choices."
         )
         self.tb_wildcard.setFixedSize(28, 26)
         self.tb_wildcard.setStyleSheet("padding: 0px;")
         self.tb_wildcard.toggled.connect(self._on_wildcard_tool_toggled)
-        wrow = (len(TOOLBAR_ELEMENT_SYMBOLS) + el_ncols - 1) // el_ncols
-        el_grid.addWidget(self.tb_wildcard, wrow, 0, 1, el_ncols)
+
+        self.tb_any_element = QPushButton("?")
+        self.tb_any_element.setCheckable(True)
+        self.tb_any_element.setFont(btn_font)
+        self.tb_any_element.setToolTip(
+            "Type any periodic-table element symbol (e.g. Au, Ru, Se) to place or replace atoms."
+        )
+        self.tb_any_element.setFixedSize(28, 26)
+        self.tb_any_element.setStyleSheet("padding: 0px;")
+        self.tb_any_element.clicked.connect(self._on_any_element_tool_clicked)
+        self._any_element_symbol: str | None = None
+
+        el_grid.addWidget(self.tb_wildcard, grid_row, 0)
+        el_grid.addWidget(self.tb_any_element, grid_row, 1)
         toolbar_outer.addLayout(el_grid)
-
-        toolbar_outer.addWidget(_toolbar_rule())
-
-        # --- Bond stereo ---
-        self._bond_stereo_group = QButtonGroup(self)
-        self._bond_stereo_group.setExclusive(True)
-        self.bond_plain = QPushButton("Plain")
-        self.bond_plain.setCheckable(True)
-        self.bond_plain.setChecked(True)
-        self.bond_plain.setMinimumHeight(26)
-        self.bond_plain.clicked.connect(lambda _=False: self._on_bond_stereo_tool(0))
-        self._bond_stereo_group.addButton(self.bond_plain)
-        self.bond_wedge = QPushButton("Wedge")
-        self.bond_wedge.setCheckable(True)
-        self.bond_wedge.setMinimumHeight(26)
-        self.bond_wedge.clicked.connect(lambda _=False: self._on_bond_stereo_tool(1))
-        self._bond_stereo_group.addButton(self.bond_wedge)
-        self.bond_hash = QPushButton("Hash")
-        self.bond_hash.setCheckable(True)
-        self.bond_hash.setMinimumHeight(26)
-        self.bond_hash.clicked.connect(lambda _=False: self._on_bond_stereo_tool(2))
-        self._bond_stereo_group.addButton(self.bond_hash)
-        toolbar_outer.addWidget(_toolbar_header("Bond"))
-        toolbar_outer.addWidget(self.bond_plain)
-        toolbar_outer.addWidget(self.bond_wedge)
-        toolbar_outer.addWidget(self.bond_hash)
 
         toolbar_outer.addStretch()
 
         toolbar_widget = QWidget()
         toolbar_widget.setObjectName("SketcherToolbarPanel")
         toolbar_widget.setStyleSheet(
-            "#SketcherToolbarPanel { background-color: palette(window); border-right: 1px solid palette(midlight); }"
+            "#SketcherToolbarPanel { background-color: palette(window); border: none; }"
         )
-        toolbar_widget.setFixedWidth(168)
+        # 4 element columns × 28px + spacing + margins
+        toolbar_widget.setFixedWidth(140)
         toolbar_widget.setLayout(toolbar_outer)
         main_h.addWidget(toolbar_widget)
 
@@ -326,6 +438,7 @@ class SketcherDialog(QDialog):
 
         self.sketch_status = QLabel("")
         self.sketch_status.setWordWrap(True)
+        self.sketch_status.setContentsMargins(8, 4, 8, 6)
         self.sketch_status.setStyleSheet("color: palette(mid);")
         l.addWidget(self.sketch_status)
         self.canvas.sketchChanged.connect(self._update_sketch_status)
@@ -427,6 +540,10 @@ class SketcherDialog(QDialog):
         self._act_mode_draw.blockSignals(True)
         self._act_mode_draw.setChecked(draw_on)
         self._act_mode_draw.blockSignals(False)
+        if getattr(self, "tb_draw", None) is not None:
+            self.tb_draw.blockSignals(True)
+            self.tb_draw.setChecked(draw_on)
+            self.tb_draw.blockSignals(False)
         self._act_mode_erase.blockSignals(True)
         self._act_mode_erase.setChecked(self.tb_erase.isChecked())
         self._act_mode_erase.blockSignals(False)
@@ -520,6 +637,7 @@ class SketcherDialog(QDialog):
         """Leave erase/select/template, choose carbon, and focus the canvas for drawing."""
         self._leave_special_modes_for_drawing()
         self.canvas.active_template = None
+        self._uncheck_ring_buttons()
         if getattr(self, "tb_wildcard", None) is not None:
             self.tb_wildcard.blockSignals(True)
             self.tb_wildcard.setChecked(False)
@@ -603,7 +721,7 @@ class SketcherDialog(QDialog):
             ],
         )
 
-    def _leave_special_modes_for_drawing(self) -> None:
+    def _leave_special_modes_for_drawing(self, *, reset_bond: bool = True) -> None:
         """Exit Select and Erase so drawing tools (element/template) apply."""
         if self.tb_erase.isChecked():
             self.tb_erase.blockSignals(True)
@@ -623,25 +741,72 @@ class SketcherDialog(QDialog):
         self.canvas._release_marquee_mouse_grab_if_any()
         self.canvas._maybe_move = False
         self.canvas._moving = False
-        self._reset_bond_stereo_toolbar()
+        if reset_bond:
+            self._reset_bond_stereo_toolbar()
         self.canvas.update()
         self._sync_mode_menu_checks()
 
     def _reset_bond_stereo_toolbar(self) -> None:
-        self.canvas.active_bond_stereo = 0
-        if getattr(self, "bond_plain", None) is None:
-            return
-        for btn, v in ((self.bond_plain, 0), (self.bond_wedge, 1), (self.bond_hash, 2)):
+        self._set_bond_tool(1, BOND_STEREO_PLAIN)
+
+    def _set_bond_tool(self, order: int, stereo: int) -> None:
+        self.canvas.active_bond_order = int(order)
+        self.canvas.active_bond_stereo = int(stereo) if int(order) == 1 else BOND_STEREO_PLAIN
+        for btn, o, s in getattr(self, "_bond_tool_buttons", []):
             btn.blockSignals(True)
-            btn.setChecked(v == 0)
+            btn.setChecked(o == order and s == (stereo if order == 1 else BOND_STEREO_PLAIN))
             btn.blockSignals(False)
 
+    def _on_bond_tool(self, order: int, stereo: int) -> None:
+        """Select a bond type and switch the canvas to draw mode."""
+        self._leave_special_modes_for_drawing(reset_bond=False)
+        self.canvas.active_template = None
+        self._uncheck_ring_buttons()
+        if getattr(self, "tb_wildcard", None) is not None:
+            self.tb_wildcard.blockSignals(True)
+            self.tb_wildcard.setChecked(False)
+            self.tb_wildcard.blockSignals(False)
+        self._select_default_element_tool()
+        self._set_bond_tool(order, stereo)
+        self.canvas.setFocus()
+        self._update_sketch_status()
+        self._sync_mode_menu_checks()
+
     def _on_bond_stereo_tool(self, val: int) -> None:
-        self.canvas.active_bond_stereo = val
-        for btn, v in ((self.bond_plain, 0), (self.bond_wedge, 1), (self.bond_hash, 2)):
-            btn.blockSignals(True)
-            btn.setChecked(v == val)
-            btn.blockSignals(False)
+        """Backward-compatible alias: stereo tools imply order 1."""
+        self._on_bond_tool(1, val)
+
+    def _on_toggle_show_lone_pairs(self, checked: bool) -> None:
+        self.canvas.show_lone_pairs = bool(checked)
+        self.canvas.update()
+
+    def _undo_sketch(self) -> None:
+        self.canvas.undo()
+        self._update_sketch_status()
+
+    def _redo_sketch(self) -> None:
+        self.canvas.redo()
+        self._update_sketch_status()
+
+    def _uncheck_ring_buttons(self) -> None:
+        for b in getattr(self, "_ring_btn_by_key", {}).values():
+            b.blockSignals(True)
+            b.setChecked(False)
+            b.blockSignals(False)
+
+    def _sync_ring_toolbar_checks(self, name: str | None) -> None:
+        for key, b in getattr(self, "_ring_btn_by_key", {}).items():
+            b.blockSignals(True)
+            b.setChecked(key == name)
+            b.blockSignals(False)
+
+    def _on_ring_tool_clicked(self, name: str, checked: bool) -> None:
+        if not checked:
+            if self.canvas.active_template == name:
+                self.canvas.active_template = None
+                self._enter_draw_mode()
+            return
+        self._select_template_from_menu(name)
 
     def _uncheck_element_buttons_clear_place(self) -> None:
         for b in self.element_buttons:
@@ -652,28 +817,30 @@ class SketcherDialog(QDialog):
             self.tb_wildcard.blockSignals(True)
             self.tb_wildcard.setChecked(False)
             self.tb_wildcard.blockSignals(False)
+        self._uncheck_any_element_button()
         self.canvas.place_element = None
 
     def _select_template_from_menu(self, name: str) -> None:
         self._leave_special_modes_for_drawing()
         self._uncheck_element_buttons_clear_place()
         self.canvas.active_template = name
+        self._sync_ring_toolbar_checks(name)
 
-    def _export_sketch(self) -> None:
+    def _save_sketch(self) -> None:
         smi = self.canvas.to_smiles().strip()
         if not smi:
-            QMessageBox.warning(self, "Export", "No valid structure to export from the sketch.")
+            QMessageBox.warning(self, "Save Sketch", "No valid structure to save from the sketch.")
             return
         mol = Chem.MolFromSmiles(smi) or Chem.MolFromSmarts(smi)
         if mol is None:
-            QMessageBox.warning(self, "Export", "RDKit could not build a molecule from the sketch (SMILES/SMARTS).")
+            QMessageBox.warning(self, "Save Sketch", "RDKit could not build a molecule from the sketch (SMILES/SMARTS).")
             return
         app = self.parent_app
         if app is None or not hasattr(app, "threadpool") or not hasattr(app, "signals"):
-            QMessageBox.warning(self, "Export", "Main application is not available for export.")
+            QMessageBox.warning(self, "Save Sketch", "Main application is not available for export.")
             return
         f_filter = "SDF (*.sdf);;Molfile (*.mol);;SMILES (*.smi)"
-        path, sel_f = QFileDialog.getSaveFileName(self, "Export Sketch", "", f_filter)
+        path, sel_f = QFileDialog.getSaveFileName(self, "Save Sketch", "", f_filter)
         if not path or not sel_f:
             return
         m = re.search(r"\((.*)\)", sel_f)
@@ -687,7 +854,7 @@ class SketcherDialog(QDialog):
         heads = ["ID_HIDDEN", "Structure", "SMILES"]
         data = {oid: {"SMILES": smi}}
         app.process_queue.enqueue(
-            f"Export sketch: {path}",
+            f"Save sketch: {path}",
             lambda ev, p=path, e=ext, m=mols, h=heads, d=data, s=app.signals: ExportWorker(
                 p, e, m, h, d, s, cancel_event=ev
             ),
@@ -696,6 +863,14 @@ class SketcherDialog(QDialog):
     def _escape_asks_close(self) -> None:
         self.close()
 
+    def _uncheck_any_element_button(self) -> None:
+        if getattr(self, "tb_any_element", None) is None:
+            return
+        self.tb_any_element.blockSignals(True)
+        self.tb_any_element.setChecked(False)
+        self.tb_any_element.blockSignals(False)
+        self._any_element_symbol = None
+
     def _on_element_tool_clicked(self, el: str, checked: bool) -> None:
         if not checked:
             return
@@ -703,8 +878,10 @@ class SketcherDialog(QDialog):
             self.tb_wildcard.blockSignals(True)
             self.tb_wildcard.setChecked(False)
             self.tb_wildcard.blockSignals(False)
+        self._uncheck_any_element_button()
         self._leave_special_modes_for_drawing()
         self.canvas.active_template = None
+        self._uncheck_ring_buttons()
         self.canvas.place_element = el
         for b in self.element_buttons:
             bel = b.property("sketch_element")
@@ -718,18 +895,75 @@ class SketcherDialog(QDialog):
                 b.blockSignals(True)
                 b.setChecked(False)
                 b.blockSignals(False)
+            self._uncheck_any_element_button()
             self._leave_special_modes_for_drawing()
             self.canvas.active_template = None
+            self._uncheck_ring_buttons()
             self.canvas.place_element = WILDCARD_ELEMENT
         elif self.canvas.place_element == WILDCARD_ELEMENT:
             self._select_default_element_tool()
 
-    def _select_default_element_tool(self) -> None:
-        self.canvas.place_element = "C"
+    def _on_any_element_tool_clicked(self, checked: bool) -> None:
+        if not checked:
+            if self._any_element_symbol and self.canvas.place_element == self._any_element_symbol:
+                self._any_element_symbol = None
+                self._select_default_element_tool()
+            return
+        hint = self._any_element_symbol or "Au"
+        txt, ok = QInputDialog.getText(
+            self,
+            "Element",
+            "Enter any periodic-table element symbol (e.g. Au, Ru, Se, Cl):",
+            text=hint,
+        )
+        if not ok:
+            self._uncheck_any_element_button()
+            return
+        sym = _parse_periodic_element_symbol(txt)
+        if sym is None:
+            QMessageBox.warning(
+                self,
+                "Element",
+                "Unknown or invalid element symbol. Enter a standard periodic-table symbol.",
+            )
+            self._uncheck_any_element_button()
+            return
+        for b in self.element_buttons:
+            b.blockSignals(True)
+            b.setChecked(False)
+            b.blockSignals(False)
         if getattr(self, "tb_wildcard", None) is not None:
             self.tb_wildcard.blockSignals(True)
             self.tb_wildcard.setChecked(False)
             self.tb_wildcard.blockSignals(False)
+        self._leave_special_modes_for_drawing()
+        self.canvas.active_template = None
+        self._uncheck_ring_buttons()
+        self._any_element_symbol = sym
+        self.canvas.place_element = sym
+        # Prefer highlighting the toolbar button if this element is already listed.
+        listed = self._element_btn_by_symbol.get(sym)
+        if listed is not None:
+            self._uncheck_any_element_button()
+            listed.blockSignals(True)
+            listed.setChecked(True)
+            listed.blockSignals(False)
+        else:
+            self.tb_any_element.blockSignals(True)
+            self.tb_any_element.setChecked(True)
+            self.tb_any_element.blockSignals(False)
+            self.tb_any_element.setToolTip(
+                f"Place {sym} (click again to choose a different element)."
+            )
+
+    def _select_default_element_tool(self) -> None:
+        self.canvas.place_element = "C"
+        self._any_element_symbol = None
+        if getattr(self, "tb_wildcard", None) is not None:
+            self.tb_wildcard.blockSignals(True)
+            self.tb_wildcard.setChecked(False)
+            self.tb_wildcard.blockSignals(False)
+        self._uncheck_any_element_button()
         bc = self._element_btn_by_symbol.get("C")
         if bc is not None:
             bc.setChecked(True)
@@ -851,6 +1085,7 @@ class SketcherDialog(QDialog):
             self.canvas.place_element = None
             self.canvas.active_template = None
             self._uncheck_element_buttons_clear_place()
+            self._uncheck_ring_buttons()
         else:
             self.canvas.setCursor(Qt.ArrowCursor)
             self._select_default_element_tool()
@@ -867,6 +1102,7 @@ class SketcherDialog(QDialog):
             self.canvas.place_element = None
             self.canvas.active_template = None
             self._uncheck_element_buttons_clear_place()
+            self._uncheck_ring_buttons()
             try:
                 self.canvas._refresh_hover_from_cursor()
             except Exception:

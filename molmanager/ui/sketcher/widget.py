@@ -23,6 +23,10 @@ from rdkit import Chem
 
 from .alkene_stereo import infer_alkene_ez_for_sketch_mol
 from .bonds import (
+    BOND_STEREO_HASH,
+    BOND_STEREO_PLAIN,
+    BOND_STEREO_VALUES,
+    BOND_STEREO_WEDGE,
     _bond_make,
     _bond_record_ok,
     _bond_unpack,
@@ -74,7 +78,8 @@ class SketchWidget(SketchWidgetEventsMixin, SketchWidgetPaintMixin, SketchWidget
         self.setMinimumSize(500, 400)
 
         self.nodes: list[dict[str, Any]] = []  # {'id': int, 'pos': QPoint, 'element': str, 'charge'?: int}
-        self.bonds: list[tuple[int, int, int, int]] = []  # (a_id, b_id, order, stereo) stereo: 0 plain, 1 wedge(a→b), 2 hash(a→b)
+        self.bonds: list[tuple[int, int, int, int]] = []  # (a_id, b_id, order, stereo)
+        # stereo: 0 plain, 1 wedge, 2 hash, 3 wavy, 4 dative (order 1 only for 1–4)
         self.next_id = 0
         self.sel: int | None = None
 
@@ -84,7 +89,9 @@ class SketchWidget(SketchWidgetEventsMixin, SketchWidgetPaintMixin, SketchWidget
         self.select_mode = False
         self.active_template: str | None = None
         self.active_charge: int | None = None  # +1, -1, or None
-        self.active_bond_stereo: int = 0  # 0 plain, 1 wedge, 2 hash (single bonds only)
+        self.active_bond_order: int = 1  # 1/2/3 for newly drawn or applied bonds
+        self.active_bond_stereo: int = 0  # 0 plain, 1 wedge, 2 hash, 3 wavy, 4 dative (single only)
+        self.show_lone_pairs: bool = False  # View → Show Lone Pairs
 
         # hover & interaction state
         self.hover: int | tuple[str, int] | None = None  # node id, or ('bond', bond_index)
@@ -705,20 +712,100 @@ class SketchWidget(SketchWidgetEventsMixin, SketchWidgetPaintMixin, SketchWidget
             except Exception:
                 pass
 
+    def _bond_tool_order_stereo(self) -> tuple[int, int]:
+        """Return (order, stereo) for the active toolbar bond tool."""
+        order = int(getattr(self, "active_bond_order", 1) or 1)
+        order = 1 if order < 1 else 3 if order > 3 else order
+        stereo = int(getattr(self, "active_bond_stereo", 0) or 0)
+        if order != 1:
+            return order, BOND_STEREO_PLAIN
+        if stereo not in BOND_STEREO_VALUES:
+            stereo = BOND_STEREO_PLAIN
+        return 1, stereo
+
+    def _apply_active_bond_tool(self, bi: int) -> bool:
+        """Set bond ``bi`` to the active tool's order/stereo. Returns True if changed."""
+        if not (0 <= bi < len(self.bonds)):
+            return False
+        a, b, order, st = _bond_unpack(self.bonds[bi])
+        new_order, new_st = self._bond_tool_order_stereo()
+        if order == new_order and st == new_st:
+            return False
+        # Preserve wedge/hash direction when only switching between plain/wavy/dative would reset ends.
+        self.bonds[bi] = _bond_make(a, b, new_order, new_st)
+        self._push_undo("chg_bond", (a, b, (order, st), (new_order, new_st)))
+        return True
+
+    def _snapshot_sketch_state(self) -> dict[str, Any]:
+        nodes: list[dict[str, Any]] = []
+        for n in self.nodes:
+            d = dict(n)
+            d["pos"] = QPoint(n["pos"])
+            if "wildcard_els" in n:
+                d["wildcard_els"] = list(n.get("wildcard_els") or [])
+            nodes.append(d)
+        return {
+            "nodes": nodes,
+            "bonds": [tuple(_bond_unpack(b)) for b in self.bonds],
+            "next_id": int(self.next_id),
+            "stereo_labels": sorted(int(x) for x in self._stereo_label_node_ids),
+            "salt_smiles": self._salt_bundle_smiles,
+            "salt_nodes": frozenset(self._salt_bundle_nodes) if self._salt_bundle_nodes is not None else None,
+            "salt_frag_count": self._salt_bundle_fragment_count,
+            "group_is_salt": bool(self._group_bundle_is_salt),
+        }
+
+    def _restore_sketch_state(self, payload: dict[str, Any]) -> None:
+        self.nodes = []
+        for n in payload.get("nodes") or []:
+            d = dict(n)
+            pos = d.get("pos")
+            if isinstance(pos, QPoint):
+                d["pos"] = QPoint(pos)
+            elif isinstance(pos, (tuple, list)) and len(pos) >= 2:
+                d["pos"] = QPoint(int(pos[0]), int(pos[1]))
+            self.nodes.append(d)
+        self.bonds = [_bond_make(*_bond_unpack(b)) for b in (payload.get("bonds") or [])]
+        self.next_id = int(payload.get("next_id") or (max((n["id"] for n in self.nodes), default=-1) + 1))
+        self.sel = None
+        self.selected_nodes = []
+        self.selected_bond_indices = set()
+        self._selection_rect = None
+        self._selecting = False
+        self._select_start = None
+        self._release_marquee_mouse_grab_if_any()
+        self._stereo_label_node_ids = {int(x) for x in (payload.get("stereo_labels") or [])}
+        salt_nodes = payload.get("salt_nodes")
+        self._salt_bundle_smiles = payload.get("salt_smiles")
+        self._salt_bundle_nodes = frozenset(salt_nodes) if salt_nodes is not None else None
+        self._salt_bundle_fragment_count = payload.get("salt_frag_count")
+        self._group_bundle_is_salt = bool(payload.get("group_is_salt"))
+        self._ensure_bonds_sanitized()
+
+    def _swap_clear_sketch_undo(self, other: dict[str, Any], *, to_redo: bool) -> None:
+        cur = self._snapshot_sketch_state()
+        self._restore_sketch_state(other)
+        if to_redo:
+            self._redo.append(("clear_sketch", cur))
+        else:
+            self._undo.append(("clear_sketch", cur))
+
     # ---------- Undo/redo ----------
     def _push_undo(self, op: str, data: Any):
         self._undo.append((op, data))
         self._redo.clear()
 
     def _ensure_bonds_sanitized(self) -> None:
-        """Drop malformed bond tuples and normalize: wedge/hash stereo only applies to single bonds."""
+        """Drop malformed bond tuples and normalize stereo for multi-order bonds."""
         out: list[tuple[int, int, int, int]] = []
         for b in self.bonds:
             if not _bond_record_ok(b):
                 continue
             a, bo, o, s = _bond_unpack(b)
             if o != 1:
-                s = 0
+                s = BOND_STEREO_PLAIN
+            elif s not in BOND_STEREO_VALUES:
+                s = BOND_STEREO_PLAIN
             out.append(_bond_make(a, bo, o, s))
         out = reorient_wedged_bonds_tip_away_from_multiples(out)
         if len(out) != len(self.bonds):
@@ -731,6 +818,10 @@ class SketchWidget(SketchWidgetEventsMixin, SketchWidgetPaintMixin, SketchWidget
             return
         self._ensure_bonds_sanitized()
         op, data = self._undo.pop()
+        if op == "clear_sketch":
+            self._swap_clear_sketch_undo(data, to_redo=True)
+            self._after_sketch_edit()
+            return
         if op == "add_node":
             node = data
             nid = node["id"]
@@ -738,6 +829,13 @@ class SketchWidget(SketchWidgetEventsMixin, SketchWidgetPaintMixin, SketchWidget
             self.bonds = [b for b in self.bonds if b[0] != nid and b[1] != nid]
             self.nodes = [n for n in self.nodes if n["id"] != nid]
             self._redo.append(("del_node", (node, conn)))
+        elif op == "add_bonded_node":
+            node, bond = data
+            nid = node["id"]
+            bt = _bond_make(*_bond_unpack(bond))
+            self.bonds = [b for b in self.bonds if b != bt and b[0] != nid and b[1] != nid]
+            self.nodes = [n for n in self.nodes if n["id"] != nid]
+            self._redo.append(("del_bonded_node", (node, bt)))
         elif op == "add_bond":
             if not _bond_record_ok(data):
                 pass
@@ -792,6 +890,15 @@ class SketchWidget(SketchWidgetEventsMixin, SketchWidgetPaintMixin, SketchWidget
                 else:
                     n["charge"] = int(old)
                 self._redo.append(("chg_charge", (nid, new, old)))
+        elif op == "chg_explicit_carbon":
+            nid, old, new = data
+            n = next((n for n in self.nodes if n["id"] == nid), None)
+            if n is not None:
+                if old:
+                    n["explicit_carbon"] = True
+                else:
+                    n.pop("explicit_carbon", None)
+                self._redo.append(("chg_explicit_carbon", (nid, new, old)))
         elif op == "chg_bond":
             if len(data) == 4 and isinstance(data[2], int):
                 a, b, old_o, new_o = data
@@ -806,10 +913,10 @@ class SketchWidget(SketchWidgetEventsMixin, SketchWidgetPaintMixin, SketchWidget
                     self.bonds[i] = _bond_make(x, y, old_os[0], old_os[1])
                 else:
                     sr = old_os[1]
-                    if sr == 1:
-                        sr = 2
-                    elif sr == 2:
-                        sr = 1
+                    if sr == BOND_STEREO_WEDGE:
+                        sr = BOND_STEREO_HASH
+                    elif sr == BOND_STEREO_HASH:
+                        sr = BOND_STEREO_WEDGE
                     self.bonds[i] = _bond_make(x, y, old_os[0], sr)
                 self._redo.append(("chg_bond", (a, b, new_os, old_os)))
                 break
@@ -851,12 +958,25 @@ class SketchWidget(SketchWidgetEventsMixin, SketchWidgetPaintMixin, SketchWidget
             return
         self._ensure_bonds_sanitized()
         op, data = self._redo.pop()
+        if op == "clear_sketch":
+            self._swap_clear_sketch_undo(data, to_redo=False)
+            self._after_sketch_edit()
+            return
         if op == "del_node":
             node, conn = data
             self.nodes.append(node)
             for b in conn:
                 self.bonds.append(_bond_make(*_bond_unpack(b)))
             self._undo.append(("add_node", node))
+            self._after_sketch_edit()
+            return
+        if op == "del_bonded_node":
+            node, bond = data
+            self.nodes.append(node)
+            mx_id = max((n["id"] for n in self.nodes), default=0)
+            self.next_id = max(self.next_id, mx_id + 1)
+            self.bonds.append(_bond_make(*_bond_unpack(bond)))
+            self._undo.append(("add_bonded_node", (node, _bond_make(*_bond_unpack(bond)))))
             self._after_sketch_edit()
             return
         if op == "del_bond":
@@ -878,6 +998,15 @@ class SketchWidget(SketchWidgetEventsMixin, SketchWidgetPaintMixin, SketchWidget
                     self.bonds.pop(i)
                     self._undo.append(("del_bond", bond))
                     break
+            self._after_sketch_edit()
+            return
+        if op == "add_bonded_node":
+            node, bond = data
+            nid = node["id"]
+            bt = _bond_make(*_bond_unpack(bond))
+            self.bonds = [b for b in self.bonds if b != bt and b[0] != nid and b[1] != nid]
+            self.nodes = [n for n in self.nodes if n["id"] != nid]
+            self._undo.append(("del_bonded_node", (node, bt)))
             self._after_sketch_edit()
             return
         if op == "add_hs_redo":
@@ -918,10 +1047,10 @@ class SketchWidget(SketchWidgetEventsMixin, SketchWidgetPaintMixin, SketchWidget
                     self.bonds[i] = _bond_make(x, y, new_os[0], new_os[1])
                 else:
                     sr = new_os[1]
-                    if sr == 1:
-                        sr = 2
-                    elif sr == 2:
-                        sr = 1
+                    if sr == BOND_STEREO_WEDGE:
+                        sr = BOND_STEREO_HASH
+                    elif sr == BOND_STEREO_HASH:
+                        sr = BOND_STEREO_WEDGE
                     self.bonds[i] = _bond_make(x, y, new_os[0], sr)
                 self._undo.append(("chg_bond", (a, b, old_os, new_os)))
                 break
@@ -957,6 +1086,17 @@ class SketchWidget(SketchWidgetEventsMixin, SketchWidgetPaintMixin, SketchWidget
                     n["charge"] = int(new)
                 if old is not None:
                     self._undo.append(("chg_charge", (nid, old, new)))
+            self._after_sketch_edit()
+            return
+        if op == "chg_explicit_carbon":
+            nid, new, old = data
+            n = next((n for n in self.nodes if n["id"] == nid), None)
+            if n is not None:
+                if new:
+                    n["explicit_carbon"] = True
+                else:
+                    n.pop("explicit_carbon", None)
+                self._undo.append(("chg_explicit_carbon", (nid, old, new)))
             self._after_sketch_edit()
             return
         if op == "move_nodes":
@@ -1004,11 +1144,14 @@ class SketchWidget(SketchWidgetEventsMixin, SketchWidgetPaintMixin, SketchWidget
                 return
             n["element"] = WILDCARD_ELEMENT
             n["wildcard_els"] = list(new_w_store)
+            n.pop("explicit_carbon", None)
         else:
             if old_el == new_el:
                 return
             n["element"] = new_el
             n.pop("wildcard_els", None)
+            if new_el != "C":
+                n.pop("explicit_carbon", None)
         new_w_store = tuple(_normalize_wildcard_elements(n)) if _is_wildcard_node(n) else None
         self._push_undo("chg_atom", (nid, old_el, new_el, old_w, new_w_store))
         self._after_sketch_edit()
@@ -1208,7 +1351,9 @@ class SketchWidget(SketchWidgetEventsMixin, SketchWidgetPaintMixin, SketchWidget
         self._paste_fragment_payload(frag, pt)
         return True
 
-    def clear(self):
+    def clear(self, *, push_undo: bool = True):
+        if push_undo and (self.nodes or self.bonds):
+            self._push_undo("clear_sketch", self._snapshot_sketch_state())
         self.nodes = []
         self.bonds = []
         self.next_id = 0
@@ -1556,7 +1701,7 @@ class SketchWidget(SketchWidgetEventsMixin, SketchWidgetPaintMixin, SketchWidget
         self.next_id += 1
         node = {"id": nid, "pos": QPoint(nx, ny), "element": "C"}
         self.nodes.append(node)
-        pst = self.active_bond_stereo if self.active_bond_stereo in (1, 2) else 0
-        self.bonds.append(_bond_make(atom_id, nid, 1, pst))
+        order, pst = self._bond_tool_order_stereo()
+        self.bonds.append(_bond_make(atom_id, nid, order, pst))
         self.update()
 

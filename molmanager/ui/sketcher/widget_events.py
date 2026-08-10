@@ -110,24 +110,20 @@ class SketchWidgetEventsMixin:
             else:
                 self._drag_candidate = None
 
-            # click on bond cycles order: single → double → triple → single
+            # Click on bond applies the active bond tool (order / stereo / dative / wavy).
             if isinstance(self.hover, tuple) and self.hover[0] == "bond" and not self.erase_mode:
                 bi = self.hover[1]
-                if 0 <= bi < len(self.bonds):
-                    a, b, order, st = _bond_unpack(self.bonds[bi])
-                    new_order = 1 if order >= 3 else order + 1
-                    new_st = st if new_order == 1 else 0
-                    self.bonds[bi] = _bond_make(a, b, new_order, new_st)
-                    self._push_undo("chg_bond", (a, b, (order, st), (new_order, new_st)))
-                    self._mouse_down_pos = None
-                    self._drag_candidate = None
-                    self._suppress_click = True
+                changed = self._apply_active_bond_tool(bi)
+                self._mouse_down_pos = None
+                self._drag_candidate = None
+                self._suppress_click = True
+                if changed:
                     try:
                         self._refresh_hover_from_cursor()
                     except Exception:
                         pass
                     self._after_sketch_edit()
-                    return
+                return
 
             # erase mode
             if self.erase_mode:
@@ -179,6 +175,17 @@ class SketchWidgetEventsMixin:
 
                 act_h_atom.triggered.connect(_do_h_atom)
                 menu.addAction(act_h_atom)
+                if hit.get("element") == "C" and not _is_wildcard_node(hit):
+                    act_xc = QAction("Explicit Carbon", self)
+                    act_xc.setCheckable(True)
+                    act_xc.setChecked(bool(hit.get("explicit_carbon")))
+                    act_xc.setToolTip(
+                        "Show a C label for this carbon instead of the usual skeletal (unlabeled) drawing."
+                    )
+                    act_xc.toggled.connect(
+                        lambda on, h=hit["id"]: self._set_explicit_carbon_visible(h, on)
+                    )
+                    menu.addAction(act_xc)
                 if _is_wildcard_node(hit):
                     act_ed = QAction("Edit wildcard elements...", self)
                     act_ed.triggered.connect(lambda ch, h=hit: self._edit_wildcard_dialog(h))
@@ -218,18 +225,25 @@ class SketchWidgetEventsMixin:
                         act_o.triggered.connect(_seto)
                         set_menu.addAction(act_o)
 
-                    stereo_menu = menu.addMenu("Bond stereo (single bonds)")
-                    for label, sval in [("Plain", 0), ("Wedge (narrow at first atom)", 1), ("Hash / dashed wedge", 2)]:
+                    stereo_menu = menu.addMenu("Bond type (single-bond styles)")
+                    for label, sval in [
+                        ("Plain", 0),
+                        ("Wedge (narrow at first atom)", 1),
+                        ("Hash / dashed wedge", 2),
+                        ("Wavy (unspecified stereo)", 3),
+                        ("Dative / coordinate (arrow)", 4),
+                    ]:
                         sa = QAction(label, self)
 
                         def _set_st(ch, sv=sval, bi_m=bi, ao=a_idx, bo=b_idx):
                             _, _, o0, s0 = _bond_unpack(self.bonds[bi_m])
-                            if o0 != 1:
+                            if o0 != 1 and sv != 0:
                                 return
-                            if sv == s0:
+                            if sv == s0 and o0 == 1:
                                 return
-                            self.bonds[bi_m] = _bond_make(ao, bo, o0, sv)
-                            self._push_undo("chg_bond", (ao, bo, (o0, s0), (o0, sv)))
+                            order_set = 1
+                            self.bonds[bi_m] = _bond_make(ao, bo, order_set, sv)
+                            self._push_undo("chg_bond", (ao, bo, (o0, s0), (order_set, sv)))
                             self._after_sketch_edit()
 
                         sa.triggered.connect(_set_st)
@@ -459,22 +473,18 @@ class SketchWidgetEventsMixin:
                         found = bi
                         break
                 if found is None:
-                    st = self.active_bond_stereo if self.active_bond_stereo in (1, 2) else 0
-                    bond = _bond_make(a, b, 1, st)
+                    order, st = self._bond_tool_order_stereo()
+                    bond = _bond_make(a, b, order, st)
                     self.bonds.append(bond)
                     self._push_undo("add_bond", bond)
                     self._after_sketch_edit()
                 else:
-                    i0, j0, order, st = _bond_unpack(self.bonds[found])
-                    new_order = 1 if order >= 3 else order + 1
-                    new_st = st if new_order == 1 else 0
-                    self.bonds[found] = _bond_make(i0, j0, new_order, new_st)
-                    self._push_undo("chg_bond", (i0, j0, (order, st), (new_order, new_st)))
-                    try:
-                        self._refresh_hover_from_cursor()
-                    except Exception:
-                        pass
-                    self._after_sketch_edit()
+                    if self._apply_active_bond_tool(found):
+                        try:
+                            self._refresh_hover_from_cursor()
+                        except Exception:
+                            pass
+                        self._after_sketch_edit()
             else:
                 if start_id is not None:
                     base = next((n for n in self.nodes if n["id"] == start_id), None)
@@ -501,11 +511,10 @@ class SketchWidgetEventsMixin:
                     if pel == WILDCARD_ELEMENT:
                         node["wildcard_els"] = list(DEFAULT_WILDCARD_ELEMENTS)
                     self.nodes.append(node)
-                    pst = self.active_bond_stereo if self.active_bond_stereo in (1, 2) else 0
-                    bond = _bond_make(start_id, nid, 1, pst)
+                    order, pst = self._bond_tool_order_stereo()
+                    bond = _bond_make(start_id, nid, order, pst)
                     self.bonds.append(bond)
-                    self._push_undo("add_node", node)
-                    self._push_undo("add_bond", bond)
+                    self._push_undo("add_bonded_node", (node, bond))
                     self._after_sketch_edit()
             return
 
@@ -560,9 +569,10 @@ class SketchWidgetEventsMixin:
                         ),
                         None,
                     )
-                    self._push_undo("add_node", node)
-                    if bond:
-                        self._push_undo("add_bond", bond)
+                    if bond is not None:
+                        self._push_undo("add_bonded_node", (node, bond))
+                    else:
+                        self._push_undo("add_node", node)
                     self._after_sketch_edit()
                 else:
                     self._mutate_atom_element(tgt, "C", None)
@@ -617,17 +627,4 @@ class SketchWidgetEventsMixin:
             pass
 
         super().keyPressEvent(ev)
-
-    def event(self, ev):
-        try:
-            if ev.type() == ev.KeyPress:
-                if ev.modifiers() & Qt.ControlModifier and ev.key() == Qt.Key_Z:
-                    self.undo()
-                    return True
-                if ev.modifiers() & Qt.ControlModifier and ev.key() == Qt.Key_Y:
-                    self.redo()
-                    return True
-        except Exception:
-            pass
-        return super().event(ev)
 

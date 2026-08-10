@@ -15,7 +15,14 @@ from rdkit.Geometry import Point2D
 
 from ...utils import mol_to_canonical_smiles
 
-from .bonds import _bond_make, _bond_unpack
+from .bonds import (
+    BOND_STEREO_DATIVE,
+    BOND_STEREO_HASH,
+    BOND_STEREO_WAVY,
+    BOND_STEREO_WEDGE,
+    _bond_make,
+    _bond_unpack,
+)
 from .chem import (
     _rdkit_atom_from_sketch_node,
     _sanitize_mol_for_smiles,
@@ -95,17 +102,21 @@ class SketchWidgetRdkitMixin:
                 bt = Chem.BondType.DOUBLE
             elif order == 3:
                 bt = Chem.BondType.TRIPLE
+            elif order == 1 and stereo == BOND_STEREO_DATIVE:
+                bt = Chem.BondType.DATIVE
             try:
                 rw.AddBond(ai, bi, bt)
             except Exception:
                 pass
-            if order == 1 and stereo in (1, 2):
+            if order == 1 and stereo in (BOND_STEREO_WEDGE, BOND_STEREO_HASH, BOND_STEREO_WAVY):
                 bobj = rw.GetBondBetweenAtoms(ai, bi)
                 if bobj is not None:
-                    if stereo == 1:
+                    if stereo == BOND_STEREO_WEDGE:
                         bobj.SetBondDir(BondDir.BEGINWEDGE)
-                    else:
+                    elif stereo == BOND_STEREO_HASH:
                         bobj.SetBondDir(_BOND_DIR_HASH)
+                    else:
+                        bobj.SetBondDir(BondDir.UNKNOWN)
         mol = rw.GetMol()
         self._apply_sketch_coords_and_stereo(mol, idmap)
         if return_idmap:
@@ -171,7 +182,7 @@ class SketchWidgetRdkitMixin:
         r = self.rect()
         wc = center if center is not None else (r.center() if r.width() > 8 and r.height() > 8 else QPoint(250, 200))
 
-        self.clear()
+        self.clear(push_undo=False)
         self._undo.clear()
         self._redo.clear()
 
@@ -195,27 +206,36 @@ class SketchWidgetRdkitMixin:
             ib, ie = bond.GetBeginAtomIdx(), bond.GetEndAtomIdx()
             bt = bond.GetBondType()
             order = 1
+            stereo = 0
             if bt == Chem.BondType.DOUBLE:
                 order = 2
             elif bt == Chem.BondType.TRIPLE:
                 order = 3
             elif bt == Chem.BondType.AROMATIC:
                 order = 1
-            stereo = 0
+            elif bt == Chem.BondType.DATIVE or bt in (
+                getattr(Chem.BondType, "DATIVEONE", None),
+                getattr(Chem.BondType, "DATIVEL", None),
+                getattr(Chem.BondType, "DATIVER", None),
+            ):
+                order = 1
+                stereo = BOND_STEREO_DATIVE
             a_rd, b_rd = ib, ie
-            if order == 1:
+            if order == 1 and stereo != BOND_STEREO_DATIVE:
                 bd = bond.GetBondDir()
                 if bd == BondDir.BEGINWEDGE:
-                    stereo = 1
+                    stereo = BOND_STEREO_WEDGE
                 elif bd == _BOND_DIR_HASH:
-                    stereo = 2
+                    stereo = BOND_STEREO_HASH
+                elif bd == BondDir.UNKNOWN:
+                    stereo = BOND_STEREO_WAVY
                 elif bd == BondDir.ENDDOWNRIGHT:
                     # Wedged single bond: narrow end at the bond's end atom (RDKit "END" convention).
-                    stereo = 1
+                    stereo = BOND_STEREO_WEDGE
                     a_rd, b_rd = ie, ib
                 elif bd == BondDir.ENDUPRIGHT:
                     # Hashed / dashed bond with narrow end at the bond's end atom.
-                    stereo = 2
+                    stereo = BOND_STEREO_HASH
                     a_rd, b_rd = ie, ib
             a, b = rd2sk[a_rd], rd2sk[b_rd]
             self.bonds.append(_bond_make(a, b, order, stereo))

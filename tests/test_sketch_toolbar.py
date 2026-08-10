@@ -1,0 +1,117 @@
+"""Sketcher toolbar glyph and top-toolbar wiring tests."""
+
+from __future__ import annotations
+
+from PyQt5.QtWidgets import QWidget
+
+from molmanager.ui.sketcher.bonds import BOND_STEREO_PLAIN, BOND_STEREO_WEDGE
+from molmanager.ui.sketcher.constants import SKETCH_RING_TEMPLATES, TOOLBAR_ELEMENT_GROUPS
+from molmanager.ui.sketcher.dialog import SketcherDialog
+from molmanager.ui.sketcher.toolbar_glyphs import (
+    TOOLBAR_RING_TEMPLATES,
+    bond_dative_icon,
+    bond_double_icon,
+    bond_hash_icon,
+    bond_plain_icon,
+    bond_triple_icon,
+    bond_wavy_icon,
+    bond_wedge_icon,
+    charge_minus_icon,
+    charge_plus_icon,
+    clear_sketch_icon,
+    mode_draw_icon,
+    mode_erase_icon,
+    mode_select_icon,
+    ring_icon,
+)
+
+
+def test_toolbar_glyphs_are_non_null(qapp) -> None:  # noqa: ARG001
+    icons = [
+        bond_plain_icon(),
+        bond_double_icon(),
+        bond_triple_icon(),
+        bond_wedge_icon(),
+        bond_hash_icon(),
+        bond_wavy_icon(),
+        bond_dative_icon(),
+        mode_select_icon(),
+        mode_draw_icon(),
+        mode_erase_icon(),
+        clear_sketch_icon(),
+        charge_plus_icon(),
+        charge_minus_icon(),
+    ]
+    for key, n_atoms, aromatic, _tip in TOOLBAR_RING_TEMPLATES:
+        assert key in SKETCH_RING_TEMPLATES
+        icons.append(ring_icon(n_atoms, aromatic=aromatic))
+    for ic in icons:
+        assert not ic.isNull()
+
+
+def test_sketcher_top_toolbar_controls(qapp) -> None:  # noqa: ARG001
+    dlg = SketcherDialog(QWidget())
+    assert dlg.tb_draw.isCheckable()
+    assert dlg.tb_erase.isCheckable()
+    assert dlg.select_btn.isCheckable()
+    assert not dlg.tb_clear.isCheckable()
+    assert dlg.bond_plain.isCheckable()
+    assert dlg.charge_plus.isCheckable()
+    assert "Ni" in dlg._element_btn_by_symbol
+    assert "Pd" in dlg._element_btn_by_symbol
+    assert "Pt" in dlg._element_btn_by_symbol
+    # Informal PT headings: Hydrogen Isotopes first (H, D).
+    assert list(dlg._element_btn_by_symbol)[0:2] == ["H", "D"]
+    assert "D" in dlg._element_btn_by_symbol
+    titles = [t for t, _ in TOOLBAR_ELEMENT_GROUPS]
+    assert "Hydrogen Isotopes" in titles
+    assert "Halogens" in titles
+    assert "Alkaline Earth Metals" in titles
+    assert "Alkali Earth Metals" not in titles
+    assert "Transition Metals" in titles
+    assert "Group 1" not in titles
+    assert dlg.tb_any_element is not None
+    assert dlg.tb_wildcard is not None
+    assert set(dlg._ring_btn_by_key) == {k for k, *_ in TOOLBAR_RING_TEMPLATES}
+
+
+    dlg._on_ring_tool_clicked("Benzene", True)
+    assert dlg.canvas.active_template == "Benzene"
+    assert dlg._ring_btn_by_key["Benzene"].isChecked()
+    assert dlg.canvas.place_element is None
+
+    dlg._on_element_tool_clicked("N", True)
+    assert dlg.canvas.active_template is None
+    assert not dlg._ring_btn_by_key["Benzene"].isChecked()
+    assert dlg.canvas.place_element == "N"
+
+    dlg._enter_draw_mode()
+    assert dlg.tb_draw.isChecked()
+    assert not dlg.tb_erase.isChecked()
+    assert not dlg.select_btn.isChecked()
+    assert dlg.canvas.place_element == "C"
+
+    dlg.select_btn.setChecked(True)
+    assert dlg.canvas.select_mode
+
+    dlg._on_bond_tool(2, BOND_STEREO_PLAIN)
+    assert dlg.tb_draw.isChecked()
+    assert not dlg.select_btn.isChecked()
+    assert not dlg.canvas.select_mode
+    assert dlg.canvas.active_bond_order == 2
+    assert dlg.canvas.place_element == "C"
+    assert dlg.bond_double.isChecked()
+
+    dlg._on_bond_tool(1, BOND_STEREO_WEDGE)
+    assert dlg.canvas.active_bond_order == 1
+    assert dlg.canvas.active_bond_stereo == BOND_STEREO_WEDGE
+    assert dlg.bond_wedge.isChecked()
+    assert dlg.tb_draw.isChecked()
+
+    assert hasattr(dlg, "_act_show_lone_pairs")
+    assert dlg._act_show_lone_pairs.isCheckable()
+    assert not dlg.canvas.show_lone_pairs
+    dlg._act_show_lone_pairs.setChecked(True)
+    assert dlg.canvas.show_lone_pairs
+
+    dlg.close()

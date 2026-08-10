@@ -76,26 +76,21 @@ WILDCARD_ELEMENT_CHOICES = SKETCH_ELEMENT_SYMBOLS
 
 ELEMENT_UPPER_MAP: dict[str, str] = {s.upper(): s for s in SKETCH_ELEMENT_SYMBOLS}
 
-TOOLBAR_ELEMENT_SYMBOLS: tuple[str, ...] = (
-    "C",
-    "N",
-    "O",
-    "F",
-    "Cl",
-    "Br",
-    "S",
-    "P",
-    "H",
-    "B",
-    "I",
-    "Si",
-    "Na",
-    "K",
-    "Mg",
-    "Ca",
-    "Zn",
-    "Fe",
-    "Cu",
+# Side-panel element buttons with informal periodic-table headings.
+TOOLBAR_ELEMENT_GROUPS: tuple[tuple[str, tuple[str, ...]], ...] = (
+    ("Hydrogen Isotopes", ("H", "D")),
+    ("Alkali Metals", ("Na", "K")),
+    ("Alkaline Earth Metals", ("Mg", "Ca")),
+    ("Boron Group", ("B",)),
+    ("Carbon Group", ("C", "Si")),
+    ("Pnictogens", ("N", "P")),
+    ("Chalcogens", ("O", "S")),
+    ("Halogens", ("F", "Cl", "Br", "I")),
+    ("Transition Metals", ("Fe", "Ni", "Pd", "Pt", "Cu", "Zn")),
+)
+
+TOOLBAR_ELEMENT_SYMBOLS: tuple[str, ...] = tuple(
+    el for _title, els in TOOLBAR_ELEMENT_GROUPS for el in els
 )
 
 # Pixel → model distance scale for 2D stereo perception (bond dirs + coordinates).

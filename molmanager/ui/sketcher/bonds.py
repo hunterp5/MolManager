@@ -2,6 +2,21 @@
 
 from typing import Any
 
+# stereo field (meaningful when order == 1):
+BOND_STEREO_PLAIN = 0
+BOND_STEREO_WEDGE = 1
+BOND_STEREO_HASH = 2
+BOND_STEREO_WAVY = 3  # unspecified / either configuration
+BOND_STEREO_DATIVE = 4  # coordination arrow (maps to RDKit BondType.DATIVE)
+
+BOND_STEREO_VALUES = (
+    BOND_STEREO_PLAIN,
+    BOND_STEREO_WEDGE,
+    BOND_STEREO_HASH,
+    BOND_STEREO_WAVY,
+    BOND_STEREO_DATIVE,
+)
+
 
 def _bond_record_ok(b: Any) -> bool:
     return isinstance(b, (tuple, list)) and len(b) >= 3
@@ -47,12 +62,12 @@ def reorient_wedged_bonds_tip_away_from_multiples(
     out: list[tuple[int, int, int, int]] = []
     for b in bonds:
         a, bo, o, s = _bond_unpack(b)
-        if o == 1 and s in (1, 2):
+        if o == 1 and s in (BOND_STEREO_WEDGE, BOND_STEREO_HASH):
             da = a in mult
             db = bo in mult
             if da and not db:
                 a, bo = bo, a
             elif da and db:
-                s = 0
+                s = BOND_STEREO_PLAIN
         out.append(_bond_make(a, bo, o, s))
     return out

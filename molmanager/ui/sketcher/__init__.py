@@ -1,5 +1,6 @@
 """
-Chemical sketcher UI split across ``constants``, ``bonds``, ``wildcards``, ``chem``, ``sketch_graph``, ``sketch_rdkit``, ``widget``, and ``dialog``.
+Chemical sketcher UI split across ``constants``, ``bonds``, ``wildcards``, ``chem``, ``sketch_graph``,
+``sketch_rdkit``, ``toolbar_glyphs``, ``widget``, and ``dialog``.
 
 Public imports match the former ``MolManager.ui.sketcher`` module path.
 
@@ -16,6 +17,7 @@ from .constants import (
     DEFAULT_WILDCARD_ELEMENTS,
     SKETCH_ELEMENT_SYMBOLS,
     SKETCH_RING_TEMPLATES,
+    TOOLBAR_ELEMENT_GROUPS,
     TOOLBAR_ELEMENT_SYMBOLS,
     WILDCARD_ELEMENT,
     WILDCARD_ELEMENT_CHOICES,
@@ -30,6 +32,7 @@ __all__ = [
     "SKETCH_RING_TEMPLATES",
     "SketcherDialog",
     "SketchWidget",
+    "TOOLBAR_ELEMENT_GROUPS",
     "TOOLBAR_ELEMENT_SYMBOLS",
     "WILDCARD_ELEMENT",
     "WILDCARD_ELEMENT_CHOICES",

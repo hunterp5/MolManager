@@ -1,0 +1,38 @@
+"""Explicit carbon label and Save Sketch naming."""
+
+from __future__ import annotations
+
+from PyQt5.QtCore import QPoint
+from PyQt5.QtWidgets import QMenuBar, QWidget
+
+from molmanager.ui.sketcher.bonds import _bond_make
+from molmanager.ui.sketcher.dialog import SketcherDialog
+from molmanager.ui.sketcher.widget import SketchWidget
+
+
+def test_file_menu_save_sketch_label(qapp) -> None:  # noqa: ARG001
+    dlg = SketcherDialog(QWidget())
+    mb = dlg.findChild(QMenuBar)
+    assert mb is not None
+    file_menu = next(a.menu() for a in mb.actions() if a.text().replace("&", "") == "File")
+    texts = [a.text().replace("&", "") for a in file_menu.actions()]
+    assert any(t.startswith("Save Sketch") for t in texts)
+    assert not any("Export sketch" in t for t in texts)
+    dlg.close()
+
+
+def test_explicit_carbon_toggle(qapp) -> None:  # noqa: ARG001
+    w = SketchWidget()
+    w.nodes = [
+        {"id": 1, "pos": QPoint(40, 40), "element": "C"},
+        {"id": 2, "pos": QPoint(100, 40), "element": "C"},
+    ]
+    w.bonds = [_bond_make(1, 2, 1, 0)]
+    w.next_id = 3
+    assert not w.nodes[0].get("explicit_carbon")
+    w._set_explicit_carbon_visible(1, True)
+    assert w.nodes[0].get("explicit_carbon") is True
+    w.undo()
+    assert not w.nodes[0].get("explicit_carbon")
+    w.redo()
+    assert w.nodes[0].get("explicit_carbon") is True

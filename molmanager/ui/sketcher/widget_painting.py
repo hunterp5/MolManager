@@ -8,11 +8,12 @@ from PyQt5.QtCore import QPoint, QPointF, Qt
 from PyQt5.QtGui import QBrush, QColor, QFont, QFontMetrics, QPainter, QPainterPath, QPen, QPolygonF
 
 from .acs_style import acs_sketch_style
+from .chem import sketch_lone_pair_count
 from .sketch_rdkit_paint import render_sketch_mol_to_pixmap, sketch_rdkit_paint_cache_key
 from .constants import SKETCH_MEDIAN_BOND_PX, WILDCARD_ELEMENT
-from .bonds import _bond_unpack
+from .bonds import BOND_STEREO_DATIVE, BOND_STEREO_WAVY, BOND_STEREO_WEDGE, BOND_STEREO_HASH, _bond_unpack
 from .element_colors import rdkit_default_element_rgb
-from .wildcards import _normalize_wildcard_elements
+from .wildcards import _is_wildcard_node, _normalize_wildcard_elements
 
 
 class SketchWidgetPaintMixin:
@@ -54,13 +55,13 @@ class SketchWidgetPaintMixin:
         x2, y2 = float(nj["pos"].x()), float(nj["pos"].y())
         style = self._acs_style()
         p.setPen(pen)
-        if order == 1 and stereo == 1:
+        if order == 1 and stereo == BOND_STEREO_WEDGE:
             apex, left, right = self._wedge_triangle_points(x1, y1, x2, y2, style.wedge_half_width_px)
             p.setBrush(QBrush(QColor(*style.ink)))
             p.drawPolygon(QPolygonF([apex, left, right]))
             p.setBrush(Qt.NoBrush)
             return
-        if order == 1 and stereo == 2:
+        if order == 1 and stereo == BOND_STEREO_HASH:
             apex, left, right = self._wedge_triangle_points(x1, y1, x2, y2, style.wedge_half_width_px)
             path = QPainterPath()
             path.moveTo(apex)
@@ -71,6 +72,12 @@ class SketchWidgetPaintMixin:
             dash.setStyle(Qt.DashLine)
             p.setPen(dash)
             p.drawPath(path)
+            return
+        if order == 1 and stereo == BOND_STEREO_WAVY:
+            self._draw_wavy_bond(p, x1, y1, x2, y2, pen)
+            return
+        if order == 1 and stereo == BOND_STEREO_DATIVE:
+            self._draw_dative_bond(p, x1, y1, x2, y2, pen, style)
             return
         if order == 1:
             p.drawLine(ni["pos"], nj["pos"])
@@ -83,6 +90,62 @@ class SketchWidgetPaintMixin:
             offsets = [(-ox, -oy), (0.0, 0.0), (ox, oy)]
         for ox2, oy2 in offsets:
             p.drawLine(int(x1 + ox2), int(y1 + oy2), int(x2 + ox2), int(y2 + oy2))
+
+    def _draw_wavy_bond(self, p: QPainter, x1: float, y1: float, x2: float, y2: float, pen: QPen) -> None:
+        dx, dy = x2 - x1, y2 - y1
+        length = max(math.hypot(dx, dy), 1.0)
+        ux, uy = dx / length, dy / length
+        px, py = -uy, ux
+        amp = max(2.5, min(6.0, length * 0.08))
+        waves = max(2, min(5, int(round(length / 14.0))))
+        n = max(12, waves * 8)
+        path = QPainterPath()
+        for i in range(n + 1):
+            t = i / n
+            wave = math.sin(t * math.pi * waves) * amp
+            x = x1 + dx * t + px * wave
+            y = y1 + dy * t + py * wave
+            if i == 0:
+                path.moveTo(x, y)
+            else:
+                path.lineTo(x, y)
+        p.setPen(pen)
+        p.setBrush(Qt.NoBrush)
+        p.drawPath(path)
+
+    def _draw_dative_bond(
+        self,
+        p: QPainter,
+        x1: float,
+        y1: float,
+        x2: float,
+        y2: float,
+        pen: QPen,
+        style,
+    ) -> None:
+        """Arrow from atom1 → atom2 (donor → acceptor), matching RDKit DATIVE begin→end."""
+        dx, dy = x2 - x1, y2 - y1
+        length = max(math.hypot(dx, dy), 1.0)
+        ux, uy = dx / length, dy / length
+        px, py = -uy, ux
+        head = max(6.0, min(11.0, length * 0.22))
+        half = max(3.0, style.wedge_half_width_px * 0.55)
+        sx2 = x2 - ux * head
+        sy2 = y2 - uy * head
+        p.setPen(pen)
+        p.drawLine(QPointF(x1, y1), QPointF(sx2, sy2))
+        p.setBrush(QBrush(pen.color()))
+        p.setPen(Qt.NoPen)
+        p.drawPolygon(
+            QPolygonF(
+                [
+                    QPointF(x2, y2),
+                    QPointF(sx2 + px * half, sy2 + py * half),
+                    QPointF(sx2 - px * half, sy2 - py * half),
+                ]
+            )
+        )
+        p.setBrush(Qt.NoBrush)
 
     def _draw_element_label(
         self,
@@ -234,7 +297,33 @@ class SketchWidgetPaintMixin:
         self._after_sketch_edit()
 
     def _should_paint_sketch_with_rdkit(self) -> bool:
-        return bool(self.nodes) and not self.sketch_has_wildcards()
+        if not self.nodes or self.sketch_has_wildcards():
+            return False
+        # Wavy / dative use custom ACS glyphs; keep those sketches on the local painter.
+        for b in self.bonds:
+            if _bond_unpack(b)[3] in (BOND_STEREO_WAVY, BOND_STEREO_DATIVE):
+                return False
+        # Explicit C labels need ACS drawing so bonds stop at the atom label.
+        if any(n.get("element") == "C" and n.get("explicit_carbon") for n in self.nodes):
+            return False
+        return True
+
+    def _set_explicit_carbon_visible(self, node_id: int, visible: bool) -> None:
+        n = next((x for x in self.nodes if x["id"] == node_id), None)
+        if n is None or n.get("element") != "C":
+            return
+        old = bool(n.get("explicit_carbon"))
+        on = bool(visible)
+        if old == on:
+            return
+        if on:
+            n["explicit_carbon"] = True
+        else:
+            n.pop("explicit_carbon", None)
+        self._push_undo("chg_explicit_carbon", (node_id, old, on))
+        self._invalidate_rdkit_sketch_paint_cache()
+        self._after_sketch_edit()
+
 
     def _invalidate_rdkit_sketch_paint_cache(self) -> None:
         self._rdkit_sketch_paint_cache_key = None
@@ -283,8 +372,38 @@ class SketchWidgetPaintMixin:
         p.restore()
         return True
 
+    def _bond_highlight_stroke_width(self, style, order: int, *, selected: bool) -> float:
+        """Width of a single centerline underlay that covers single/double/triple bond ink."""
+        ink_w = max(1.0, float(style.bond_width_px))
+        pad = float(style.bond_selection_extra_width if selected else 0.8)
+        if order >= 3:
+            span = 2.0 * float(style.triple_bond_offset_px)
+        elif order == 2:
+            span = float(style.double_bond_offset_px)
+        else:
+            span = 0.0
+        return max(ink_w + pad * 2.0, span + ink_w * 2.0 + pad)
+
+    def _draw_bond_highlight_underlay(
+        self,
+        p: QPainter,
+        ni: dict,
+        nj: dict,
+        order: int,
+        *,
+        color: QColor,
+        selected: bool,
+        style,
+    ) -> None:
+        """Draw one rounded stroke along the bond axis (avoids thick multi-line redraws)."""
+        pen = QPen(color)
+        pen.setWidthF(self._bond_highlight_stroke_width(style, order, selected=selected))
+        pen.setCapStyle(Qt.RoundCap)
+        pen.setJoinStyle(Qt.RoundJoin)
+        p.setPen(pen)
+        p.drawLine(ni["pos"], nj["pos"])
+
     def _paint_sketch_bond_highlights(self, p: QPainter, style) -> None:
-        ink = self._acs_ink_pen(style)
         selected_bonds = set(self.selected_bond_indices)
         hover_bond: int | None = None
         if isinstance(self.hover, tuple) and self.hover[0] == "bond":
@@ -293,28 +412,37 @@ class SketchWidgetPaintMixin:
             except (TypeError, ValueError):
                 hover_bond = None
 
-        accent = QPen(QColor(0, 80, 200))
-        accent.setCapStyle(Qt.RoundCap)
-        accent.setJoinStyle(Qt.RoundJoin)
         for bi in sorted(selected_bonds):
             if bi < 0 or bi >= len(self.bonds):
                 continue
-            a, b, order, stereo = _bond_unpack(self.bonds[bi])
+            a, b, order, _stereo = _bond_unpack(self.bonds[bi])
             ni = next((n for n in self.nodes if n["id"] == a), None)
             nj = next((n for n in self.nodes if n["id"] == b), None)
             if ni and nj:
-                accent.setWidthF(style.bond_width_px + style.bond_selection_extra_width)
-                self._draw_bond(p, ni, nj, order, stereo, accent)
+                self._draw_bond_highlight_underlay(
+                    p,
+                    ni,
+                    nj,
+                    order,
+                    color=QColor(0, 100, 220, 110),
+                    selected=True,
+                    style=style,
+                )
 
         if hover_bond is not None and 0 <= hover_bond < len(self.bonds) and hover_bond not in selected_bonds:
-            a, b, order, stereo = _bond_unpack(self.bonds[hover_bond])
+            a, b, order, _stereo = _bond_unpack(self.bonds[hover_bond])
             ni = next((n for n in self.nodes if n["id"] == a), None)
             nj = next((n for n in self.nodes if n["id"] == b), None)
             if ni and nj:
-                hover_pen = QPen(QColor(100, 140, 220))
-                hover_pen.setWidthF(style.bond_width_px + 0.6)
-                hover_pen.setCapStyle(Qt.RoundCap)
-                self._draw_bond(p, ni, nj, order, stereo, hover_pen)
+                self._draw_bond_highlight_underlay(
+                    p,
+                    ni,
+                    nj,
+                    order,
+                    color=QColor(80, 140, 230, 90),
+                    selected=False,
+                    style=style,
+                )
 
     def _paint_sketch_atom_overlays(self, p: QPainter, style) -> None:
         stereo_issue = getattr(self, "_chiral_stereo_issue_ids", set())
@@ -351,10 +479,101 @@ class SketchWidgetPaintMixin:
             if n["id"] in self._stereo_label_node_ids and code in ("R", "S"):
                 self._draw_cip_label(p, pos=n["pos"], nid=n["id"], code=code)
 
+        if getattr(self, "show_lone_pairs", False):
+            self._paint_sketch_lone_pairs(p, style)
+
+    def _node_lone_pair_count(self, n: dict) -> int:
+        if _is_wildcard_node(n):
+            return 0
+        nid = int(n["id"])
+        fc = int(n.get("charge", 0) or 0)
+        bond_sum = int(self._current_valence(nid))
+        max_allowed = int(self._max_bond_order_sum_for_node(n, fc))
+        implicit_h = max(0, max_allowed - bond_sum)
+        return sketch_lone_pair_count(
+            str(n.get("element", "")),
+            formal_charge=fc,
+            bond_order_sum=bond_sum,
+            implicit_h=implicit_h,
+        )
+
+    def _lone_pair_directions(self, n: dict, count: int) -> list[float]:
+        """Return ``count`` angles (radians) for lone-pair placement around node ``n``."""
+        if count <= 0:
+            return []
+        nid = int(n["id"])
+        cx, cy = float(n["pos"].x()), float(n["pos"].y())
+        angles: list[float] = []
+        for bond in self.bonds:
+            a, b, _o, _s = _bond_unpack(bond)
+            if a != nid and b != nid:
+                continue
+            other_id = b if a == nid else a
+            other = next((x for x in self.nodes if x["id"] == other_id), None)
+            if other is None:
+                continue
+            dx = float(other["pos"].x()) - cx
+            dy = float(other["pos"].y()) - cy
+            if math.hypot(dx, dy) < 1e-6:
+                continue
+            angles.append(math.atan2(dy, dx))
+        if not angles:
+            return [2.0 * math.pi * i / count - math.pi / 2.0 for i in range(count)]
+
+        angles.sort()
+        # Gaps between consecutive bond directions (including wrap-around).
+        gaps: list[tuple[float, float]] = []
+        for i, ang in enumerate(angles):
+            nxt = angles[(i + 1) % len(angles)]
+            span = (nxt - ang) % (2.0 * math.pi)
+            if span < 1e-6:
+                span = 2.0 * math.pi
+            mid = (ang + span / 2.0) % (2.0 * math.pi)
+            if mid > math.pi:
+                mid -= 2.0 * math.pi
+            gaps.append((span, mid))
+        gaps.sort(key=lambda g: g[0], reverse=True)
+        dirs = [g[1] for g in gaps[:count]]
+        while len(dirs) < count:
+            # Extra pairs: evenly fill remaining slots from the largest gap midpoints.
+            dirs.append(2.0 * math.pi * len(dirs) / count)
+        return dirs[:count]
+
+    def _draw_lone_pair_at(self, p: QPainter, cx: float, cy: float, angle: float, style) -> None:
+        """Draw one Lewis lone pair (two dots) along ``angle`` from the atom center."""
+        r = max(10.0, float(getattr(self, "radius", 14)) * 0.95)
+        pair_sep = max(3.0, float(style.bond_width_px) * 2.2)
+        dot_r = max(1.35, float(style.bond_width_px) * 0.85)
+        ux, uy = math.cos(angle), math.sin(angle)
+        px, py = -uy, ux
+        mx, my = cx + ux * r, cy + uy * r
+        ink = QColor(*style.ink)
+        p.setPen(Qt.NoPen)
+        p.setBrush(QBrush(ink))
+        for sign in (-1.0, 1.0):
+            p.drawEllipse(
+                QPointF(mx + px * pair_sep * 0.5 * sign, my + py * pair_sep * 0.5 * sign),
+                dot_r,
+                dot_r,
+            )
+        p.setBrush(Qt.NoBrush)
+
+    def _paint_sketch_lone_pairs(self, p: QPainter, style) -> None:
+        for n in self.nodes:
+            n_lp = self._node_lone_pair_count(n)
+            if n_lp <= 0:
+                continue
+            cx, cy = float(n["pos"].x()), float(n["pos"].y())
+            for ang in self._lone_pair_directions(n, n_lp):
+                self._draw_lone_pair_at(p, cx, cy, ang, style)
+
     def _paint_sketch_structure_acs(self, p: QPainter, style) -> None:
         ink = self._acs_ink_pen(style)
         p.setPen(ink)
         p.setBrush(Qt.NoBrush)
+
+        # Soft selection/hover underlays first so multi-bond ink stays crisp on top.
+        self._paint_sketch_bond_highlights(p, style)
 
         for bi, bond in enumerate(self.bonds):
             i, j, order, stereo = _bond_unpack(bond)
@@ -364,7 +583,6 @@ class SketchWidgetPaintMixin:
                 continue
             self._draw_bond(p, ni, nj, order, stereo, ink)
 
-        self._paint_sketch_bond_highlights(p, style)
         self._paint_sketch_atom_overlays(p, style)
 
         for n in self.nodes:
@@ -385,13 +603,14 @@ class SketchWidgetPaintMixin:
 
             if el == "C":
                 has_conn = any((_bond_unpack(b)[0] == n["id"] or _bond_unpack(b)[1] == n["id"]) for b in self.bonds)
-                if not has_conn:
+                show_c = bool(n.get("explicit_carbon")) or not has_conn
+                if show_c:
                     c = rdkit_default_element_rgb(el)
                     self._draw_element_label(p, pos, el, font_pt=style.label_font_pt, fill=QColor(*c))
                 ch = n.get("charge", 0)
                 if ch:
                     self._draw_formal_charge(
-                        p, pos, ch, symbol="C" if not has_conn else None, font_pt=style.label_font_pt
+                        p, pos, ch, symbol="C" if show_c else None, font_pt=style.label_font_pt
                     )
             else:
                 c = rdkit_default_element_rgb(el)

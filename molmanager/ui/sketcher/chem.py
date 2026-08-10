@@ -91,8 +91,22 @@ def _parse_atom_symbol_input(raw: str) -> tuple[str, list[str] | None] | None:
     if not s:
         return None
     low = s.lower()
-    if s == "*" or low in ("wildcard", "?", "wild"):
+    if s == "*" or low in ("wildcard", "wild"):
         return (WILDCARD_ELEMENT, None)
+    sym = _parse_periodic_element_symbol(s)
+    if sym is None:
+        return None
+    return (sym, None)
+
+
+def _parse_periodic_element_symbol(raw: str) -> str | None:
+    """
+    Parse a single periodic-table element symbol (not wildcard).
+    Accepts any RDKit-valid element (e.g. Au, Ru, Se), not only the toolbar subset.
+    """
+    s = (raw or "").strip()
+    if not s or s in ("*", "?"):
+        return None
     u = s.upper().replace(" ", "")
     sym = ELEMENT_UPPER_MAP.get(u)
     if sym is None:
@@ -102,9 +116,44 @@ def _parse_atom_symbol_input(raw: str) -> tuple[str, list[str] | None] | None:
             sym = u[0] + u[1].lower()
         else:
             return None
-        try:
-            if Chem.GetPeriodicTable().GetAtomicNumber(sym) <= 0:
-                return None
-        except Exception:
+    try:
+        if Chem.GetPeriodicTable().GetAtomicNumber(sym) <= 0:
             return None
-    return (sym, None)
+    except Exception:
+        return None
+    return sym
+
+
+def sketch_lone_pair_count(
+    element: str,
+    *,
+    formal_charge: int = 0,
+    bond_order_sum: int = 0,
+    implicit_h: int = 0,
+) -> int:
+    """
+    Approximate Lewis lone-pair count for sketcher display.
+
+    Uses ``floor((V - charge - effective_bonds) / 2)`` where effective bonds include
+    sketched bond-order sum plus estimated implicit hydrogens. Returns 0 for H isotopes,
+    wildcards, and metals without a positive default valence.
+    """
+    el = str(element or "")
+    if not el or el == WILDCARD_ELEMENT or el in ("H", "D", "T"):
+        return 0
+    try:
+        pt = Chem.GetPeriodicTable()
+        an = int(pt.GetAtomicNumber(el))
+        if an <= 0:
+            return 0
+        valence_e = int(pt.GetNOuterElecs(an))
+        default_v = int(pt.GetDefaultValence(an))
+    except Exception:
+        return 0
+    if valence_e <= 0 or default_v <= 0:
+        return 0
+    effective = max(0, int(bond_order_sum) + max(0, int(implicit_h)))
+    unpaired = valence_e - int(formal_charge) - effective
+    if unpaired < 2:
+        return 0
+    return min(4, unpaired // 2)
