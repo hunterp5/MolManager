@@ -5,6 +5,7 @@ from __future__ import annotations
 from .conformers_descriptors_mixin import ConformersDescriptorsMixin
 from .fragment_tools_mixin import FragmentToolsMixin
 from .ingest_render_mixin import IngestRenderMixin
+from .mmp_mixin import MmpMixin
 from .plot_tools_mixin import PlotToolsMixin
 from .prepare_structures_mixin import PrepareStructuresMixin
 from .reaction_tools_mixin import ReactionToolsMixin
@@ -17,6 +18,7 @@ class ChemistryMixin(
     PrepareStructuresMixin,
     ConformersDescriptorsMixin,
     FragmentToolsMixin,
+    MmpMixin,
     ReactionToolsMixin,
     ToolsSqlPredictMixin,
 ):

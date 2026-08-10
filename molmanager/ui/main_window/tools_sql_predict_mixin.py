@@ -18,6 +18,7 @@ from ...utils import redact_sqlalchemy_url, safe_float
 from ..singleton_modeless_dialog import reuse_or_show_modeless_singleton
 from ..strings import (
     TOOL_CALCULATOR,
+    TOOL_RANDOM_NUMBER,
     loaded_sql_status,
 )
 from ...workers import (
@@ -72,6 +73,50 @@ class ToolsSqlPredictMixin:
                 rd, ex, sigs, cancel_event=ev, progress_state=p
             ),
         )
+
+    def open_random_number_dialog(self) -> None:
+        if not self.headers or self._table_model.rowCount() == 0:
+            QMessageBox.information(
+                self,
+                TOOL_RANDOM_NUMBER,
+                "Load a table with at least one row first.",
+            )
+            return
+        from ..dialogs import RandomNumberDialog
+
+        d = RandomNumberDialog(len(self._selected_logical_rows()), self)
+        self._prepare_tool_dialog(d)
+        d.setAttribute(Qt.WA_DeleteOnClose, True)
+        d.accepted.connect(lambda *_, dlg=d: self._on_random_number_dialog_accepted(dlg))
+        d.show()
+
+    def _on_random_number_dialog_accepted(self, d) -> None:
+        from ...random_numbers import generate_random_values
+
+        p = d.params()
+        col = p.column_name
+        if not col:
+            QMessageBox.warning(self, TOOL_RANDOM_NUMBER, "Enter a name for the output column.")
+            return
+        only_selected = d.only_selected_rows()
+        allowed = self._selected_oids_set() if only_selected else None
+        if self._abort_if_only_selected_but_empty(only_selected, allowed, TOOL_RANDOM_NUMBER):
+            return
+        oids = self._all_oids_in_table_order()
+        if allowed is not None:
+            oids = [o for o in oids if o in allowed]
+        if not oids:
+            QMessageBox.information(self, TOOL_RANDOM_NUMBER, "No rows to process for this scope.")
+            self.status_label.setText("Ready.")
+            return
+        try:
+            values = generate_random_values(len(oids), p.params)
+        except ValueError as exc:
+            QMessageBox.warning(self, TOOL_RANDOM_NUMBER, str(exc) or "Invalid random-number settings.")
+            return
+        rows = [(int(oid), {col: text}) for oid, text in zip(oids, values)]
+        self.on_calc_finished(rows, [col], progress_label=TOOL_RANDOM_NUMBER)
+        self.status_label.setText(f'{TOOL_RANDOM_NUMBER}: column "{col}" updated ({len(rows)} row(s)).')
 
     def open_calculator(self):
         if not self.headers:

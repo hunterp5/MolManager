@@ -93,6 +93,9 @@ class SketchWidget(SketchWidgetEventsMixin, SketchWidgetPaintMixin, SketchWidget
         self._selecting = False
         self._select_start: QPoint | None = None
         self._selection_rect: QRect | None = None
+        # When Shift+marquee: keep prior selection and union with the drag rect.
+        self._select_additive_base_nodes: list[int] | None = None
+        self._select_additive_base_bonds: set[int] | None = None
         self._moving = False
         self._move_start_pos: QPoint | None = None
         self._move_orig: dict[int, QPoint] = {}
@@ -173,6 +176,49 @@ class SketchWidget(SketchWidgetEventsMixin, SketchWidgetPaintMixin, SketchWidget
         """Bonds whose both endpoints are in the current node selection (click / replace selection)."""
         s = self._selected_node_set()
         self.selected_bond_indices = {bi for bi, bond in enumerate(self.bonds) if _bond_unpack(bond)[0] in s and _bond_unpack(bond)[1] in s}
+
+    def _union_bonds_for_selected_nodes(self) -> None:
+        """Add bonds with both endpoints selected; keep any already-selected bonds."""
+        s = self._selected_node_set()
+        extra = {
+            bi
+            for bi, bond in enumerate(self.bonds)
+            if _bond_unpack(bond)[0] in s and _bond_unpack(bond)[1] in s
+        }
+        self.selected_bond_indices = set(self.selected_bond_indices) | extra
+
+    def _toggle_atom_in_selection(self, nid: int) -> bool:
+        """Shift-click atom: add if absent, remove if present. Returns True if now selected."""
+        if nid in self.selected_nodes:
+            self.selected_nodes = [x for x in self.selected_nodes if x != nid]
+            return False
+        self.selected_nodes = list(self.selected_nodes) + [nid]
+        self._union_bonds_for_selected_nodes()
+        return True
+
+    def _toggle_bond_in_selection(self, bi: int) -> bool:
+        """
+        Shift-click bond: add/remove that bond only (does not select endpoints).
+
+        Returns True if the bond is selected after the toggle.
+        """
+        if not (0 <= bi < len(self.bonds)):
+            return False
+        buds = set(self.selected_bond_indices)
+        if bi in buds:
+            buds.discard(bi)
+            self.selected_bond_indices = buds
+            return False
+        buds.add(bi)
+        self.selected_bond_indices = buds
+        return True
+
+    def _replace_selection_with_bond(self, bi: int) -> None:
+        if not (0 <= bi < len(self.bonds)):
+            return
+        a, b, _, __ = _bond_unpack(self.bonds[bi])
+        self.selected_nodes = [a, b]
+        self.selected_bond_indices = {bi}
 
     @staticmethod
     def _segment_intersects_rect(x1: float, y1: float, x2: float, y2: float, rect: QRect) -> bool:
@@ -777,6 +823,17 @@ class SketchWidget(SketchWidgetEventsMixin, SketchWidgetPaintMixin, SketchWidget
             self._redo.append(("add_hs_redo", payload))
             self._after_sketch_edit()
             return
+        elif op == "del_hs_local":
+            payload = data
+            for n in payload["nodes"]:
+                self.nodes.append(n)
+            mx_id = max((n["id"] for n in self.nodes), default=0)
+            self.next_id = max(self.next_id, mx_id + 1)
+            for bb in payload["bonds"]:
+                self.bonds.append(_bond_make(*_bond_unpack(bb)))
+            self._redo.append(("del_hs_redo", payload))
+            self._after_sketch_edit()
+            return
         elif op == "paste_group":
             payload = data
             for nid in payload["new_ids"]:
@@ -832,6 +889,16 @@ class SketchWidget(SketchWidgetEventsMixin, SketchWidgetPaintMixin, SketchWidget
             for bb in payload["bonds"]:
                 self.bonds.append(_bond_make(*_bond_unpack(bb)))
             self._undo.append(("add_hs_local", payload))
+            self._after_sketch_edit()
+            return
+        if op == "del_hs_redo":
+            payload = data
+            nids = {n["id"] for n in payload["nodes"]}
+            for bb in payload["bonds"]:
+                bt = _bond_make(*_bond_unpack(bb))
+                self.bonds = [b for b in self.bonds if b != bt]
+            self.nodes = [n for n in self.nodes if n["id"] not in nids]
+            self._undo.append(("del_hs_local", payload))
             self._after_sketch_edit()
             return
         if op == "paste_redo":

@@ -16,18 +16,17 @@ from rdkit.Geometry import Point2D
 from ...utils import mol_to_canonical_smiles
 
 from .bonds import _bond_make, _bond_unpack
-from .chem import _sanitize_mol_for_smiles
+from .chem import (
+    _rdkit_atom_from_sketch_node,
+    _sanitize_mol_for_smiles,
+    _sketch_element_from_rdkit_atom,
+)
 from .constants import (
     BOND_DIR_HASH as _BOND_DIR_HASH,
-    DEFAULT_WILDCARD_ELEMENTS,
     SKETCH_COORD_SCALE as _SKETCH_COORD_SCALE,
     SKETCH_MEDIAN_BOND_PX,
 )
-from .wildcards import (
-    _is_wildcard_node,
-    _normalize_wildcard_elements,
-    _wildcard_query_smarts,
-)
+from .wildcards import _is_wildcard_node
 
 
 class SketchWidgetRdkitMixin:
@@ -80,17 +79,8 @@ class SketchWidgetRdkitMixin:
         for n in self.nodes:
             if n["id"] not in ids:
                 continue
-            if _is_wildcard_node(n):
-                sm = _wildcard_query_smarts(_normalize_wildcard_elements(n))
-                try:
-                    a = Chem.AtomFromSmarts(sm)
-                except Exception:
-                    a = Chem.AtomFromSmarts(_wildcard_query_smarts(list(DEFAULT_WILDCARD_ELEMENTS)))
-            else:
-                a = Chem.Atom(n["element"])
             fc = self._formal_charge(n)
-            if fc != 0:
-                a.SetFormalCharge(fc)
+            a = _rdkit_atom_from_sketch_node(n, formal_charge=fc)
             idx = rw.AddAtom(a)
             idmap[n["id"]] = idx
         for bond in self.bonds:
@@ -188,7 +178,7 @@ class SketchWidgetRdkitMixin:
         rd2sk: dict[int, int] = {}
         for idx in range(na):
             atom = m.GetAtomWithIdx(idx)
-            sym = atom.GetSymbol()
+            sym = _sketch_element_from_rdkit_atom(atom)
             pos = conf.GetAtomPosition(idx)
             nx = int(round(wc.x() + (pos.x - mx) * scale))
             ny = int(round(wc.y() - (pos.y - my) * scale))
@@ -270,6 +260,22 @@ class SketchWidgetRdkitMixin:
         except Exception:
             return False
 
+    def sketch_has_explicit_hydrogens(self) -> bool:
+        """True when the sketch contains at least one H/D/T atom node."""
+        return any(n.get("element") in ("H", "D", "T") for n in self.nodes)
+
+    def atom_has_explicit_hydrogen_neighbors(self, nid: int) -> bool:
+        """True when *nid* is bonded to one or more explicit H/D/T atoms."""
+        for bond in self.bonds:
+            a, b, _o, _s = _bond_unpack(bond)
+            other = b if a == nid else a if b == nid else None
+            if other is None:
+                continue
+            node = next((n for n in self.nodes if n["id"] == other), None)
+            if node is not None and node.get("element") in ("H", "D", "T"):
+                return True
+        return False
+
     def add_explicit_hydrogens_from_implicit(self) -> tuple[bool, str]:
         """
         Replace the sketch with the same connectivity plus explicit H atoms (RDKit ``AddHs``),
@@ -309,6 +315,25 @@ class SketchWidgetRdkitMixin:
         if not self.load_from_rdkit_mol(mh, center=center, preserve_existing_2d=True):
             return False, "Could not place the expanded structure in the sketcher."
         return True, ""
+
+    def remove_explicit_hydrogens_from_sketch(self) -> tuple[bool, str]:
+        """Remove all explicit H/D/T atoms and their bonds from the sketch."""
+        h_nodes = [n for n in self.nodes if n.get("element") in ("H", "D", "T")]
+        if not h_nodes:
+            return False, "There are no explicit hydrogens to remove."
+        h_ids = {n["id"] for n in h_nodes}
+        removed_bonds = [b for b in self.bonds if _bond_unpack(b)[0] in h_ids or _bond_unpack(b)[1] in h_ids]
+        self.bonds = [b for b in self.bonds if _bond_unpack(b)[0] not in h_ids and _bond_unpack(b)[1] not in h_ids]
+        self.nodes = [n for n in self.nodes if n["id"] not in h_ids]
+        self._push_undo("del_hs_local", {"nodes": h_nodes, "bonds": removed_bonds})
+        self._after_sketch_edit(notify=True, notify_if_valence_failed=True)
+        return True, ""
+
+    def toggle_explicit_hydrogens(self) -> tuple[bool, str]:
+        """Add implicit→explicit Hs when none are shown; otherwise remove explicit Hs."""
+        if self.sketch_has_explicit_hydrogens():
+            return self.remove_explicit_hydrogens_from_sketch()
+        return self.add_explicit_hydrogens_from_implicit()
 
     def add_explicit_hydrogens_on_atom(self, nid: int) -> tuple[bool, str]:
         """
@@ -371,6 +396,40 @@ class SketchWidgetRdkitMixin:
         self._push_undo("add_hs_local", {"nodes": new_nodes, "bonds": new_bonds})
         self._after_sketch_edit(notify=True, notify_if_valence_failed=True)
         return True, ""
+
+    def remove_explicit_hydrogens_on_atom(self, nid: int) -> tuple[bool, str]:
+        """Remove explicit H/D/T atoms bonded only to the given atom."""
+        node = next((n for n in self.nodes if n["id"] == nid), None)
+        if node is None:
+            return False, "Atom not found."
+        h_ids: set[int] = set()
+        for bond in self.bonds:
+            a, b, _o, _s = _bond_unpack(bond)
+            other = b if a == nid else a if b == nid else None
+            if other is None:
+                continue
+            hn = next((n for n in self.nodes if n["id"] == other), None)
+            if hn is not None and hn.get("element") in ("H", "D", "T"):
+                h_ids.add(other)
+        if not h_ids:
+            return False, "There are no explicit hydrogens on this atom to remove."
+        h_nodes = [n for n in self.nodes if n["id"] in h_ids]
+        removed_bonds = [
+            b for b in self.bonds if _bond_unpack(b)[0] in h_ids or _bond_unpack(b)[1] in h_ids
+        ]
+        self.bonds = [
+            b for b in self.bonds if _bond_unpack(b)[0] not in h_ids and _bond_unpack(b)[1] not in h_ids
+        ]
+        self.nodes = [n for n in self.nodes if n["id"] not in h_ids]
+        self._push_undo("del_hs_local", {"nodes": h_nodes, "bonds": removed_bonds})
+        self._after_sketch_edit(notify=True, notify_if_valence_failed=True)
+        return True, ""
+
+    def toggle_explicit_hydrogens_on_atom(self, nid: int) -> tuple[bool, str]:
+        """Add or remove explicit hydrogens on a single atom."""
+        if self.atom_has_explicit_hydrogen_neighbors(nid):
+            return self.remove_explicit_hydrogens_on_atom(nid)
+        return self.add_explicit_hydrogens_on_atom(nid)
 
     def _format_cip_chiral_summary(self) -> str:
         """Short Cahn–Ingold–Prelog R/S summary for status line (from wedge/hash + sketch geometry)."""
@@ -437,8 +496,9 @@ class SketchWidgetRdkitMixin:
     def to_smiles(self) -> str:
         """
         Export SMILES for all **connected components** (fragments), joined with '.'.
+
         Does not hard-fail on local valence warnings: RDKit sanitize + fallbacks handle charges.
-        Fragments that contain wildcard atoms export as SMARTS (RDKit ``MolToSmarts``).
+        Fragments with wildcard atoms export as SMARTS (element lists cannot be expressed in SMILES).
         """
         if not self.nodes:
             return ""
@@ -455,24 +515,31 @@ class SketchWidgetRdkitMixin:
     def _component_has_wildcard(self, comp: set[int]) -> bool:
         return any(_is_wildcard_node(n) for n in self.nodes if n["id"] in comp)
 
-    def _component_to_smiles(self, comp: set[int]) -> str | None:
+    def _mol_string_from_component(self, comp: set[int], *, as_smarts: bool) -> str | None:
         m = self._mol_from_node_ids(comp)
         if m is None or m.GetNumAtoms() == 0:
             return None
+        try:
+            m.UpdatePropertyCache(strict=False)
+        except Exception:
+            pass
+        # Sanitize (incl. aromatize) before MolToSmarts so Kekulé rings export as
+        # aromatic ``:`` bonds and match table molecules. Query atoms are preserved.
+        if self._component_has_wildcard(comp) or as_smarts:
+            _sanitize_mol_for_smiles(m)
+            try:
+                return Chem.MolToSmarts(m, True)
+            except Exception:
+                try:
+                    m.UpdatePropertyCache(strict=False)
+                    return Chem.MolToSmarts(m, True)
+                except Exception:
+                    return None
         if not _sanitize_mol_for_smiles(m):
             try:
                 m.UpdatePropertyCache(strict=False)
             except Exception:
                 pass
-        if self._component_has_wildcard(comp):
-            try:
-                return Chem.MolToSmarts(m)
-            except Exception:
-                try:
-                    m.UpdatePropertyCache(strict=False)
-                    return Chem.MolToSmarts(m)
-                except Exception:
-                    return None
         try:
             return mol_to_canonical_smiles(m, isomeric=True)
         except Exception:
@@ -482,23 +549,14 @@ class SketchWidgetRdkitMixin:
             except Exception:
                 return None
 
+    def _component_to_smiles(self, comp: set[int]) -> str | None:
+        # Wildcards → SMARTS so element choices survive in Add-to-table / Copy SMILES.
+        if self._component_has_wildcard(comp):
+            return self._mol_string_from_component(comp, as_smarts=True)
+        return self._mol_string_from_component(comp, as_smarts=False)
+
     def _component_to_smarts(self, comp: set[int]) -> str | None:
-        m = self._mol_from_node_ids(comp)
-        if m is None or m.GetNumAtoms() == 0:
-            return None
-        if not _sanitize_mol_for_smiles(m):
-            try:
-                m.UpdatePropertyCache(strict=False)
-            except Exception:
-                pass
-        try:
-            return Chem.MolToSmarts(m)
-        except Exception:
-            try:
-                m.UpdatePropertyCache(strict=False)
-                return Chem.MolToSmarts(m)
-            except Exception:
-                return None
+        return self._mol_string_from_component(comp, as_smarts=True)
 
     def fragment_smiles_parts(self) -> list[str]:
         """SMILES per table row: each ungrouped fragment is one entry; a user group is one dot-separated SMILES."""

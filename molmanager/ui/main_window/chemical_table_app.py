@@ -154,6 +154,8 @@ class ChemicalTableApp(
         self.signals.fragment_recomp_failed.connect(self.on_fragment_recomp_failed, _qc)
         self.signals.reaction_enum_finished.connect(self.on_reaction_enum_finished, _qc)
         self.signals.reaction_enum_failed.connect(self.on_reaction_enum_failed, _qc)
+        self.signals.mmp_finished.connect(self.on_mmp_finished, _qc)
+        self.signals.mmp_failed.connect(self.on_mmp_failed, _qc)
         self.signals.cluster_failed.connect(self.on_cluster_failed, _qc)
         self.signals.cluster_explore_finished.connect(self.on_cluster_explore_finished, _qc)
         self.signals.export_finished.connect(self._on_export_finished_message, _qc)
@@ -216,6 +218,7 @@ class ChemicalTableApp(
         self._plot_table_sync_timer.setSingleShot(True)
         self._plot_table_sync_timer.timeout.connect(self._sync_active_plots_from_table_selection)
         self._selection_browser_dialog = None
+        self._mmp_browser_dialog = None
         self._sketcher_dialog = None
         self._calculator_dialog = None
         self._data_analysis_dialog = None
@@ -889,6 +892,13 @@ class ChemicalTableApp(
             act.setToolTip(tip)
             decomp_menu.addAction(act)
 
+        act_mmp = QAction("MMP…", self, triggered=self.open_mmp_dialog)
+        act_mmp.setToolTip(
+            "Find matched molecular pairs (RDKit MMPA): small structural changes and "
+            "their effect on a selected biological activity column."
+        )
+        tools.addAction(act_mmp)
+
         act_reaction_enum = QAction(
             "Reaction Based Enumeration…",
             self,
@@ -903,6 +913,11 @@ class ChemicalTableApp(
 
         tools.addSeparator()
         tools.addAction(self._act_custom_calc)
+        act_random = QAction("Random Number…", self, triggered=self.open_random_number_dialog)
+        act_random.setToolTip(
+            "Fill a column with random numbers (uniform, integer, or normal) for all or selected rows."
+        )
+        tools.addAction(act_random)
         act_sketch = self._bind_hotkey(
             "tools.sketcher",
             QAction("&Sketcher…", self, triggered=self.open_sketcher),
@@ -1149,6 +1164,7 @@ class ChemicalTableApp(
         for attr in (
             "_processes_dialog",
             "_selection_browser_dialog",
+            "_mmp_browser_dialog",
             "_sketcher_dialog",
             "_calculator_dialog",
             "_data_analysis_dialog",

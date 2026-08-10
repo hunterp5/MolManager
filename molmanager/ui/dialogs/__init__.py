@@ -25,6 +25,8 @@ from .mol_tools import (
     GenerateSingleConformationDialog,
     SuperposeConformersDialog,
 )
+from .mmp import MmpDialog, MmpDialogParams
+from .random_number import RandomNumberDialog, RandomNumberDialogParams
 from .permeability import PermeabilityPredictorDialog
 from .pka import PKaPredictorDialog
 from .properties import PropertyDialog
@@ -55,6 +57,8 @@ __all__ = [
     "FPSimilarityDialog",
     "GenerateConformationsDialog",
     "GenerateSingleConformationDialog",
+    "MmpDialog",
+    "MmpDialogParams",
     "PermeabilityPredictorDialog",
     "PKaPredictorDialog",
     "PlotDialog",
@@ -63,6 +67,8 @@ __all__ = [
     "PdbqtGeneratorDialog",
     "ProtonateDialog",
     "QSARDialog",
+    "RandomNumberDialog",
+    "RandomNumberDialogParams",
     "ReactionEnumerationDialog",
     "Render2DStructureDialog",
     "SketchWidget",

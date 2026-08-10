@@ -28,15 +28,28 @@ class SketchWidgetEventsMixin:
             self._mouse_down_pos = QPoint(wpt)
 
             if self.select_mode:
+                shift = bool(ev.modifiers() & Qt.ShiftModifier)
                 if hit is not None:
-                    if hit["id"] not in self.selected_nodes:
+                    if shift:
+                        now_on = self._toggle_atom_in_selection(hit["id"])
+                        if now_on:
+                            self._maybe_move = True
+                            self._move_start_pos = QPoint(pt)
+                        else:
+                            self._maybe_move = False
+                            self._move_start_pos = None
+                    elif hit["id"] not in self.selected_nodes:
                         self.selected_nodes = [hit["id"]]
-                    self._sync_selected_bonds_from_nodes()
-                    self._maybe_move = True
-                    self._move_start_pos = QPoint(pt)
+                        self._sync_selected_bonds_from_nodes()
+                        self._maybe_move = True
+                        self._move_start_pos = QPoint(pt)
+                    else:
+                        self._sync_selected_bonds_from_nodes()
+                        self._maybe_move = True
+                        self._move_start_pos = QPoint(pt)
                 else:
                     bi_m, _ = self._hit_bond(pt)
-                    if bi_m is not None and bi_m in self.selected_bond_indices:
+                    if bi_m is not None and bi_m in self.selected_bond_indices and not shift:
                         self._maybe_move = True
                         self._move_start_pos = QPoint(pt)
                         self._selecting = False
@@ -46,6 +59,18 @@ class SketchWidgetEventsMixin:
                     if bi_m is not None:
                         a0, b0, _, __ = _bond_unpack(self.bonds[bi_m])
                         s0 = self._selected_node_set()
+                        if shift:
+                            now_on = self._toggle_bond_in_selection(bi_m)
+                            if now_on:
+                                self._maybe_move = True
+                                self._move_start_pos = QPoint(pt)
+                            else:
+                                self._maybe_move = False
+                                self._move_start_pos = None
+                            self._selecting = False
+                            self._select_start = None
+                            self.update()
+                            return
                         if a0 in s0 and b0 in s0:
                             self._maybe_move = True
                             self._move_start_pos = QPoint(pt)
@@ -53,8 +78,22 @@ class SketchWidgetEventsMixin:
                             self._select_start = None
                             self.update()
                             return
-                    self.selected_nodes = []
-                    self.selected_bond_indices = set()
+                        # Click an unselected bond: select that bond (replace).
+                        self._replace_selection_with_bond(bi_m)
+                        self._maybe_move = True
+                        self._move_start_pos = QPoint(pt)
+                        self._selecting = False
+                        self._select_start = None
+                        self.update()
+                        return
+                    if shift:
+                        self._select_additive_base_nodes = list(self.selected_nodes)
+                        self._select_additive_base_bonds = set(self.selected_bond_indices)
+                    else:
+                        self.selected_nodes = []
+                        self.selected_bond_indices = set()
+                        self._select_additive_base_nodes = None
+                        self._select_additive_base_bonds = None
                     self._maybe_move = False
                     self._move_start_pos = None
                     self._moving = False
@@ -117,19 +156,24 @@ class SketchWidgetEventsMixin:
                 act_fc.setToolTip("Set the atom’s integer formal charge (e.g. +2 on sulfur, −1 on oxygen).")
                 act_fc.triggered.connect(lambda ch, h=hit: self._open_edit_formal_charge_dialog(h))
                 menu.addAction(act_fc)
-                act_h_atom = QAction("Show implicit hydrogens on this atom", self)
+                act_h_atom = QAction("Implicit Hydrogens", self)
+                act_h_atom.setCheckable(True)
                 act_h_atom.setEnabled(not _is_wildcard_node(hit))
-                act_h_atom.setToolTip(
-                    "Add explicit H atoms and bonds for this atom only (RDKit), using the same geometry as a full AddHs expansion."
-                )
                 hid = hit["id"]
+                act_h_atom.setChecked(self.atom_has_explicit_hydrogen_neighbors(hid))
+                act_h_atom.setToolTip(
+                    "Toggle explicit H atoms on this atom (RDKit AddHs / remove neighbor hydrogens)."
+                )
 
-                def _do_h_atom(_=False, atom_id=hid):
-                    ok, msg = self.add_explicit_hydrogens_on_atom(atom_id)
+                def _do_h_atom(checked=False, atom_id=hid):
+                    if checked:
+                        ok, msg = self.add_explicit_hydrogens_on_atom(atom_id)
+                    else:
+                        ok, msg = self.remove_explicit_hydrogens_on_atom(atom_id)
                     dlg = self._sketcher_dialog_if()
                     parent_w = dlg if dlg is not None else self
                     if not ok:
-                        QMessageBox.information(parent_w, "Hydrogens", msg)
+                        QMessageBox.information(parent_w, "Implicit Hydrogens", msg)
                     elif dlg is not None:
                         dlg._update_sketch_status()
 
@@ -259,7 +303,7 @@ class SketchWidgetEventsMixin:
                 miny, maxy = min(sy, wpt.y()), max(sy, wpt.y())
                 self._selection_rect = QRect(minx, miny, maxx - minx, maxy - miny)
                 model_rect = self._widget_rect_to_model(self._selection_rect)
-                self.selected_nodes = [
+                rect_nodes = [
                     n["id"]
                     for n in self.nodes
                     if (
@@ -267,7 +311,16 @@ class SketchWidgetEventsMixin:
                         and model_rect.top() <= n["pos"].y() <= model_rect.bottom()
                     )
                 ]
-                self._sync_selected_bonds_from_marquee_rect(model_rect)
+                base_nodes = self._select_additive_base_nodes
+                base_bonds = self._select_additive_base_bonds
+                if base_nodes is not None and base_bonds is not None:
+                    seen = set(base_nodes)
+                    self.selected_nodes = list(base_nodes) + [nid for nid in rect_nodes if nid not in seen]
+                    self._sync_selected_bonds_from_marquee_rect(model_rect)
+                    self.selected_bond_indices = set(base_bonds) | set(self.selected_bond_indices)
+                else:
+                    self.selected_nodes = rect_nodes
+                    self._sync_selected_bonds_from_marquee_rect(model_rect)
                 self.update()
                 return
             if self._maybe_move and self._move_start_pos is not None:
@@ -361,6 +414,8 @@ class SketchWidgetEventsMixin:
                 self._selecting = False
                 self._select_start = None
                 self._selection_rect = None
+                self._select_additive_base_nodes = None
+                self._select_additive_base_bonds = None
                 self._release_marquee_mouse_grab_if_any()
                 try:
                     self._refresh_hover_from_cursor()

@@ -59,6 +59,8 @@ flowchart TB
 | `PrepareStructuresMixin` | Fast prepare, wash/neutralize, render-2D tools |
 | `ConformersDescriptorsMixin` | Conformers, superposition, descriptor calc |
 | `FragmentToolsMixin` | BRICS/RECAP/R-group fragment tools |
+| `MmpMixin` | Matched molecular pair (MMP / rdMMPA) analysis |
+| `ReactionToolsMixin` | Reaction-based enumeration |
 | `ToolsSqlPredictMixin` | Calculator, SQL load, external DB, pKa/permeability |
 
 **Filter bounds:** bulk load/ingest calls `schedule_calculate_global_bounds()` (debounced); undo and session JSON restore call `calculate_global_bounds()` immediately when filter cards need fresh min/max.

@@ -54,6 +54,9 @@ class WorkerSignals(QObject):
     # Reaction-based enumeration: ReactionEnumerationJobResult
     reaction_enum_finished = pyqtSignal(object)
     reaction_enum_failed = pyqtSignal(str, str)
+    # Matched molecular pairs: (pairs, activity_column, write_to_table)
+    mmp_finished = pyqtSignal(list, str, bool)
+    mmp_failed = pyqtSignal(str)
     cluster_failed = pyqtSignal(str)
     # Exploratory clustering: list of dict rows (method, params, settings, metrics, notes)
     cluster_explore_finished = pyqtSignal(list)

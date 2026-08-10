@@ -129,8 +129,8 @@ GUIDE_SECTIONS: tuple[GuideSection, ...] = (
             GuideEntry(
                 "tools_adv",
                 "Decomposition & QSAR",
-                "BRICS/RECAP, R-group, QSAR",
-                "Fragmentation, recomposition, and predictive models.",
+                "BRICS/RECAP, R-group, MMP, QSAR",
+                "Fragmentation, recomposition, matched pairs, and predictive models.",
             ),
         ),
     ),
@@ -417,6 +417,13 @@ apply the best trial to add a cluster ID column.</p>
 <li><b>BRICS</b> / <b>RECAP Decomposition</b> — retrosynthetic fragments as SMILES columns; optional 2D render.</li>
 <li><b>BRICS</b> / <b>RECAP Recomposition</b> — combine fragment columns into new product rows; optional generation constraints on MW, LogP, TPSA, atom counts, and related properties.</li>
 </ul>
+<h3>Matched molecular pairs (Tools → MMP)</h3>
+<p>Uses RDKit MMPA to find pairs that differ by a small structural change. Choose a numeric
+activity column, optionally set a <b>minimum activity difference</b> threshold, and optionally
+limit to selected rows. Results open in a side-by-side browser (structures with the changing
+region highlighted, activities, transform, and Δactivity). Pair annotations can be written to
+the main table as <b>MMP_Partners</b>, <b>MMP_Transforms</b>, and
+<b>MMP_Delta_&lt;activity&gt;</b> columns.</p>
 <h3>QSAR (Tools → QSAR)</h3>
 <p>Train regression or classification models: pick an activity column (Y), numeric descriptors and/or
 fingerprints (X), and a scikit-learn model. Review validation metrics, then predict in-scope rows into
@@ -445,6 +452,10 @@ back to table row selection.</p>
 <p>Compare 2–6 numeric properties on a spider chart for chosen rows or the full filtered set.</p>
 <h3>Calculator (Tools → Calculator)</h3>
 <p>Build a numeric column from expressions like <code>sqrt([MW])</code> using column names in brackets.</p>
+<h3>Random Number (Tools → Random Number)</h3>
+<p>Fill a named column with random values for all rows or only the selection. Choose uniform
+(continuous or integer) or normal distribution, set the range (and mean/std for normal), optionally
+seed for reproducibility, and control decimal places.</p>
 <h3>Sketcher (Tools → Sketcher)</h3>
 <p>Draw or edit structures; send results to the table or export to a file.</p>
 """,

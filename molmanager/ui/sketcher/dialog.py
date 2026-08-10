@@ -79,15 +79,17 @@ class SketcherDialog(QDialog):
         export_table_act.setShortcutContext(Qt.WindowShortcut)
         file_menu.addAction(export_table_act)
 
-        # Former Draw menu: right-click empty canvas (Mode entries listed first, unpacked).
-        self._act_mode_draw = QAction("Draw (carbon tool)", self)
+        # Mode tools: Draw / Erase / Select (right-click empty canvas; mutually exclusive checks).
+        self._act_mode_draw = QAction("Draw", self)
+        self._act_mode_draw.setCheckable(True)
+        self._act_mode_draw.setChecked(True)
         self._act_mode_draw.setToolTip(
-            "Leave erase/select/template and use carbon for drawing. "
-            "Right-click empty canvas for templates, cleanup, and other draw commands."
+            "Draw with the carbon tool (Ctrl+D). "
+            "Right-click empty canvas for templates, cleanup, and other commands."
         )
-        self._act_mode_draw.triggered.connect(self._enter_draw_mode)
         self._act_mode_draw.setShortcut(QKeySequence("Ctrl+D"))
         self._act_mode_draw.setShortcutContext(Qt.WindowShortcut)
+        self._act_mode_draw.toggled.connect(self._on_menu_mode_draw)
 
         self._act_mode_erase = QAction("Erase", self)
         self._act_mode_erase.setCheckable(True)
@@ -98,7 +100,10 @@ class SketcherDialog(QDialog):
 
         self._act_mode_select = QAction("Select", self)
         self._act_mode_select.setCheckable(True)
-        self._act_mode_select.setToolTip("Select and move atoms/bonds (Ctrl+T).")
+        self._act_mode_select.setToolTip(
+            "Select and move atoms/bonds (Ctrl+T). "
+            "Hold Shift to add or remove atoms/bonds from the selection."
+        )
         self._act_mode_select.setShortcut(QKeySequence("Ctrl+T"))
         self._act_mode_select.setShortcutContext(Qt.WindowShortcut)
         self._act_mode_select.toggled.connect(self._on_menu_mode_select)
@@ -125,12 +130,13 @@ class SketcherDialog(QDialog):
         self._act_canvas_cleanup.setShortcut(QKeySequence("Ctrl+K"))
         self._act_canvas_cleanup.setShortcutContext(Qt.WindowShortcut)
 
-        self._act_canvas_add_hs = QAction("Show implicit hydrogens for entire structure…", self)
+        self._act_canvas_add_hs = QAction("Implicit Hydrogens", self)
+        self._act_canvas_add_hs.setCheckable(True)
         self._act_canvas_add_hs.setToolTip(
-            "Expand the sketch so all implicit hydrogens become explicit H atoms and bonds (RDKit AddHs). "
-            "Heavy atoms stay pinned while hydrogens are re-depicted for better angles and spacing."
+            "Toggle showing implicit hydrogens as explicit H atoms on the sketch "
+            "(RDKit AddHs / remove explicit H)."
         )
-        self._act_canvas_add_hs.triggered.connect(self._on_add_explicit_hydrogens)
+        self._act_canvas_add_hs.triggered.connect(self._on_toggle_implicit_hydrogens)
 
         view_menu = menubar.addMenu("View")
         zoom_in_act = QAction("Zoom in", self)
@@ -417,6 +423,10 @@ class SketcherDialog(QDialog):
     def _sync_mode_menu_checks(self) -> None:
         if not getattr(self, "_act_mode_erase", None):
             return
+        draw_on = not self.tb_erase.isChecked() and not self.select_btn.isChecked()
+        self._act_mode_draw.blockSignals(True)
+        self._act_mode_draw.setChecked(draw_on)
+        self._act_mode_draw.blockSignals(False)
         self._act_mode_erase.blockSignals(True)
         self._act_mode_erase.setChecked(self.tb_erase.isChecked())
         self._act_mode_erase.blockSignals(False)
@@ -428,9 +438,15 @@ class SketcherDialog(QDialog):
         """Templates, modes, and cleanup (formerly the Draw menu). Right-click empty canvas."""
         menu = QMenu(self)
         menu.setToolTipsVisible(True)
-        menu.aboutToShow.connect(self._sync_mode_menu_checks)
+
+        def _sync_menu() -> None:
+            self._sync_mode_menu_checks()
+            self._act_canvas_add_hs.blockSignals(True)
+            self._act_canvas_add_hs.setChecked(self.canvas.sketch_has_explicit_hydrogens())
+            self._act_canvas_add_hs.blockSignals(False)
+
+        menu.aboutToShow.connect(_sync_menu)
         menu.addAction(self._act_mode_draw)
-        menu.addSeparator()
         menu.addAction(self._act_mode_erase)
         menu.addAction(self._act_mode_select)
         menu.addSeparator()
@@ -457,6 +473,16 @@ class SketcherDialog(QDialog):
         self.canvas.fit_sketch_to_viewport()
         self._update_sketch_status()
 
+    def _on_menu_mode_draw(self, checked: bool) -> None:
+        if checked:
+            self._enter_draw_mode()
+            return
+        # Keep one mode active: unchecking Draw while erase/select are off re-checks Draw.
+        if not self.tb_erase.isChecked() and not self.select_btn.isChecked():
+            self._act_mode_draw.blockSignals(True)
+            self._act_mode_draw.setChecked(True)
+            self._act_mode_draw.blockSignals(False)
+
     def _on_menu_mode_erase(self, checked: bool) -> None:
         prev = self.tb_erase.isChecked()
         self.tb_erase.blockSignals(True)
@@ -465,6 +491,8 @@ class SketcherDialog(QDialog):
         self.tb_erase.blockSignals(False)
         if prev != checked:
             self._toggle_erase(checked)
+        else:
+            self._sync_mode_menu_checks()
 
     def _on_menu_mode_select(self, checked: bool) -> None:
         prev = self.select_btn.isChecked()
@@ -474,6 +502,8 @@ class SketcherDialog(QDialog):
         self.select_btn.blockSignals(False)
         if prev != checked:
             self._toggle_select(checked)
+        else:
+            self._sync_mode_menu_checks()
 
     def _select_element_tool(self, el: str) -> None:
         self._on_element_tool_clicked(el, True)
@@ -869,10 +899,17 @@ class SketcherDialog(QDialog):
         self.canvas.center_sketch_in_viewport(True)
         self._update_sketch_status()
 
-    def _on_add_explicit_hydrogens(self) -> None:
-        ok, err = self.canvas.add_explicit_hydrogens_from_implicit()
+    def _on_toggle_implicit_hydrogens(self, checked: bool) -> None:
+        """Canvas menu toggle: show (AddHs) or hide (remove explicit H) hydrogens."""
+        if checked:
+            ok, err = self.canvas.add_explicit_hydrogens_from_implicit()
+        else:
+            ok, err = self.canvas.remove_explicit_hydrogens_from_sketch()
         if not ok:
-            QMessageBox.information(self, "Add hydrogens", err)
+            self._act_canvas_add_hs.blockSignals(True)
+            self._act_canvas_add_hs.setChecked(self.canvas.sketch_has_explicit_hydrogens())
+            self._act_canvas_add_hs.blockSignals(False)
+            QMessageBox.information(self, "Implicit Hydrogens", err)
             return
         self._leave_special_modes_for_drawing()
         self._select_default_element_tool()
@@ -936,9 +973,10 @@ class SketcherDialog(QDialog):
         smi = self.canvas.to_smiles()
         if smi:
             QApplication.clipboard().setText(smi)
-            self.sketch_status.setText(f"Copied SMILES to clipboard ({len(smi)} characters).")
+            kind = "SMARTS" if self.canvas.sketch_has_wildcards() else "SMILES"
+            self.sketch_status.setText(f"Copied {kind} to clipboard ({len(smi)} characters).")
         else:
-            self.sketch_status.setText("Could not copy — no valid SMILES for the sketch.")
+            self.sketch_status.setText("Could not copy — no valid SMILES/SMARTS for the sketch.")
 
     def _copy_smarts(self) -> None:
         smt = self.canvas.to_smarts().strip()
