@@ -641,7 +641,7 @@ class SketchWidgetEventsMixin:
                 self._push_undo("chg_charge", (nid, old, int(n["charge"])))
                 self._after_sketch_edit()
             try:
-                p = self.parent()
+                p = self._sketcher_dialog_if()
                 if p and hasattr(p, "charge_plus"):
                     p.charge_plus.setChecked(False)
                 if p and hasattr(p, "charge_minus"):
