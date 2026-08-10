@@ -149,3 +149,15 @@ def test_toggle_explicit_hydrogens(qapp):  # noqa: ARG001
     ok, _ = w.remove_explicit_hydrogens_from_sketch()
     assert ok
     assert not w.sketch_has_explicit_hydrogens()
+
+
+def test_load_preserves_aromatic_kekule_doubles_with_stereo_h(qapp) -> None:  # noqa: ARG001
+    """Sanitize after stereo-H must not leave aromatic rings as all singles."""
+    from molmanager.ui.sketcher.bonds import _bond_unpack
+
+    mol = Chem.MolFromSmiles("C[C@H](O)c1ccccc1")
+    w = SketchWidget()
+    w.resize(600, 400)
+    assert w.load_from_rdkit_mol(mol)
+    orders = [_bond_unpack(b)[2] for b in w.bonds]
+    assert orders.count(2) >= 3, f"expected Kekulé doubles in phenyl, got {orders}"
