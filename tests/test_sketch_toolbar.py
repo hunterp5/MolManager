@@ -6,6 +6,7 @@ from PyQt5.QtWidgets import QWidget
 
 from molmanager.ui.sketcher.bonds import BOND_STEREO_PLAIN, BOND_STEREO_WEDGE
 from molmanager.ui.sketcher.constants import SKETCH_RING_TEMPLATES, TOOLBAR_ELEMENT_GROUPS
+from molmanager.ui.sketcher.customize_elements import default_toolbar_element_symbols
 from molmanager.ui.sketcher.dialog import SketcherDialog
 from molmanager.ui.sketcher.toolbar_glyphs import (
     TOOLBAR_RING_TEMPLATES,
@@ -25,6 +26,7 @@ from molmanager.ui.sketcher.toolbar_glyphs import (
     mode_select_icon,
     mode_text_icon,
     ring_icon,
+    view_3d_icon,
 )
 
 
@@ -45,6 +47,7 @@ def test_toolbar_glyphs_are_non_null(qapp) -> None:  # noqa: ARG001
         clear_sketch_icon(),
         charge_plus_icon(),
         charge_minus_icon(),
+        view_3d_icon(),
     ]
     for key, n_atoms, aromatic, _tip in TOOLBAR_RING_TEMPLATES:
         assert key in SKETCH_RING_TEMPLATES
@@ -54,7 +57,9 @@ def test_toolbar_glyphs_are_non_null(qapp) -> None:  # noqa: ARG001
 
 
 def test_sketcher_top_toolbar_controls(qapp) -> None:  # noqa: ARG001
-    dlg = SketcherDialog(QWidget())
+    dlg = SketcherDialog(QWidget(), element_symbols=default_toolbar_element_symbols())
+    assert dlg.tb_3d.isCheckable()
+    assert not dlg.tb_3d.isChecked()
     assert dlg.tb_draw.isCheckable()
     assert dlg.tb_erase.isCheckable()
     assert dlg.select_btn.isCheckable()
@@ -63,6 +68,14 @@ def test_sketcher_top_toolbar_controls(qapp) -> None:  # noqa: ARG001
     assert not dlg.tb_clear.isCheckable()
     assert dlg.bond_plain.isCheckable()
     assert dlg.charge_plus.isCheckable()
+    assert dlg.view_3d.isHidden()
+    dlg.tb_3d.setChecked(True)
+    assert not dlg.view_3d.isHidden()
+    dlg.tb_3d.setChecked(False)
+    assert dlg.view_3d.isHidden()
+    # Canvas sits under a splitter; dialog lookup must walk ancestors (right-click menu).
+    assert dlg.canvas.parent() is dlg._canvas_splitter
+    assert dlg.canvas._sketcher_dialog_if() is dlg
     assert "Ni" in dlg._element_btn_by_symbol
     assert "Pd" in dlg._element_btn_by_symbol
     assert "Pt" in dlg._element_btn_by_symbol
