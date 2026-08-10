@@ -34,6 +34,7 @@ from ..strings import (
     TOOL_SINGLE_CONFORMATION,
 )
 from ...fragment_decomposition import detect_fragment_column_prefixes
+from ...workers import ConformerGenParams, SuperposeParams
 from .scope import selection_scope_checked
 
 
