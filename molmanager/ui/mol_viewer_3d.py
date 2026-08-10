@@ -8,11 +8,12 @@ import logging
 import shutil
 from pathlib import Path
 
-from PyQt5.QtCore import QTemporaryDir, QUrl, Qt
+from PyQt5.QtCore import QTemporaryDir, QTimer, QUrl, Qt
 from PyQt5.QtWidgets import (
     QDialog,
     QLabel,
     QMessageBox,
+    QSizePolicy,
     QVBoxLayout,
     QWidget,
 )
@@ -87,9 +88,8 @@ def _atom_info_panel_html() -> str:
 
 
 def _viewer_init_script_fragment(mol_b64: str, *, flat: bool) -> str:
-    """JavaScript to create a 3Dmol viewer with atom click / hover (native 3Dmol atom specs)."""
+    """JavaScript to create a 3Dmol viewer (no atom-info panel / mouse-help overlay)."""
     flat_js = "true" if flat else "false"
-    # Placeholders avoid f-string brace conflicts with large JS object literals.
     tmpl = r"""  <script>
     function molmanagerInitView() {
       try {
@@ -98,114 +98,13 @@ def _viewer_init_script_fragment(mol_b64: str, *, flat: bool) -> str:
         const opts = flat ? { backgroundColor: "white", orthographic: true } : { backgroundColor: "white" };
         const viewer = $3Dmol.createViewer("v", opts);
         viewer.addModel(data, "mol");
-
-        function atomLines(atom) {
-          if (!atom) return "";
-          var L = [];
-          if (atom.elem !== undefined) L.push("Element: " + atom.elem);
-          if (atom.atom !== undefined) L.push("Atom name: " + atom.atom);
-          if (atom.serial !== undefined) L.push("Serial: " + atom.serial);
-          if (atom.index !== undefined) L.push("Index: " + atom.index);
-          if (atom.chain !== undefined) L.push("Chain: " + atom.chain);
-          if (atom.resn !== undefined) {
-            L.push("Residue: " + atom.resn + (atom.resi !== undefined ? " " + atom.resi : ""));
-          }
-          if (atom.x !== undefined && atom.y !== undefined && atom.z !== undefined) {
-            L.push("x: " + Number(atom.x).toFixed(4) + "  y: " + Number(atom.y).toFixed(4) + "  z: " + Number(atom.z).toFixed(4));
-          }
-          if (atom.formalCharge !== undefined && atom.formalCharge !== 0) {
-            L.push("Formal charge: " + atom.formalCharge);
-          }
-          return L.join("\n");
-        }
-
-        function selSpec(atom) {
-          if (!atom) return {};
-          if (atom.serial !== undefined && atom.serial !== null) return { serial: atom.serial };
-          if (atom.index !== undefined) return { index: atom.index };
-          return {};
-        }
-
-        function baseRadii() {
-          return { stickR: flat ? 0.1 : 0.12, sph: flat ? 0.18 : 0.22 };
-        }
-
-        function applyInteractiveBase() {
-          var br = baseRadii();
-          /* Picking uses atom.clickable (setClickable), not setStyle — top-level clickable in setStyle does not enable hits. */
-          viewer.setStyle({}, {
-            stick: { radius: br.stickR },
-            sphere: { scale: br.sph }
-          });
-        }
-
-        function applyAtomInteractivity() {
-          viewer.setClickable({}, true, onAtomPick);
-          viewer.setHoverable({}, true, onAtomHover, onAtomUnhover);
-        }
-
-        function onAtomUnhover() {
-          var h = document.getElementById("chem-atom-hover");
-          if (h) h.textContent = "";
-        }
-
-        function onAtomHover(atom) {
-          var h = document.getElementById("chem-atom-hover");
-          if (!h) return;
-          if (!atom) { h.textContent = ""; return; }
-          var t = atom.elem || "?";
-          if (atom.serial !== undefined && atom.serial !== null) t += " serial " + atom.serial;
-          else if (atom.index !== undefined) t += " index " + atom.index;
-          h.textContent = "Hover: " + t;
-        }
-
-        function onAtomPick(atom) {
-          var d = document.getElementById("chem-atom-detail");
-          if (d) d.textContent = atomLines(atom) || "(no atom data)";
-          applyInteractiveBase();
-          applyAtomInteractivity();
-          var sel = selSpec(atom);
-          var br = baseRadii();
-          viewer.setStyle(sel, {
-            stick: { radius: br.stickR * 1.45, color: "#c0392b" },
-            sphere: { scale: br.sph * 1.35, color: "#c0392b" }
-          });
-          viewer.render();
-        }
-
-        function clearAtomSelection() {
-          var d = document.getElementById("chem-atom-detail");
-          if (d) d.textContent = "";
-          applyInteractiveBase();
-          applyAtomInteractivity();
-          viewer.render();
-        }
-
-        function maybeDeselectBackgroundClick(ev) {
-          if (!viewer.scene) return;
-          if (ev.button !== undefined && ev.button !== 0) return;
-          var x = viewer.getX(ev);
-          var y = viewer.getY(ev);
-          if (x === undefined || y === undefined) return;
-          if (!viewer.isInViewer(x, y)) return;
-          if (!viewer.closeEnoughForClick(ev)) return;
-          var mouse = viewer.mouseXY(x, y);
-          var pool = viewer.selectedAtoms({ clickable: true });
-          var hits = viewer.targetedObjects(mouse.x, mouse.y, pool);
-          if (hits.length === 0) clearAtomSelection();
-        }
-
-        applyInteractiveBase();
-        applyAtomInteractivity();
+        var stickR = flat ? 0.1 : 0.12;
+        var sph = flat ? 0.18 : 0.22;
+        viewer.setStyle({}, { stick: { radius: stickR }, sphere: { scale: sph } });
+        try { viewer.resize(); } catch (e0) {}
         viewer.zoomTo();
+        try { viewer.zoom(0.88); } catch (e1) {}
         viewer.render();
-
-        var pickEl = viewer.getCanvas && viewer.getCanvas();
-        if (pickEl && pickEl.addEventListener) {
-          pickEl.addEventListener("mouseup", function (ev) {
-            window.setTimeout(function () { maybeDeselectBackgroundClick(ev); }, 0);
-          });
-        }
       } catch (e) {
         document.body.innerHTML = "<pre style='padding:12px;font-family:monospace'>3Dmol error: " + e + "</pre>";
       }
@@ -214,10 +113,58 @@ def _viewer_init_script_fragment(mol_b64: str, *, flat: bool) -> str:
     return tmpl.replace("__MOLB64__", mol_b64).replace("__FLAT__", flat_js)
 
 
-def _assemble_viewer_page(mol_b64: str, *, flat: bool, script_src: str) -> str:
+def _viewer_embed_init_script_fragment(mol_b64: str = "") -> str:
+    """Minimal 3Dmol init for sketcher side panel: no atom pick UI; live ``molmanagerSetMolB64``."""
+    tmpl = r"""  <script>
+    function molmanagerFitView(v) {
+      if (!v) return;
+      try { v.resize(); } catch (e0) {}
+      v.zoomTo();
+      /* Pull back slightly so the whole model sits inside the frame with padding. */
+      try { v.zoom(0.88); } catch (e1) {}
+      v.render();
+    }
+    function molmanagerInitView() {
+      try {
+        const opts = { backgroundColor: "white" };
+        const viewer = $3Dmol.createViewer("v", opts);
+        window.molmanagerViewer = viewer;
+        window.molmanagerRefit = function () { molmanagerFitView(window.molmanagerViewer); };
+        window.molmanagerSetMolB64 = function (b64) {
+          if (!window.molmanagerViewer) return;
+          var v = window.molmanagerViewer;
+          v.clear();
+          if (b64) {
+            v.addModel(atob(b64), "mol");
+            v.setStyle({}, { stick: { radius: 0.12 }, sphere: { scale: 0.22 } });
+            molmanagerFitView(v);
+          } else {
+            v.render();
+          }
+        };
+        window.molmanagerSetMolB64("__MOLB64__");
+        window.addEventListener("resize", function () {
+          if (window.molmanagerRefit) window.molmanagerRefit();
+        });
+      } catch (e) {
+        document.body.innerHTML = "<pre style='padding:12px;font-family:monospace'>3Dmol error: " + e + "</pre>";
+      }
+    }
+  </script>"""
+    return tmpl.replace("__MOLB64__", mol_b64 or "")
+
+
+def _assemble_viewer_page(
+    mol_b64: str,
+    *,
+    flat: bool,
+    script_src: str,
+    show_atom_panel: bool = False,
+    show_mouse_help: bool = False,
+) -> str:
     init = _viewer_init_script_fragment(mol_b64, flat=flat)
-    help_html = _viewer_help_overlay_html()
-    atom_panel = _atom_info_panel_html()
+    help_html = _viewer_help_overlay_html() if show_mouse_help else ""
+    atom_panel = _atom_info_panel_html() if show_atom_panel else ""
     return f"""<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -230,9 +177,59 @@ def _assemble_viewer_page(mol_b64: str, *, flat: bool, script_src: str) -> str:
 {atom_panel}
 {init}
   <script src="{script_src}" onload="molmanagerInitView()"></script>
-""" + help_html + """
+{help_html}
 </body>
 </html>"""
+
+
+def _assemble_embed_viewer_page(mol_b64: str, *, script_src: str) -> str:
+    """Sketcher-embedded page: no atom boxes or mouse-controls overlay."""
+    init = _viewer_embed_init_script_fragment(mol_b64)
+    return f"""<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <style>html,body,#v{{margin:0;padding:0;width:100%;height:100%;overflow:hidden;background:#fff;}}</style>
+</head>
+<body>
+  <div id="v"></div>
+{init}
+  <script src="{script_src}" onload="molmanagerInitView()"></script>
+</body>
+</html>"""
+
+
+def _offline_index_html(mol_b64: str, *, flat: bool = False) -> str:
+    """Minimal page next to ``3Dmol-min.js`` (same directory)."""
+    return _assemble_viewer_page(mol_b64, flat=flat, script_src="3Dmol-min.js")
+
+
+def _offline_embed_index_html(mol_b64: str = "") -> str:
+    return _assemble_embed_viewer_page(mol_b64, script_src="3Dmol-min.js")
+
+
+def _offline_index_html_multiconf(blocks_json_b64: str, *, initial_superpose: bool = False) -> str:
+    return _assemble_viewer_page_multiconf(
+        blocks_json_b64, script_src="3Dmol-min.js", initial_superpose=initial_superpose
+    )
+
+
+def _cdn_fallback_html(mol_b64: str, *, flat: bool = False) -> str:
+    """Same as offline page but loads 3Dmol from the network (only if the bundle is missing)."""
+    return _assemble_viewer_page(mol_b64, flat=flat, script_src="https://3dmol.org/build/3Dmol-min.js")
+
+
+def _cdn_embed_fallback_html(mol_b64: str = "") -> str:
+    return _assemble_embed_viewer_page(mol_b64, script_src="https://3dmol.org/build/3Dmol-min.js")
+
+
+def _cdn_fallback_html_multiconf(blocks_json_b64: str, *, initial_superpose: bool = False) -> str:
+    return _assemble_viewer_page_multiconf(
+        blocks_json_b64,
+        script_src="https://3dmol.org/build/3Dmol-min.js",
+        initial_superpose=initial_superpose,
+    )
 
 
 def _viewer_help_overlay_html() -> str:
@@ -263,37 +260,19 @@ def _viewer_help_overlay_html() -> str:
 """
 
 
-def _offline_index_html(mol_b64: str, *, flat: bool = False) -> str:
-    """Minimal page next to ``3Dmol-min.js`` (same directory)."""
-    return _assemble_viewer_page(mol_b64, flat=flat, script_src="3Dmol-min.js")
-
-
-def _offline_index_html_multiconf(blocks_json_b64: str, *, initial_superpose: bool = False) -> str:
-    return _assemble_viewer_page_multiconf(
-        blocks_json_b64, script_src="3Dmol-min.js", initial_superpose=initial_superpose
-    )
-
-
-def _cdn_fallback_html(mol_b64: str, *, flat: bool = False) -> str:
-    """Same as offline page but loads 3Dmol from the network (only if the bundle is missing)."""
-    return _assemble_viewer_page(mol_b64, flat=flat, script_src="https://3dmol.org/build/3Dmol-min.js")
-
-
-def _cdn_fallback_html_multiconf(blocks_json_b64: str, *, initial_superpose: bool = False) -> str:
-    return _assemble_viewer_page_multiconf(
-        blocks_json_b64,
-        script_src="https://3dmol.org/build/3Dmol-min.js",
-        initial_superpose=initial_superpose,
-    )
-
-
 def build_3dmol_html(mol_b64: str) -> str:
     """Return a self-contained HTML document (offline bundle when available, else CDN)."""
     return _offline_index_html(mol_b64, flat=False) if bundled_3dmol_available() else _cdn_fallback_html(mol_b64, flat=False)
 
 
 def prepare_mol_3d(mol: Chem.Mol) -> Chem.Mol | None:
-    """Return a copy of *mol* with 3D coordinates (ETKDG embed + MMFF/UFF), or ``None`` on failure."""
+    """
+    Return a copy of *mol* with 3D coordinates (ETKDG embed + MMFF/UFF), or ``None`` on failure.
+
+    Sketch-built molecules often carry Kekulé bond orders and a flat 2D conformer.
+    Sanitize (aromatize) and clear conformers first so ETKDG uses aromatic ring
+    templates — otherwise heterocycles can embed as non-planar.
+    """
     if mol is None or mol.GetNumAtoms() == 0:
         return None
     try:
@@ -301,7 +280,28 @@ def prepare_mol_3d(mol: Chem.Mol) -> Chem.Mol | None:
     except Exception:
         return None
     try:
-        m = Chem.AddHs(m)
+        Chem.SanitizeMol(m)
+    except Exception:
+        try:
+            m.UpdatePropertyCache(strict=False)
+            Chem.GetSymmSSSR(m)
+            Chem.SetAromaticity(m)
+        except Exception:
+            try:
+                m.UpdatePropertyCache(strict=False)
+            except Exception:
+                pass
+    try:
+        m.RemoveAllConformers()
+    except Exception:
+        pass
+    try:
+        m = Chem.AddHs(m, addCoords=False)
+    except TypeError:
+        try:
+            m = Chem.AddHs(m)
+        except Exception:
+            return None
     except Exception:
         return None
     params = None
@@ -316,6 +316,14 @@ def prepare_mol_3d(mol: Chem.Mol) -> Chem.Mol | None:
             continue
     if params is None:
         return None
+    try:
+        # Ignore any leftover coords; embed from distance geometry + ring templates.
+        if hasattr(params, "clearConfs"):
+            params.clearConfs = True
+        if hasattr(params, "useRandomCoords"):
+            params.useRandomCoords = True
+    except Exception:
+        pass
     try:
         cid = AllChem.EmbedMolecule(m, params)
     except Exception:
@@ -526,7 +534,6 @@ def _assemble_viewer_page_multiconf(
     blocks_json_b64: str, *, script_src: str, initial_superpose: bool = False
 ) -> str:
     init = _viewer_init_script_multiconf(blocks_json_b64, initial_superpose=initial_superpose)
-    help_html = _viewer_help_overlay_html()
     conf_bar = _viewer_controls_multiconf_html()
     return f"""<!DOCTYPE html>
 <html lang="en">
@@ -540,9 +547,145 @@ def _assemble_viewer_page_multiconf(
 {conf_bar}
 {init}
   <script src="{script_src}" onload="molmanagerInitView()"></script>
-""" + help_html + """
 </body>
 </html>"""
+
+
+class Molecule3DEmbedView(QWidget):
+    """
+    Sketcher side-panel 3Dmol view: no atom-info boxes or mouse-controls overlay.
+
+    Call ``set_molecule`` to refresh after sketch edits (ETKDG embed + MMFF/UFF).
+    The WebEngine page is created lazily on first show so QtWebEngine can preload at app start.
+    """
+
+    def __init__(self, parent: QWidget | None = None):
+        super().__init__(parent)
+        self.setMinimumWidth(420)
+        self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        self._viewer_tmp: QTemporaryDir | None = None
+        self._web_ready = False
+        self._pending_b64: str | None = None
+        self._web = None
+        self._bootstrapped = False
+        self._refit_timer = QTimer(self)
+        self._refit_timer.setSingleShot(True)
+        self._refit_timer.setInterval(50)
+        self._refit_timer.timeout.connect(self.refit_view)
+        self._status = QLabel("3D preview", self)
+        self._status.setAlignment(Qt.AlignCenter)
+        self._status.setStyleSheet("color: palette(mid); padding: 8px;")
+
+        self._root = QVBoxLayout(self)
+        self._root.setContentsMargins(0, 0, 0, 0)
+        self._root.setSpacing(0)
+        self._root.addWidget(self._status)
+
+    def showEvent(self, event) -> None:  # noqa: N802
+        super().showEvent(event)
+        self._ensure_web()
+        self.schedule_refit()
+
+    def resizeEvent(self, event) -> None:  # noqa: N802
+        super().resizeEvent(event)
+        if self._web_ready:
+            self.schedule_refit()
+
+    def schedule_refit(self) -> None:
+        """Debounce resize/zoom so the model fills the frame after layout settles."""
+        self._refit_timer.start()
+
+    def refit_view(self) -> None:
+        """Resize the WebGL canvas and zoom so the whole structure fits with padding."""
+        if self._web is None or not self._web_ready:
+            return
+        try:
+            self._web.page().runJavaScript(
+                "if (window.molmanagerRefit) window.molmanagerRefit();"
+            )
+        except Exception:
+            logger.debug("3D embed refit failed", exc_info=True)
+    def _ensure_web(self) -> None:
+        if self._bootstrapped:
+            return
+        self._bootstrapped = True
+        try:
+            from PyQt5.QtWebEngineWidgets import QWebEngineSettings, QWebEngineView
+
+            web = QWebEngineView(self)
+            _wire_webengine_console_logger(web)
+            try:
+                s = web.settings()
+                s.setAttribute(QWebEngineSettings.LocalContentCanAccessRemoteUrls, True)
+                s.setAttribute(QWebEngineSettings.JavascriptEnabled, True)
+                s.setAttribute(QWebEngineSettings.LocalContentCanAccessFileUrls, True)
+            except Exception:
+                pass
+            web.loadFinished.connect(self._on_load_finished)
+            if bundled_3dmol_available():
+                self._viewer_tmp = QTemporaryDir()
+                if not self._viewer_tmp.isValid():
+                    raise OSError("Could not create a temporary directory for the 3D viewer.")
+                tmp = Path(self._viewer_tmp.path())
+                shutil.copy2(_BUNDLED_3DMOL, tmp / "3Dmol-min.js")
+                index = tmp / "index.html"
+                index.write_text(_offline_embed_index_html(""), encoding="utf-8")
+                web.load(QUrl.fromLocalFile(str(index.resolve())))
+            else:
+                web.setHtml(_cdn_embed_fallback_html(""), QUrl("https://3dmol.org/"))
+            self._web = web
+            self._status.hide()
+            self._root.addWidget(web, 1)
+        except Exception as e:
+            logger.warning("Sketcher 3D embed unavailable: %s", e, exc_info=True)
+            self._status.setText(
+                "3D preview unavailable.\nInstall matching PyQtWebEngine and restart with "
+                "`python -m molmanager`."
+            )
+
+    def _on_load_finished(self, ok: bool) -> None:
+        self._web_ready = bool(ok)
+        if self._web_ready and self._pending_b64 is not None:
+            b64 = self._pending_b64
+            self._pending_b64 = None
+            self._run_set_mol_b64(b64)
+        if self._web_ready:
+            self.schedule_refit()
+            QTimer.singleShot(200, self.refit_view)
+
+    def _run_set_mol_b64(self, b64: str) -> None:
+        self._ensure_web()
+        if self._web is None:
+            return
+        if not self._web_ready:
+            self._pending_b64 = b64
+            return
+        js = f"if (window.molmanagerSetMolB64) window.molmanagerSetMolB64({json.dumps(b64)});"
+        try:
+            self._web.page().runJavaScript(js)
+        except Exception:
+            logger.debug("3D embed set_mol failed", exc_info=True)
+
+    def clear(self) -> None:
+        """Clear the displayed model."""
+        self._run_set_mol_b64("")
+
+    def set_molecule(self, mol: Chem.Mol | None) -> None:
+        """Embed *mol* in 3D and display it, or clear when *mol* is empty/invalid."""
+        if mol is None or mol.GetNumAtoms() == 0:
+            self.clear()
+            return
+        m3 = prepare_mol_3d(mol)
+        if m3 is None:
+            self.clear()
+            return
+        try:
+            self._run_set_mol_b64(_mol_block_b64(m3))
+            self.schedule_refit()
+            QTimer.singleShot(150, self.refit_view)
+        except Exception:
+            logger.debug("3D embed encode failed", exc_info=True)
+            self.clear()
 
 
 class Molecule3DViewerDialog(QDialog):
@@ -612,9 +755,12 @@ class Molecule3DViewerDialog(QDialog):
                     )
                 else:
                     web.setHtml(_cdn_fallback_html(mol_b64, flat=flat), QUrl("https://3dmol.org/"))
+            web.loadFinished.connect(lambda _ok: self._refit_standalone_viewer(web))
             root.addWidget(web, 1)
+            self._standalone_web = web
         except Exception as e:
             web = None
+            self._standalone_web = None
             err = f"{type(e).__name__}: {e}"
             logger.warning("Embedded 3Dmol viewer unavailable: %s", err, exc_info=True)
             msg = (
@@ -628,6 +774,31 @@ class Molecule3DViewerDialog(QDialog):
             root.addWidget(QLabel(msg), 1)
 
         make_window_minimizable(self)
+
+    def _refit_standalone_viewer(self, web) -> None:
+        """After load/resize, zoom so the full structure sits inside the frame."""
+        if web is None:
+            return
+        js = (
+            "try {"
+            "  var el = document.getElementById('v');"
+            "  if (el && el.viewer) { var v = el.viewer; v.resize(); v.zoomTo(); try { v.zoom(0.88); } catch(e){} v.render(); }"
+            "  else if (window.$3Dmol && window.$3Dmol.viewers) {"
+            "    var vs = window.$3Dmol.viewers; var keys = Object.keys(vs);"
+            "    if (keys.length) { var v = vs[keys[0]]; v.resize(); v.zoomTo(); try { v.zoom(0.88); } catch(e){} v.render(); }"
+            "  }"
+            "} catch (e) {}"
+        )
+        try:
+            web.page().runJavaScript(js)
+        except Exception:
+            pass
+
+    def resizeEvent(self, event) -> None:  # noqa: N802
+        super().resizeEvent(event)
+        web = getattr(self, "_standalone_web", None)
+        if web is not None:
+            QTimer.singleShot(50, lambda w=web: self._refit_standalone_viewer(w))
 
 
 def open_molecule_3d_viewer(mol: Chem.Mol, parent: QWidget | None = None, *, title: str = "View in 3D") -> None:
