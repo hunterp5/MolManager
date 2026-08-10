@@ -1,0 +1,334 @@
+"""Live physical-properties panel for the chemical sketcher."""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+from typing import TYPE_CHECKING, Any
+
+from PyQt5.QtCore import QObject, QRunnable, Qt, QTimer, pyqtSignal
+from PyQt5.QtWidgets import (
+    QDialog,
+    QFormLayout,
+    QLabel,
+    QVBoxLayout,
+)
+from rdkit import Chem
+from rdkit.Chem import Crippen, Descriptors, QED
+
+from molmanager.medchem_descriptors import (
+    _approx_pka_most_basic,
+    ab_mps_score,
+    cns_mpo_score,
+    lipinski_violations,
+    logd74_value,
+    ro5_pass,
+)
+from molmanager.pkasolver_descriptor_support import (
+    hydrate_microstates,
+    logd74_from_microstates,
+    microstates_for_mol,
+)
+from molmanager.ui.qt_widget_utils import make_window_minimizable
+from molmanager.ui.threadpool_access import start_runnable_on_app_pool
+
+if TYPE_CHECKING:
+    from .dialog import SketcherDialog
+
+
+@dataclass(frozen=True)
+class SketchPhysicalProperties:
+    """Computed properties for one sketched (or RDKit) molecule."""
+
+    mw: float | None = None
+    tpsa: float | None = None
+    logp: float | None = None
+    logd: float | None = None
+    pka_values: tuple[float, ...] | None = None
+    pka_approx: bool = False
+    ab_mps: float | None = None
+    cns_mpo: float | None = None
+    qed: float | None = None
+    ro5_pass: str | None = None
+    ro5_violations: int | None = None
+    error: str | None = None
+
+
+def _sanitize_copy(mol: Chem.Mol) -> Chem.Mol | None:
+    try:
+        out = Chem.Mol(mol)
+        Chem.SanitizeMol(out)
+        return out
+    except Exception:
+        return None
+
+
+def compute_rdkit_physical_properties(mol: Chem.Mol | None) -> SketchPhysicalProperties:
+    """Fast RDKit-only properties; ionization / MPO fields left empty."""
+    if mol is None or mol.GetNumAtoms() == 0:
+        return SketchPhysicalProperties(error="empty")
+    safe = _sanitize_copy(mol)
+    if safe is None:
+        return SketchPhysicalProperties(error="invalid")
+    try:
+        return SketchPhysicalProperties(
+            mw=float(Descriptors.MolWt(safe)),
+            tpsa=float(Descriptors.TPSA(safe)),
+            logp=float(Crippen.MolLogP(safe)),
+            qed=float(QED.qed(safe)),
+            ro5_pass=ro5_pass(safe),
+            ro5_violations=int(lipinski_violations(safe)),
+        )
+    except Exception as exc:
+        return SketchPhysicalProperties(error=str(exc) or "invalid")
+
+
+def compute_ionization_properties(mol: Chem.Mol) -> dict[str, Any]:
+    """
+    Return LogD / pKa / AB-MPS / CNS MPO using one microstate lookup when possible.
+
+    Keys: ``logd``, ``pka_values``, ``pka_approx``, ``ab_mps``, ``cns_mpo``.
+    """
+    safe = _sanitize_copy(mol)
+    if safe is None:
+        raise ValueError("invalid molecule")
+    clogp = float(Crippen.MolLogP(safe))
+    states = microstates_for_mol(safe)
+    if states:
+        hydrated = hydrate_microstates(states)
+        pkas = tuple(sorted(float(s.pka) for s in hydrated))
+        logd = float(logd74_from_microstates(states, clogp))
+        approx = False
+        state_arg: list | None = states
+    else:
+        # Empty list skips a second microstates call inside logd74 / score helpers.
+        state_arg = []
+        logd = float(logd74_value(safe, state_arg))
+        pkas = (float(_approx_pka_most_basic(safe)),)
+        approx = True
+    return {
+        "logd": logd,
+        "pka_values": pkas,
+        "pka_approx": approx,
+        "ab_mps": float(ab_mps_score(safe, state_arg)),
+        "cns_mpo": float(cns_mpo_score(safe, state_arg)),
+    }
+
+
+def compute_sketch_physical_properties(
+    mol: Chem.Mol | None,
+    *,
+    with_ionization: bool = True,
+) -> SketchPhysicalProperties:
+    """Full property bundle for tests and one-shot callers."""
+    base = compute_rdkit_physical_properties(mol)
+    if base.error or base.mw is None or mol is None:
+        return base
+    if not with_ionization:
+        return base
+    try:
+        ion = compute_ionization_properties(mol)
+    except Exception as exc:
+        return SketchPhysicalProperties(
+            mw=base.mw,
+            tpsa=base.tpsa,
+            logp=base.logp,
+            qed=base.qed,
+            ro5_pass=base.ro5_pass,
+            ro5_violations=base.ro5_violations,
+            error=str(exc) or "invalid",
+        )
+    return SketchPhysicalProperties(
+        mw=base.mw,
+        tpsa=base.tpsa,
+        logp=base.logp,
+        logd=float(ion["logd"]),
+        pka_values=tuple(ion["pka_values"]),
+        pka_approx=bool(ion["pka_approx"]),
+        ab_mps=float(ion["ab_mps"]),
+        cns_mpo=float(ion["cns_mpo"]),
+        qed=base.qed,
+        ro5_pass=base.ro5_pass,
+        ro5_violations=base.ro5_violations,
+    )
+
+
+def _fmt_num(value: float | None, digits: int = 2) -> str:
+    if value is None:
+        return "—"
+    return f"{value:.{digits}f}"
+
+
+def _fmt_pka(values: tuple[float, ...] | None, *, approx: bool, pending: bool) -> str:
+    if pending:
+        return "…"
+    if not values:
+        return "—"
+    text = ", ".join(f"{v:.2f}" for v in values)
+    if approx:
+        return f"{text} (approx)"
+    return text
+
+
+class _IonizationSignals(QObject):
+    finished = pyqtSignal(int, object)  # generation, result dict
+    failed = pyqtSignal(int, str)
+
+
+class _IonizationWorker(QRunnable):
+    def __init__(self, mol: Chem.Mol, generation: int, signals: _IonizationSignals):
+        super().__init__()
+        self._mol = mol
+        self._generation = generation
+        self._signals = signals
+
+    def run(self) -> None:
+        try:
+            result = compute_ionization_properties(self._mol)
+        except Exception as exc:
+            self._signals.failed.emit(self._generation, str(exc) or "failed")
+            return
+        self._signals.finished.emit(self._generation, result)
+
+
+class SketchPhysicalPropertiesDialog(QDialog):
+    """Modeless panel; values refresh when the sketch changes."""
+
+    def __init__(self, sketcher: SketcherDialog):
+        super().__init__(sketcher)
+        self._sketcher = sketcher
+        self.setWindowTitle("Physical Properties")
+        self.setModal(False)
+        make_window_minimizable(self)
+        self.setAttribute(Qt.WA_DeleteOnClose, True)
+        self.setMinimumWidth(320)
+
+        self._generation = 0
+        self._ion_signals = _IonizationSignals(self)
+        self._ion_signals.finished.connect(self._on_ionization_finished)
+        self._ion_signals.failed.connect(self._on_ionization_failed)
+
+        root = QVBoxLayout(self)
+        form = QFormLayout()
+        form.setLabelAlignment(Qt.AlignRight | Qt.AlignVCenter)
+        form.setHorizontalSpacing(16)
+        form.setVerticalSpacing(8)
+
+        self._val_mw = QLabel("—")
+        self._val_tpsa = QLabel("—")
+        self._val_logp = QLabel("—")
+        self._val_logd = QLabel("—")
+        self._val_pka = QLabel("—")
+        self._val_ab_mps = QLabel("—")
+        self._val_cns_mpo = QLabel("—")
+        self._val_qed = QLabel("—")
+        self._val_ro5_pass = QLabel("—")
+        self._val_ro5_viol = QLabel("—")
+        value_labels = (
+            self._val_mw,
+            self._val_tpsa,
+            self._val_logp,
+            self._val_logd,
+            self._val_pka,
+            self._val_ab_mps,
+            self._val_cns_mpo,
+            self._val_qed,
+            self._val_ro5_pass,
+            self._val_ro5_viol,
+        )
+        for lab in value_labels:
+            lab.setTextInteractionFlags(Qt.TextSelectableByMouse)
+
+        form.addRow("MW", self._val_mw)
+        form.addRow("TPSA", self._val_tpsa)
+        form.addRow("LogP", self._val_logp)
+        form.addRow("LogD (7.4)", self._val_logd)
+        form.addRow("pKa", self._val_pka)
+        form.addRow("AB-MPS", self._val_ab_mps)
+        form.addRow("CNS MPO", self._val_cns_mpo)
+        form.addRow("QED Score", self._val_qed)
+        form.addRow("RO5 Pass", self._val_ro5_pass)
+        form.addRow("RO5 Violations", self._val_ro5_viol)
+        root.addLayout(form)
+
+        self._timer = QTimer(self)
+        self._timer.setSingleShot(True)
+        self._timer.setInterval(400)
+        self._timer.timeout.connect(self._refresh_now)
+
+    def schedule_refresh(self) -> None:
+        """Debounce sketch edits before recomputing."""
+        self._timer.start()
+
+    def _clear_all(self) -> None:
+        self._val_mw.setText("—")
+        self._val_tpsa.setText("—")
+        self._val_logp.setText("—")
+        self._val_logd.setText("—")
+        self._val_pka.setText("—")
+        self._val_ab_mps.setText("—")
+        self._val_cns_mpo.setText("—")
+        self._val_qed.setText("—")
+        self._val_ro5_pass.setText("—")
+        self._val_ro5_viol.setText("—")
+
+    def _refresh_now(self) -> None:
+        self._generation += 1
+        gen = self._generation
+        mol = None
+        try:
+            mol = self._sketcher._sketch_mol_for_3d()
+        except Exception:
+            mol = None
+
+        fast = compute_rdkit_physical_properties(mol)
+        if fast.error or mol is None:
+            self._clear_all()
+            return
+
+        self._val_mw.setText(_fmt_num(fast.mw, 2))
+        self._val_tpsa.setText(_fmt_num(fast.tpsa, 2))
+        self._val_logp.setText(_fmt_num(fast.logp, 2))
+        self._val_qed.setText(_fmt_num(fast.qed, 3))
+        self._val_ro5_pass.setText(fast.ro5_pass or "—")
+        self._val_ro5_viol.setText(
+            "—" if fast.ro5_violations is None else str(int(fast.ro5_violations))
+        )
+        self._val_logd.setText("…")
+        self._val_pka.setText("…")
+        self._val_ab_mps.setText("…")
+        self._val_cns_mpo.setText("…")
+
+        try:
+            mol_copy = Chem.Mol(mol)
+        except Exception:
+            self._val_logd.setText("—")
+            self._val_pka.setText("—")
+            self._val_ab_mps.setText("—")
+            self._val_cns_mpo.setText("—")
+            return
+
+        worker = _IonizationWorker(mol_copy, gen, self._ion_signals)
+        start_runnable_on_app_pool(getattr(self._sketcher, "parent_app", None), worker)
+
+    def _on_ionization_finished(self, generation: int, result: object) -> None:
+        if generation != self._generation:
+            return
+        if not isinstance(result, dict):
+            self._on_ionization_failed(generation, "bad result")
+            return
+        self._val_logd.setText(_fmt_num(float(result["logd"]), 2))
+        pkas = result.get("pka_values") or ()
+        pka_tuple = tuple(pkas) if isinstance(pkas, (list, tuple)) else ()
+        self._val_pka.setText(
+            _fmt_pka(pka_tuple, approx=bool(result.get("pka_approx")), pending=False)
+        )
+        self._val_ab_mps.setText(_fmt_num(float(result["ab_mps"]), 2))
+        self._val_cns_mpo.setText(_fmt_num(float(result["cns_mpo"]), 2))
+
+    def _on_ionization_failed(self, generation: int, _msg: str) -> None:
+        if generation != self._generation:
+            return
+        self._val_logd.setText("—")
+        self._val_pka.setText("—")
+        self._val_ab_mps.setText("—")
+        self._val_cns_mpo.setText("—")
