@@ -76,6 +76,7 @@ Implementation: `large_ring_offsets_y_up` (hex-lattice 120° for even n); Clean 
 
 - Wedge/hash on **single** bonds only; narrow tip at the stereocenter.
 - **ST-0.5**: do not draw stereo bonds between two stereocenters.
+- **ST-1.2 / ST-1.3**: omit explicit stereo-H whenever a non-stereogenic substituent can take the wedge/hash (acyclic or exocyclic); keep ring bonds plain when an exocyclic option exists. Draw stereo-H only when no suitable ligand remains.
 - CIP `(R)`/`(S)` and alkene `(E)`/`(Z)` placed in open space (GR-11.1–11.2), clear of bond ink and atom labels (collision search).
 - After Clean Up, re-sanitize stereo tips / between-center bonds.
 
