@@ -48,8 +48,8 @@ Chemically, “bond type” can mean **order** (single/double/triple), **polarit
 
 **Loading from table / `load_from_rdkit_mol`:**
 
-- RDKit’s **`Kekulize`** is attempted before 2D coordinates; many structures arrive as **localized single/double** patterns in the sketch with `order` 1 or 2.
-- If a bond is still **`BondType.AROMATIC`** when read, it is mapped to sketch **`order == 1`** (drawn like a single line). There is **no** separate “aromatic line style” in the internal bond record.
+- Immediately before copying bonds into the sketch, **`Kekulize(..., clearAromaticFlags=True)`** localizes aromatic rings to alternating single/double (`_kekulize_for_sketch_orders`). This is required because sanitize / AddHs (e.g. stereochemical H) re-aromatize bonds after any earlier Kekulize.
+- If Kekulize still fails, remaining **`BondType.AROMATIC`** bonds fall back to sketch **`order == 1`**. There is **no** separate “aromatic line style” in the internal bond record.
 
 **Exporting sketch → RDKit mol:**
 
