@@ -38,7 +38,7 @@ Mapped from the [IUPAC Recommendations 2008](https://iupac.qmul.ac.uk/drawing/dr
 | Ring substituents | Larger exterior bisector + 30° snap | `exterior_ring_substituent_direction` |
 | Fit to canvas | Structures stay in viewport | `ensure_sketch_fits_viewport` after import / Clean Up / templates / resize |
 | Table → sketcher | Exact table picture orientation | `load_from_rdkit_mol` uses RDKit default 2D / existing SDF coords (`_depict_mol_2d_table_match`); no IUPAC orient/hex |
-| Stereo hydrogens | Drawn on load | Explicit H at tetrahedral centers after table layout (heavies pinned) + wedge |
+| Stereo hydrogens | Only when needed (ST-1.2) | Explicit H only if no suitable wedge/hash substituent; ring centers prefer exocyclic ligands (ST-1.3); else omit H |
 | Macrocycle stereo | Preserve tags through layout | Capture chiral tags → reshape → restore → `WedgeMolBonds` + CIP (Clean Up path) |
 
 Templates include cycloheptane–cyclododecane. Isolated ≥9-membered rings are forced to hexagonal GR-3.3.2 geometry after Clean Up (and interactive tidy), not when loading from the table.
