@@ -78,13 +78,13 @@ ELEMENT_UPPER_MAP: dict[str, str] = {s.upper(): s for s in SKETCH_ELEMENT_SYMBOL
 
 # Side-panel element buttons with informal periodic-table headings.
 TOOLBAR_ELEMENT_GROUPS: tuple[tuple[str, tuple[str, ...]], ...] = (
-    ("Hydrogen Isotopes", ("H", "D")),
-    ("Alkali Metals", ("Na", "K")),
+    ("Hydrogen Isotopes", ("H", "D", "T")),
+    ("Alkali Metals", ("Li", "Na", "K", "Cs")),
     ("Alkaline Earth Metals", ("Mg", "Ca")),
-    ("Boron Group", ("B",)),
+    ("Boron Group", ("B", "Al")),
     ("Carbon Group", ("C", "Si")),
     ("Pnictogens", ("N", "P")),
-    ("Chalcogens", ("O", "S")),
+    ("Chalcogens", ("O", "S", "Se")),
     ("Halogens", ("F", "Cl", "Br", "I")),
     ("Transition Metals", ("Fe", "Ni", "Pd", "Pt", "Cu", "Zn")),
 )
@@ -108,6 +108,12 @@ SKETCH_RING_TEMPLATES: dict[str, tuple[int, list[str], list[int]]] = {
     "Cyclobutane": (4, ["C"] * 4, [1, 1, 1, 1]),
     "Cyclopentyl": (5, ["C"] * 5, [1, 1, 1, 1, 1]),
     "Cyclohexyl": (6, ["C"] * 6, [1, 1, 1, 1, 1, 1]),
+    "Cycloheptane": (7, ["C"] * 7, [1] * 7),
+    "Cyclooctane": (8, ["C"] * 8, [1] * 8),
+    "Cyclononane": (9, ["C"] * 9, [1] * 9),
+    "Cyclodecane": (10, ["C"] * 10, [1] * 10),
+    "Cycloundecane": (11, ["C"] * 11, [1] * 11),
+    "Cyclododecane": (12, ["C"] * 12, [1] * 12),
     "Pyridine": (6, ["N"] + ["C"] * 5, [2 if i % 2 == 0 else 1 for i in range(6)]),
     "Pyrimidine": (6, ["N", "C", "N", "C", "C", "C"], [2 if i % 2 == 0 else 1 for i in range(6)]),
     "Pyrazine": (6, ["N", "C", "N", "C", "C", "C"], [2, 1, 2, 1, 2, 1]),

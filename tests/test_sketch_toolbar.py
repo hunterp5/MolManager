@@ -21,7 +21,9 @@ from molmanager.ui.sketcher.toolbar_glyphs import (
     clear_sketch_icon,
     mode_draw_icon,
     mode_erase_icon,
+    mode_lasso_icon,
     mode_select_icon,
+    mode_text_icon,
     ring_icon,
 )
 
@@ -36,6 +38,8 @@ def test_toolbar_glyphs_are_non_null(qapp) -> None:  # noqa: ARG001
         bond_wavy_icon(),
         bond_dative_icon(),
         mode_select_icon(),
+        mode_lasso_icon(),
+        mode_text_icon(),
         mode_draw_icon(),
         mode_erase_icon(),
         clear_sketch_icon(),
@@ -54,15 +58,22 @@ def test_sketcher_top_toolbar_controls(qapp) -> None:  # noqa: ARG001
     assert dlg.tb_draw.isCheckable()
     assert dlg.tb_erase.isCheckable()
     assert dlg.select_btn.isCheckable()
+    assert dlg.lasso_btn.isCheckable()
+    assert dlg.tb_text.isCheckable()
     assert not dlg.tb_clear.isCheckable()
     assert dlg.bond_plain.isCheckable()
     assert dlg.charge_plus.isCheckable()
     assert "Ni" in dlg._element_btn_by_symbol
     assert "Pd" in dlg._element_btn_by_symbol
     assert "Pt" in dlg._element_btn_by_symbol
-    # Informal PT headings: Hydrogen Isotopes first (H, D).
-    assert list(dlg._element_btn_by_symbol)[0:2] == ["H", "D"]
+    assert "Li" in dlg._element_btn_by_symbol
+    assert "Se" in dlg._element_btn_by_symbol
+    assert "Cs" in dlg._element_btn_by_symbol
+    assert "Al" in dlg._element_btn_by_symbol
+    # Informal PT headings: Hydrogen Isotopes first (H, D, T).
+    assert list(dlg._element_btn_by_symbol)[0:3] == ["H", "D", "T"]
     assert "D" in dlg._element_btn_by_symbol
+    assert "T" in dlg._element_btn_by_symbol
     titles = [t for t, _ in TOOLBAR_ELEMENT_GROUPS]
     assert "Hydrogen Isotopes" in titles
     assert "Halogens" in titles
@@ -70,6 +81,10 @@ def test_sketcher_top_toolbar_controls(qapp) -> None:  # noqa: ARG001
     assert "Alkali Earth Metals" not in titles
     assert "Transition Metals" in titles
     assert "Group 1" not in titles
+    alkali = dict(TOOLBAR_ELEMENT_GROUPS)["Alkali Metals"]
+    assert alkali == ("Li", "Na", "K", "Cs")
+    assert dict(TOOLBAR_ELEMENT_GROUPS)["Boron Group"] == ("B", "Al")
+    assert dict(TOOLBAR_ELEMENT_GROUPS)["Chalcogens"] == ("O", "S", "Se")
     assert dlg.tb_any_element is not None
     assert dlg.tb_wildcard is not None
     assert set(dlg._ring_btn_by_key) == {k for k, *_ in TOOLBAR_RING_TEMPLATES}
@@ -89,15 +104,34 @@ def test_sketcher_top_toolbar_controls(qapp) -> None:  # noqa: ARG001
     assert dlg.tb_draw.isChecked()
     assert not dlg.tb_erase.isChecked()
     assert not dlg.select_btn.isChecked()
+    assert not dlg.lasso_btn.isChecked()
+    assert not dlg.tb_text.isChecked()
     assert dlg.canvas.place_element == "C"
 
     dlg.select_btn.setChecked(True)
     assert dlg.canvas.select_mode
+    assert dlg.canvas.select_tool == "box"
+    assert not dlg.canvas.text_mode
+    assert not dlg.lasso_btn.isChecked()
+
+    dlg.lasso_btn.setChecked(True)
+    assert dlg.canvas.select_mode
+    assert dlg.canvas.select_tool == "lasso"
+    assert not dlg.select_btn.isChecked()
+
+    dlg.tb_text.setChecked(True)
+    assert dlg.canvas.text_mode
+    assert not dlg.canvas.select_mode
+    assert not dlg.tb_draw.isChecked()
+    assert not dlg.lasso_btn.isChecked()
 
     dlg._on_bond_tool(2, BOND_STEREO_PLAIN)
     assert dlg.tb_draw.isChecked()
     assert not dlg.select_btn.isChecked()
+    assert not dlg.lasso_btn.isChecked()
+    assert not dlg.tb_text.isChecked()
     assert not dlg.canvas.select_mode
+    assert not dlg.canvas.text_mode
     assert dlg.canvas.active_bond_order == 2
     assert dlg.canvas.place_element == "C"
     assert dlg.bond_double.isChecked()

@@ -77,6 +77,7 @@ def bond_wedge_icon(size: int = _ICON_SIZE) -> QIcon:
 
 def bond_hash_icon(size: int = _ICON_SIZE) -> QIcon:
     def paint(p: QPainter, s: float) -> None:
+        # Hashed wedge (IUPAC/ACS): parallel bars widening from the tip.
         x0, y0, x1, y1, px, py = _stereo_bond_axis(s)
         dx, dy = x1 - x0, y1 - y0
         pen = _ink_pen(1.6)
@@ -247,6 +248,63 @@ def mode_select_icon(size: int = _ICON_SIZE) -> QIcon:
     return _paint_icon(paint, size)
 
 
+def mode_lasso_icon(size: int = _ICON_SIZE) -> QIcon:
+    def paint(p: QPainter, s: float) -> None:
+        # Freeform lasso loop + pointer tip.
+        pen = _ink_pen(1.5)
+        pen.setStyle(Qt.DashLine)
+        p.setPen(pen)
+        p.setBrush(Qt.NoBrush)
+        path = QPainterPath()
+        path.moveTo(s * 0.22, s * 0.38)
+        path.cubicTo(s * 0.12, s * 0.18, s * 0.42, s * 0.08, s * 0.52, s * 0.22)
+        path.cubicTo(s * 0.66, s * 0.12, s * 0.78, s * 0.34, s * 0.62, s * 0.48)
+        path.cubicTo(s * 0.72, s * 0.62, s * 0.48, s * 0.72, s * 0.34, s * 0.58)
+        path.cubicTo(s * 0.20, s * 0.66, s * 0.28, s * 0.48, s * 0.22, s * 0.38)
+        p.drawPath(path)
+        p.setPen(_ink_pen(1.6))
+        p.setBrush(QBrush(_INK))
+        tip = QPointF(s * 0.58, s * 0.52)
+        p.drawPolygon(
+            QPolygonF(
+                [
+                    tip,
+                    QPointF(s * 0.82, s * 0.66),
+                    QPointF(s * 0.68, s * 0.70),
+                    QPointF(s * 0.76, s * 0.90),
+                    QPointF(s * 0.66, s * 0.94),
+                    QPointF(s * 0.58, s * 0.74),
+                    QPointF(s * 0.46, s * 0.78),
+                ]
+            )
+        )
+
+    return _paint_icon(paint, size)
+
+
+def mode_text_icon(size: int = _ICON_SIZE) -> QIcon:
+    def paint(p: QPainter, s: float) -> None:
+        # Capital "A" with underline — text / label edit tool.
+        from PyQt5.QtGui import QFont, QFontMetrics
+
+        font = QFont("Helvetica", max(10, int(s * 0.55)))
+        font.setBold(True)
+        font.setStyleHint(QFont.SansSerif)
+        fm = QFontMetrics(font)
+        text = "A"
+        tw = fm.horizontalAdvance(text) if hasattr(fm, "horizontalAdvance") else fm.width(text)
+        x = (s - tw) * 0.5
+        y = s * 0.62
+        path = QPainterPath()
+        path.addText(x, y, font, text)
+        p.fillPath(path, QBrush(_INK))
+        p.setPen(_ink_pen(1.8))
+        uy = s * 0.78
+        p.drawLine(QPointF(s * 0.22, uy), QPointF(s * 0.78, uy))
+
+    return _paint_icon(paint, size)
+
+
 def mode_draw_icon(size: int = _ICON_SIZE) -> QIcon:
     def paint(p: QPainter, s: float) -> None:
         # Pencil centered on the icon mid-point (tip SW, eraser NE).
@@ -390,6 +448,76 @@ def charge_plus_icon(size: int = _ICON_SIZE) -> QIcon:
 def charge_minus_icon(size: int = _ICON_SIZE) -> QIcon:
     def paint(p: QPainter, s: float) -> None:
         _charge_circle_and_mark(p, s, plus=False)
+
+    return _paint_icon(paint, size)
+
+
+def status_ok_icon(size: int = _ICON_SIZE) -> QIcon:
+    """Green checkmark for a clean sketch."""
+
+    def paint(p: QPainter, s: float) -> None:
+        green = QColor(34, 140, 64)
+        p.setPen(Qt.NoPen)
+        p.setBrush(QBrush(green))
+        p.drawEllipse(QRectF(s * 0.08, s * 0.08, s * 0.84, s * 0.84))
+        pen = QPen(QColor(255, 255, 255))
+        pen.setWidthF(max(2.2, s * 0.11))
+        pen.setCapStyle(Qt.RoundCap)
+        pen.setJoinStyle(Qt.RoundJoin)
+        p.setPen(pen)
+        p.setBrush(Qt.NoBrush)
+        path = QPainterPath()
+        path.moveTo(s * 0.28, s * 0.52)
+        path.lineTo(s * 0.44, s * 0.68)
+        path.lineTo(s * 0.74, s * 0.34)
+        p.drawPath(path)
+
+    return _paint_icon(paint, size)
+
+
+def status_caution_icon(size: int = _ICON_SIZE) -> QIcon:
+    """Yellow caution triangle for unspecified stereo / soft IUPAC notes."""
+
+    def paint(p: QPainter, s: float) -> None:
+        amber = QColor(220, 170, 20)
+        ink = QColor(50, 40, 0)
+        tri = QPolygonF(
+            [
+                QPointF(s * 0.50, s * 0.10),
+                QPointF(s * 0.90, s * 0.88),
+                QPointF(s * 0.10, s * 0.88),
+            ]
+        )
+        p.setPen(QPen(ink, max(1.0, s * 0.04)))
+        p.setBrush(QBrush(amber))
+        p.drawPolygon(tri)
+        pen = QPen(ink)
+        pen.setWidthF(max(2.0, s * 0.09))
+        pen.setCapStyle(Qt.RoundCap)
+        p.setPen(pen)
+        p.drawLine(QPointF(s * 0.50, s * 0.34), QPointF(s * 0.50, s * 0.58))
+        p.setPen(Qt.NoPen)
+        p.setBrush(QBrush(ink))
+        p.drawEllipse(QPointF(s * 0.50, s * 0.72), s * 0.045, s * 0.045)
+
+    return _paint_icon(paint, size)
+
+
+def status_error_icon(size: int = _ICON_SIZE) -> QIcon:
+    """Red X for invalid valence or hard structural errors."""
+
+    def paint(p: QPainter, s: float) -> None:
+        red = QColor(200, 40, 40)
+        p.setPen(Qt.NoPen)
+        p.setBrush(QBrush(red))
+        p.drawEllipse(QRectF(s * 0.08, s * 0.08, s * 0.84, s * 0.84))
+        pen = QPen(QColor(255, 255, 255))
+        pen.setWidthF(max(2.2, s * 0.11))
+        pen.setCapStyle(Qt.RoundCap)
+        p.setPen(pen)
+        m = s * 0.30
+        p.drawLine(QPointF(m, m), QPointF(s - m, s - m))
+        p.drawLine(QPointF(s - m, m), QPointF(m, s - m))
 
     return _paint_icon(paint, size)
 

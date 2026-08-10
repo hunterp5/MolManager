@@ -48,14 +48,16 @@ def reorient_wedged_bonds_tip_away_from_multiples(
     """
     Wedge/hash narrow end is stored as the **first** atom in each bond tuple (see painter).
 
-    That atom must be the tetrahedral stereocenter: a wedged single bond may **terminate**
-    at an sp² / multiply-bonded atom but must not **originate** there. If RDKit (or bad data)
-    puts the tip on an atom incident to a double/triple bond, swap endpoints; if both ends
-    are multiply-bonded, drop wedge/hash for that bond.
+    Rules (IUPAC ST + sketcher convention):
+    - Tip must not originate at an sp² / multiply-bonded atom (swap or clear).
+    - Otherwise tip prefers the **more substituted** endpoint (more heavy neighbors).
     """
     mult: set[int] = set()
+    deg: dict[int, int] = {}
     for b in bonds:
         a, bo, o, _s = _bond_unpack(b)
+        deg[a] = deg.get(a, 0) + 1
+        deg[bo] = deg.get(bo, 0) + 1
         if o >= 2:
             mult.add(a)
             mult.add(bo)
@@ -69,5 +71,49 @@ def reorient_wedged_bonds_tip_away_from_multiples(
                 a, bo = bo, a
             elif da and db:
                 s = BOND_STEREO_PLAIN
+            elif not da and not db:
+                # Thin tip at the more substituted origin.
+                if deg.get(bo, 0) > deg.get(a, 0):
+                    a, bo = bo, a
         out.append(_bond_make(a, bo, o, s))
+    return out
+
+
+def clear_stereo_bonds_between_centers(
+    bonds: list[tuple[int, int, int, int]],
+    chiral_center_ids: set[int],
+) -> tuple[list[tuple[int, int, int, int]], list[tuple[int, int]]]:
+    """
+    Drop wedge/hash on bonds that connect two stereocenters (IUPAC ST-0.5).
+
+    Returns ``(new_bonds, cleared_pairs)`` where cleared_pairs are ``(a, b)`` atom ids.
+    """
+    if not chiral_center_ids:
+        return list(bonds), []
+    out: list[tuple[int, int, int, int]] = []
+    cleared: list[tuple[int, int]] = []
+    for b in bonds:
+        a, bo, o, s = _bond_unpack(b)
+        if (
+            o == 1
+            and s in (BOND_STEREO_WEDGE, BOND_STEREO_HASH)
+            and a in chiral_center_ids
+            and bo in chiral_center_ids
+        ):
+            out.append(_bond_make(a, bo, o, BOND_STEREO_PLAIN))
+            cleared.append((a, bo))
+        else:
+            out.append(_bond_make(a, bo, o, s))
+    return out, cleared
+
+
+def sanitize_sketch_stereo_bonds(
+    bonds: list[tuple[int, int, int, int]],
+    *,
+    chiral_center_ids: set[int] | None = None,
+) -> list[tuple[int, int, int, int]]:
+    """Reorient tips away from multiples, then clear illegal stereo-between-centers."""
+    out = reorient_wedged_bonds_tip_away_from_multiples(bonds)
+    if chiral_center_ids:
+        out, _ = clear_stereo_bonds_between_centers(out, chiral_center_ids)
     return out

@@ -46,8 +46,13 @@ from .toolbar_glyphs import (
     clear_sketch_icon,
     mode_draw_icon,
     mode_erase_icon,
+    mode_lasso_icon,
     mode_select_icon,
+    mode_text_icon,
     ring_icon,
+    status_caution_icon,
+    status_error_icon,
+    status_ok_icon,
 )
 from .bonds import (
     BOND_STEREO_DATIVE,
@@ -145,7 +150,7 @@ class SketcherDialog(QDialog):
         redo_act.triggered.connect(self._redo_sketch)
         edit_menu.addAction(redo_act)
 
-        # Mode tools: Draw / Erase / Select (toolbar + right-click empty canvas; mutually exclusive checks).
+        # Mode tools: Draw / Erase / Select / Text (toolbar + right-click empty canvas; mutually exclusive).
         self.tb_draw = _glyph_tool_button(
             mode_draw_icon(),
             "Draw with the carbon tool (Ctrl+D). "
@@ -159,10 +164,24 @@ class SketcherDialog(QDialog):
 
         self.select_btn = _glyph_tool_button(
             mode_select_icon(),
-            "Select and move atoms/bonds (Ctrl+T). "
-            "Hold Shift to add or remove atoms/bonds from the selection.",
+            "Box select and move atoms/bonds (Ctrl+T). "
+            "Drag empty space for a rectangle; hold Shift to add to the selection.",
         )
         self.select_btn.toggled.connect(self._toggle_select)
+
+        self.lasso_btn = _glyph_tool_button(
+            mode_lasso_icon(),
+            "Lasso select and move atoms/bonds (Ctrl+Shift+L). "
+            "Drag a freeform shape around atoms/bonds; hold Shift to add to the selection.",
+        )
+        self.lasso_btn.toggled.connect(self._toggle_lasso)
+
+        self.tb_text = _glyph_tool_button(
+            mode_text_icon(),
+            "Text: click an atom to edit its element or contracted label "
+            "(CF3, SO2, Ph, OMe, …) (Ctrl+Shift+A).",
+        )
+        self.tb_text.toggled.connect(self._toggle_text)
 
         self._act_mode_draw = QAction("Draw", self)
         self._act_mode_draw.setCheckable(True)
@@ -185,8 +204,25 @@ class SketcherDialog(QDialog):
         self._act_mode_select.setShortcut(QKeySequence("Ctrl+T"))
         self._act_mode_select.setShortcutContext(Qt.WindowShortcut)
         self._act_mode_select.toggled.connect(self._on_menu_mode_select)
+
+        self._act_mode_lasso = QAction("Lasso Select", self)
+        self._act_mode_lasso.setCheckable(True)
+        self._act_mode_lasso.setToolTip(self.lasso_btn.toolTip())
+        self._act_mode_lasso.setShortcut(QKeySequence("Ctrl+Shift+L"))
+        self._act_mode_lasso.setShortcutContext(Qt.WindowShortcut)
+        self._act_mode_lasso.toggled.connect(self._on_menu_mode_lasso)
+
+        self._act_mode_text = QAction("Text", self)
+        self._act_mode_text.setCheckable(True)
+        self._act_mode_text.setToolTip(self.tb_text.toolTip())
+        self._act_mode_text.setShortcut(QKeySequence("Ctrl+Shift+A"))
+        self._act_mode_text.setShortcutContext(Qt.WindowShortcut)
+        self._act_mode_text.toggled.connect(self._on_menu_mode_text)
+
         self.tb_erase.toggled.connect(self._sync_mode_menu_checks)
         self.select_btn.toggled.connect(self._sync_mode_menu_checks)
+        self.lasso_btn.toggled.connect(self._sync_mode_menu_checks)
+        self.tb_text.toggled.connect(self._sync_mode_menu_checks)
 
         self._act_canvas_group = QAction("Group", self)
         self._act_canvas_group.triggered.connect(self._shortcut_group)
@@ -263,10 +299,13 @@ class SketcherDialog(QDialog):
         top_bar = QHBoxLayout()
         top_bar.setSpacing(4)
         top_bar.setContentsMargins(6, 4, 6, 4)
+        top_bar.addStretch(1)
 
         top_bar.addWidget(self.tb_draw)
         top_bar.addWidget(self.tb_erase)
         top_bar.addWidget(self.select_btn)
+        top_bar.addWidget(self.lasso_btn)
+        top_bar.addWidget(self.tb_text)
         self.tb_clear = _glyph_tool_button(
             clear_sketch_icon(),
             "Clear the sketch (also in the right-click empty-canvas menu).",
@@ -323,11 +362,20 @@ class SketcherDialog(QDialog):
         top_bar.addWidget(self.charge_minus)
         top_bar.addStretch(1)
 
+        self.tb_structure_status = _glyph_tool_button(
+            status_ok_icon(),
+            "Structure status: click for valence and stereochemistry issues.",
+            checkable=False,
+        )
+        self.tb_structure_status.clicked.connect(self._on_structure_status_clicked)
+        top_bar.addWidget(self.tb_structure_status)
+
         top_toolbar = QWidget()
         top_toolbar.setObjectName("SketcherTopToolbar")
         top_toolbar.setStyleSheet("#SketcherTopToolbar { background-color: palette(window); border: none; }")
         top_toolbar.setLayout(top_bar)
         top_toolbar.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Fixed)
+        self._top_toolbar = top_toolbar
         l.addWidget(top_toolbar)
 
         main_h = QHBoxLayout()
@@ -336,14 +384,18 @@ class SketcherDialog(QDialog):
 
         def _toolbar_header(text: str) -> QLabel:
             lab = QLabel(text)
+            lab.setObjectName("SketcherToolbarHeader")
+            lab.setAlignment(Qt.AlignHCenter | Qt.AlignVCenter)
             lab.setStyleSheet(
-                "color: palette(mid); font-size: 11px; font-weight: 600; letter-spacing: 0.4px; padding-top: 2px;"
+                "color: palette(mid); font-size: 11px; font-weight: 600; letter-spacing: 0.3px; "
+                "padding-top: 2px; padding-bottom: 2px;"
             )
             return lab
 
         toolbar_outer = QVBoxLayout()
-        toolbar_outer.setSpacing(8)
-        toolbar_outer.setContentsMargins(8, 6, 8, 10)
+        toolbar_outer.setSpacing(4)
+        toolbar_outer.setContentsMargins(8, 4, 8, 6)
+        toolbar_outer.setAlignment(Qt.AlignTop | Qt.AlignHCenter)
 
         # --- Elements by informal PT family; Custom: * wildcard and ? any-element ---
         self.element_buttons: list[QPushButton] = []
@@ -352,7 +404,7 @@ class SketcherDialog(QDialog):
         self._element_button_group.setExclusive(True)
         el_grid = QGridLayout()
         el_grid.setHorizontalSpacing(4)
-        el_grid.setVerticalSpacing(2)
+        el_grid.setVerticalSpacing(3)
         el_ncols = 4
         btn_font = QFont("Sans", 8, QFont.Bold)
         btn_font.setStyleHint(QFont.SansSerif)
@@ -378,6 +430,8 @@ class SketcherDialog(QDialog):
                     )
                 elif el == "D":
                     b.setToolTip("Deuterium (hydrogen isotope).")
+                elif el == "T":
+                    b.setToolTip("Tritium (hydrogen isotope).")
                 else:
                     b.setToolTip(f"Place {el} ({group_title}).")
                 b.clicked.connect(lambda checked, e=el: self._on_element_tool_clicked(e, checked))
@@ -417,17 +471,17 @@ class SketcherDialog(QDialog):
         el_grid.addWidget(self.tb_any_element, grid_row, 1)
         toolbar_outer.addLayout(el_grid)
 
-        toolbar_outer.addStretch()
-
         toolbar_widget = QWidget()
         toolbar_widget.setObjectName("SketcherToolbarPanel")
         toolbar_widget.setStyleSheet(
             "#SketcherToolbarPanel { background-color: palette(window); border: none; }"
         )
-        # 4 element columns × 28px + spacing + margins
-        toolbar_widget.setFixedWidth(140)
+        # Wide enough for "Alkaline Earth Metals" header + margins (4×28px buttons).
+        toolbar_widget.setFixedWidth(172)
+        toolbar_widget.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Maximum)
         toolbar_widget.setLayout(toolbar_outer)
-        main_h.addWidget(toolbar_widget)
+        self._toolbar_panel = toolbar_widget
+        main_h.addWidget(toolbar_widget, 0, Qt.AlignTop)
 
         self.canvas = SketchWidget(self)
         self.canvas.select_mode = False
@@ -436,11 +490,6 @@ class SketcherDialog(QDialog):
         main_h.addWidget(self.canvas, 1)
         l.addLayout(main_h)
 
-        self.sketch_status = QLabel("")
-        self.sketch_status.setWordWrap(True)
-        self.sketch_status.setContentsMargins(8, 4, 8, 6)
-        self.sketch_status.setStyleSheet("color: palette(mid);")
-        l.addWidget(self.sketch_status)
         self.canvas.sketchChanged.connect(self._update_sketch_status)
         self.tb_erase.blockSignals(True)
         self.tb_erase.setChecked(False)
@@ -536,7 +585,12 @@ class SketcherDialog(QDialog):
     def _sync_mode_menu_checks(self) -> None:
         if not getattr(self, "_act_mode_erase", None):
             return
-        draw_on = not self.tb_erase.isChecked() and not self.select_btn.isChecked()
+        draw_on = (
+            not self.tb_erase.isChecked()
+            and not self.select_btn.isChecked()
+            and not self.lasso_btn.isChecked()
+            and not self.tb_text.isChecked()
+        )
         self._act_mode_draw.blockSignals(True)
         self._act_mode_draw.setChecked(draw_on)
         self._act_mode_draw.blockSignals(False)
@@ -550,6 +604,14 @@ class SketcherDialog(QDialog):
         self._act_mode_select.blockSignals(True)
         self._act_mode_select.setChecked(self.select_btn.isChecked())
         self._act_mode_select.blockSignals(False)
+        if getattr(self, "_act_mode_lasso", None) is not None:
+            self._act_mode_lasso.blockSignals(True)
+            self._act_mode_lasso.setChecked(self.lasso_btn.isChecked())
+            self._act_mode_lasso.blockSignals(False)
+        if getattr(self, "_act_mode_text", None) is not None:
+            self._act_mode_text.blockSignals(True)
+            self._act_mode_text.setChecked(self.tb_text.isChecked())
+            self._act_mode_text.blockSignals(False)
 
     def show_sketch_canvas_menu(self, global_pos: QPoint) -> None:
         """Templates, modes, and cleanup (formerly the Draw menu). Right-click empty canvas."""
@@ -566,6 +628,8 @@ class SketcherDialog(QDialog):
         menu.addAction(self._act_mode_draw)
         menu.addAction(self._act_mode_erase)
         menu.addAction(self._act_mode_select)
+        menu.addAction(self._act_mode_lasso)
+        menu.addAction(self._act_mode_text)
         menu.addSeparator()
         tpl_menu = menu.addMenu("Templates")
         tpl_menu.setToolTipsVisible(True)
@@ -594,8 +658,13 @@ class SketcherDialog(QDialog):
         if checked:
             self._enter_draw_mode()
             return
-        # Keep one mode active: unchecking Draw while erase/select are off re-checks Draw.
-        if not self.tb_erase.isChecked() and not self.select_btn.isChecked():
+        # Keep one mode active: unchecking Draw while erase/select/text are off re-checks Draw.
+        if (
+            not self.tb_erase.isChecked()
+            and not self.select_btn.isChecked()
+            and not self.lasso_btn.isChecked()
+            and not self.tb_text.isChecked()
+        ):
             self._act_mode_draw.blockSignals(True)
             self._act_mode_draw.setChecked(True)
             self._act_mode_draw.blockSignals(False)
@@ -619,6 +688,28 @@ class SketcherDialog(QDialog):
         self.select_btn.blockSignals(False)
         if prev != checked:
             self._toggle_select(checked)
+        else:
+            self._sync_mode_menu_checks()
+
+    def _on_menu_mode_lasso(self, checked: bool) -> None:
+        prev = self.lasso_btn.isChecked()
+        self.lasso_btn.blockSignals(True)
+        if prev != checked:
+            self.lasso_btn.setChecked(checked)
+        self.lasso_btn.blockSignals(False)
+        if prev != checked:
+            self._toggle_lasso(checked)
+        else:
+            self._sync_mode_menu_checks()
+
+    def _on_menu_mode_text(self, checked: bool) -> None:
+        prev = self.tb_text.isChecked()
+        self.tb_text.blockSignals(True)
+        if prev != checked:
+            self.tb_text.setChecked(checked)
+        self.tb_text.blockSignals(False)
+        if prev != checked:
+            self._toggle_text(checked)
         else:
             self._sync_mode_menu_checks()
 
@@ -648,17 +739,21 @@ class SketcherDialog(QDialog):
         self._sync_mode_menu_checks()
 
     def _shortcut_copy_selection(self) -> None:
-        if self.canvas.copy_selection_to_clipboard():
-            self.sketch_status.setText("Copied selection to clipboard (paste with Ctrl+V).")
-        else:
-            self.sketch_status.setText("Turn on Select, pick atoms/bonds, then Ctrl+C to copy.")
+        if not self.canvas.copy_selection_to_clipboard():
+            QMessageBox.information(
+                self,
+                "Copy",
+                "Turn on Select, pick atoms/bonds, then Ctrl+C to copy.",
+            )
 
     def _shortcut_paste_selection(self) -> None:
         anchor = self.canvas.mapFromGlobal(QCursor.pos())
-        if self.canvas.paste_from_clipboard(anchor):
-            self._update_sketch_status()
-        else:
-            self.sketch_status.setText("Clipboard has no sketch selection (use Ctrl+C in Select mode first).")
+        if not self.canvas.paste_from_clipboard(anchor):
+            QMessageBox.information(
+                self,
+                "Paste",
+                "Clipboard has no sketch selection (use Ctrl+C in Select mode first).",
+            )
 
     def _populate_templates_menu(self, tpl_menu: QMenu) -> None:
         def add_section(title: str, pairs: list[tuple[str, str]]) -> None:
@@ -676,6 +771,12 @@ class SketcherDialog(QDialog):
                 ("Cyclobutane", "Cyclobutane"),
                 ("Cyclopentyl", "Cyclopentyl"),
                 ("Cyclohexyl", "Cyclohexyl"),
+                ("Cycloheptane", "Cycloheptane"),
+                ("Cyclooctane", "Cyclooctane"),
+                ("Cyclononane", "Cyclononane"),
+                ("Cyclodecane", "Cyclodecane"),
+                ("Cycloundecane", "Cycloundecane"),
+                ("Cyclododecane", "Cyclododecane"),
             ],
         )
         add_section(
@@ -722,29 +823,46 @@ class SketcherDialog(QDialog):
         )
 
     def _leave_special_modes_for_drawing(self, *, reset_bond: bool = True) -> None:
-        """Exit Select and Erase so drawing tools (element/template) apply."""
+        """Exit Select, Erase, and Text so drawing tools (element/template) apply."""
         if self.tb_erase.isChecked():
             self.tb_erase.blockSignals(True)
             self.tb_erase.setChecked(False)
             self.tb_erase.blockSignals(False)
-        if self.select_btn.isChecked():
-            self.select_btn.blockSignals(True)
-            self.select_btn.setChecked(False)
-            self.select_btn.blockSignals(False)
+        self._uncheck_select_tool_buttons()
+        if self.tb_text.isChecked():
+            self.tb_text.blockSignals(True)
+            self.tb_text.setChecked(False)
+            self.tb_text.blockSignals(False)
         self.canvas.erase_mode = False
         self.canvas.select_mode = False
+        self.canvas.select_tool = "box"
+        self.canvas.text_mode = False
         self.canvas.setCursor(Qt.ArrowCursor)
-        self.canvas.selected_nodes = []
-        self.canvas.selected_bond_indices = set()
-        self.canvas._selection_rect = None
-        self.canvas._selecting = False
-        self.canvas._release_marquee_mouse_grab_if_any()
-        self.canvas._maybe_move = False
-        self.canvas._moving = False
+        self._clear_canvas_selection_ui()
         if reset_bond:
             self._reset_bond_stereo_toolbar()
         self.canvas.update()
         self._sync_mode_menu_checks()
+
+    def _uncheck_select_tool_buttons(self) -> None:
+        for btn in (self.select_btn, self.lasso_btn):
+            if btn.isChecked():
+                btn.blockSignals(True)
+                btn.setChecked(False)
+                btn.blockSignals(False)
+
+    def _clear_canvas_selection_ui(self) -> None:
+        self.canvas.selected_nodes = []
+        self.canvas.selected_bond_indices = set()
+        self.canvas._selection_rect = None
+        self.canvas._selecting = False
+        self.canvas._lasso_points = []
+        self.canvas._release_marquee_mouse_grab_if_any()
+        self.canvas._maybe_move = False
+        self.canvas._moving = False
+
+    def _any_select_tool_on(self) -> bool:
+        return self.select_btn.isChecked() or self.lasso_btn.isChecked()
 
     def _reset_bond_stereo_toolbar(self) -> None:
         self._set_bond_tool(1, BOND_STEREO_PLAIN)
@@ -1010,75 +1128,135 @@ class SketcherDialog(QDialog):
                 app.apply_filters()
         return n_added
 
+    def refresh_theme(self) -> None:
+        """Re-apply palette-driven chrome after a live light/dark/groovy switch."""
+        top = getattr(self, "_top_toolbar", None)
+        if top is not None:
+            top.setStyleSheet(
+                "#SketcherTopToolbar { background-color: palette(window); border: none; }"
+            )
+        panel = getattr(self, "_toolbar_panel", None)
+        if panel is not None:
+            panel.setStyleSheet(
+                "#SketcherToolbarPanel { background-color: palette(window); border: none; }"
+            )
+        header_qss = (
+            "color: palette(mid); font-size: 11px; font-weight: 600; letter-spacing: 0.3px; "
+            "padding-top: 2px; padding-bottom: 2px;"
+        )
+        for lab in self.findChildren(QLabel, "SketcherToolbarHeader"):
+            lab.setStyleSheet(header_qss)
+        if hasattr(self, "canvas") and self.canvas is not None:
+            self.canvas.update()
+        self.update()
+
     def _update_sketch_status(self) -> None:
-        n_atoms = len(self.canvas.nodes)
-        if n_atoms == 0:
-            self.sketch_status.setText("Empty sketch")
+        """Refresh the pinned structure-status glyph (ok / caution / error)."""
+        btn = getattr(self, "tb_structure_status", None)
+        if btn is None:
             return
-        parts = self.canvas.fragment_smiles_parts()
-        n_export = len(parts)
-        phy = self.canvas.fragment_count()
-        if phy > n_export >= 1:
-            if getattr(self.canvas, "_group_bundle_is_salt", False):
-                frag_txt = (
-                    f"{phy} drawn fragment(s); {n_export} row(s) for Add to table "
-                    "(grouped as a salt: cations before anions in SMILES)"
-                )
-            else:
-                frag_txt = (
-                    f"{phy} drawn fragment(s); {n_export} row(s) for Add to table "
-                    "(grouped: multiple structures in one SMILES entry; not a salt)"
-                )
-        elif phy <= 1:
-            frag_txt = "One connected structure"
+        level, msgs = self.canvas.structure_issue_report()
+        if level == "error":
+            btn.setIcon(status_error_icon())
+            tip = "Structure has errors (click for details)."
+        elif level == "caution":
+            btn.setIcon(status_caution_icon())
+            tip = "Structure has warnings (click for details)."
         else:
-            frag_txt = f"{phy} separate structures (Add to table: one row per fragment unless grouped)"
-        smi = ".".join(parts) if parts else ""
-        cip = self.canvas._format_cip_chiral_summary()
-        ez = self.canvas._format_alkene_ez_summary()
-        has_w = self.canvas.sketch_has_wildcards()
-        if has_w:
-            disp = self.canvas.to_smarts().strip() or smi
-            tag = "SMARTS"
+            btn.setIcon(status_ok_icon())
+            tip = "No valence or stereochemistry issues flagged (click for details)."
+        if msgs:
+            tip = tip + "\n" + "\n".join(f"• {m}" for m in msgs[:6])
+            if len(msgs) > 6:
+                tip += f"\n• (+{len(msgs) - 6} more)"
+        btn.setToolTip(tip)
+        self._structure_status_level = level
+        self._structure_status_messages = msgs
+
+    def _on_structure_status_clicked(self) -> None:
+        """Show a silent status dropdown under the toolbar button, kept inside this window."""
+        level, msgs = self.canvas.structure_issue_report()
+        self._update_sketch_status()
+        title = {
+            "ok": "Structure OK",
+            "caution": "Structure Warnings",
+            "error": "Structure Errors",
+        }.get(level, "Structure Status")
+        menu = QMenu(self)
+        menu.setObjectName("SketcherStatusMenu")
+        menu.setToolTipsVisible(True)
+        hdr = menu.addAction(title)
+        hdr.setEnabled(False)
+        menu.addSeparator()
+        if not msgs:
+            act = menu.addAction("No issues.")
+            act.setEnabled(False)
         else:
-            disp = smi
-            tag = "SMILES"
-        if disp:
-            preview = disp if len(disp) <= 96 else disp[:93] + "..."
-            self.sketch_status.setText(f"{frag_txt} · {tag}: {preview}{cip}{ez}")
-        else:
-            self.sketch_status.setText(f"{frag_txt} · {tag} not available (check bonding/valence){cip}{ez}")
+            for m in msgs:
+                act = menu.addAction(m)
+                act.setEnabled(False)
+        btn = self.tb_structure_status
+        hint = menu.sizeHint()
+        # Prefer below the button; flip above if needed. Clamp to this dialog's frame.
+        win = self.window()
+        frame = win.frameGeometry() if win is not None else self.frameGeometry()
+        # Use client area in global coords so the menu stays on-screen within the app.
+        top_left = self.mapToGlobal(self.rect().topLeft())
+        bottom_right = self.mapToGlobal(self.rect().bottomRight())
+        x0, y0 = top_left.x(), top_left.y()
+        x1, y1 = bottom_right.x(), bottom_right.y()
+        # Also respect the OS window frame when available.
+        x0 = max(x0, frame.left() + 4)
+        y0 = max(y0, frame.top() + 4)
+        x1 = min(x1, frame.right() - 4)
+        y1 = min(y1, frame.bottom() - 4)
+
+        below = btn.mapToGlobal(btn.rect().bottomLeft())
+        above = btn.mapToGlobal(btn.rect().topLeft())
+        x = below.x()
+        y = below.y()
+        if y + hint.height() > y1:
+            y = above.y() - hint.height()
+        if y < y0:
+            y = y0
+        if y + hint.height() > y1:
+            y = max(y0, y1 - hint.height())
+        if x + hint.width() > x1:
+            x = x1 - hint.width()
+        if x < x0:
+            x = x0
+        menu.exec_(QPoint(x, y))
 
     def _shortcut_group(self) -> None:
         if not self.canvas.select_mode:
             QMessageBox.information(
                 self,
                 "Group",
-                "Turn on Select mode, select atoms from at least two disconnected structures, then press Ctrl+G.",
+                "Turn on Select or Lasso, select atoms from at least two disconnected structures, then press Ctrl+G.",
             )
             return
         self.canvas._run_group_selection_menu()
 
     def _shortcut_ungroup(self) -> None:
         ok = self.canvas.ungroup_for_export()
-        self._update_sketch_status()
         if not ok:
-            t = self.sketch_status.text()
-            self.sketch_status.setText(f"{t} · No export group to remove (Ctrl+G groups fragments).")
+            QMessageBox.information(
+                self,
+                "Ungroup",
+                "No export group to remove (Ctrl+G groups fragments).",
+            )
 
     def _toggle_erase(self, checked: bool):
-        if checked and self.select_btn.isChecked():
-            self.select_btn.blockSignals(True)
-            self.select_btn.setChecked(False)
-            self.select_btn.blockSignals(False)
-            self.canvas.selected_nodes = []
-            self.canvas.selected_bond_indices = set()
-            self.canvas._selection_rect = None
-            self.canvas._selecting = False
-            self.canvas._release_marquee_mouse_grab_if_any()
-            self.canvas._maybe_move = False
-            self.canvas._moving = False
-            self.canvas.select_mode = False
+        if checked:
+            if self._any_select_tool_on():
+                self._uncheck_select_tool_buttons()
+                self._clear_canvas_selection_ui()
+                self.canvas.select_mode = False
+            if self.tb_text.isChecked():
+                self.tb_text.blockSignals(True)
+                self.tb_text.setChecked(False)
+                self.tb_text.blockSignals(False)
+                self.canvas.text_mode = False
         self.canvas.erase_mode = checked
         if checked:
             self.canvas.setCursor(Qt.CrossCursor)
@@ -1088,17 +1266,30 @@ class SketcherDialog(QDialog):
             self._uncheck_ring_buttons()
         else:
             self.canvas.setCursor(Qt.ArrowCursor)
-            self._select_default_element_tool()
+            if not self._any_select_tool_on() and not self.tb_text.isChecked():
+                self._select_default_element_tool()
 
-    def _toggle_select(self, checked: bool):
-        if checked and self.tb_erase.isChecked():
-            self.tb_erase.blockSignals(True)
-            self.tb_erase.setChecked(False)
-            self.tb_erase.blockSignals(False)
-            self.canvas.erase_mode = False
-            self.canvas.setCursor(Qt.ArrowCursor)
-        self.canvas.select_mode = checked
+    def _enter_select_tool(self, tool: str, checked: bool) -> None:
+        """Enable box or lasso select; *tool* is ``\"box\"`` or ``\"lasso\"``."""
+        other = self.lasso_btn if tool == "box" else self.select_btn
         if checked:
+            if other.isChecked():
+                other.blockSignals(True)
+                other.setChecked(False)
+                other.blockSignals(False)
+            if self.tb_erase.isChecked():
+                self.tb_erase.blockSignals(True)
+                self.tb_erase.setChecked(False)
+                self.tb_erase.blockSignals(False)
+                self.canvas.erase_mode = False
+                self.canvas.setCursor(Qt.ArrowCursor)
+            if self.tb_text.isChecked():
+                self.tb_text.blockSignals(True)
+                self.tb_text.setChecked(False)
+                self.tb_text.blockSignals(False)
+                self.canvas.text_mode = False
+            self.canvas.select_tool = tool
+            self.canvas.select_mode = True
             self.canvas.place_element = None
             self.canvas.active_template = None
             self._uncheck_element_buttons_clear_place()
@@ -1107,16 +1298,44 @@ class SketcherDialog(QDialog):
                 self.canvas._refresh_hover_from_cursor()
             except Exception:
                 self.canvas.setCursor(Qt.ArrowCursor)
-        else:
-            self.canvas.selected_nodes = []
-            self.canvas.selected_bond_indices = set()
-            self.canvas._selection_rect = None
-            self.canvas._selecting = False
-            self.canvas._release_marquee_mouse_grab_if_any()
-            self.canvas._maybe_move = False
-            self.canvas._moving = False
+            return
+        # Unchecking this tool: leave select mode only if the other select tool is also off.
+        if not other.isChecked():
+            self.canvas.select_mode = False
+            self.canvas.select_tool = "box"
+            self._clear_canvas_selection_ui()
             self.canvas.setCursor(Qt.ArrowCursor)
-            self._select_default_element_tool()
+            if not self.tb_erase.isChecked() and not self.tb_text.isChecked():
+                self._select_default_element_tool()
+
+    def _toggle_select(self, checked: bool):
+        self._enter_select_tool("box", checked)
+
+    def _toggle_lasso(self, checked: bool):
+        self._enter_select_tool("lasso", checked)
+
+    def _toggle_text(self, checked: bool):
+        if checked:
+            if self.tb_erase.isChecked():
+                self.tb_erase.blockSignals(True)
+                self.tb_erase.setChecked(False)
+                self.tb_erase.blockSignals(False)
+                self.canvas.erase_mode = False
+            if self._any_select_tool_on():
+                self._uncheck_select_tool_buttons()
+                self._clear_canvas_selection_ui()
+                self.canvas.select_mode = False
+        self.canvas.text_mode = checked
+        if checked:
+            self.canvas.setCursor(Qt.IBeamCursor)
+            self.canvas.place_element = None
+            self.canvas.active_template = None
+            self._uncheck_element_buttons_clear_place()
+            self._uncheck_ring_buttons()
+        else:
+            self.canvas.setCursor(Qt.ArrowCursor)
+            if not self.tb_erase.isChecked() and not self._any_select_tool_on():
+                self._select_default_element_tool()
 
     def _toggle_charge(self, val: int | None):
         try:
@@ -1203,24 +1422,40 @@ class SketcherDialog(QDialog):
                 "Clean Up",
                 "Could not re-layout the structure. Try fixing valence or connectivity issues first.",
             )
-        self._update_sketch_status()
+            return
+        issues = self.canvas.refresh_iupac_validation()
+        if issues:
+            from molmanager.ui.sketcher.iupac_validate import format_iupac_issues
+
+            summary = format_iupac_issues(issues, limit=5)
+            QMessageBox.information(
+                self,
+                "Clean Up",
+                f"Layout updated. IUPAC notes:\n{summary}",
+            )
+            self.canvas.update()
 
     def _copy_smiles(self):
         smi = self.canvas.to_smiles()
         if smi:
             QApplication.clipboard().setText(smi)
-            kind = "SMARTS" if self.canvas.sketch_has_wildcards() else "SMILES"
-            self.sketch_status.setText(f"Copied {kind} to clipboard ({len(smi)} characters).")
         else:
-            self.sketch_status.setText("Could not copy — no valid SMILES/SMARTS for the sketch.")
+            QMessageBox.warning(
+                self,
+                "Copy",
+                "Could not copy — no valid SMILES/SMARTS for the sketch.",
+            )
 
     def _copy_smarts(self) -> None:
         smt = self.canvas.to_smarts().strip()
         if smt:
             QApplication.clipboard().setText(smt)
-            self.sketch_status.setText(f"Copied SMARTS to clipboard ({len(smt)} characters).")
         else:
-            self.sketch_status.setText("Could not copy SMARTS (empty sketch or invalid structure).")
+            QMessageBox.warning(
+                self,
+                "Copy SMARTS",
+                "Could not copy SMARTS (empty sketch or invalid structure).",
+            )
 
     def _add_to_table(self):
         parts = self.canvas.fragment_smiles_parts()
@@ -1233,15 +1468,14 @@ class SketcherDialog(QDialog):
         if not parts:
             msg = "Sketcher: could not build a valid structure to add to the table (check bonding/valence)."
             _main_status(msg)
-            self.sketch_status.setText(msg)
+            QMessageBox.warning(self, "Add to Table", msg)
             return
         n = self._append_molecules_from_smiles_parts(parts)
         if n == 0:
             msg = "Sketcher: could not parse fragments when adding to the table."
             _main_status(msg)
-            self.sketch_status.setText(msg)
+            QMessageBox.warning(self, "Add to Table", msg)
             return
-        self._update_sketch_status()
 
     def closeEvent(self, event):
         self._set_parent_delete_action_blocked(False)

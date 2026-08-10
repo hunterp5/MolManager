@@ -9,7 +9,7 @@ from PyQt5.QtCore import QPoint, QRect, Qt
 from PyQt5.QtWidgets import QAction, QMenu, QMessageBox, QWidget
 
 from .bonds import _bond_make, _bond_unpack
-from .constants import DEFAULT_WILDCARD_ELEMENTS, WILDCARD_ELEMENT
+from .constants import DEFAULT_WILDCARD_ELEMENTS, SKETCH_MEDIAN_BOND_PX, WILDCARD_ELEMENT
 from .wildcards import _is_wildcard_node
 
 
@@ -26,6 +26,13 @@ class SketchWidgetEventsMixin:
         if ev.button() == Qt.LeftButton:
             hit = self._hit_node(pt)
             self._mouse_down_pos = QPoint(wpt)
+
+            if self.text_mode:
+                self._drag_candidate = hit["id"] if hit is not None else None
+                self._drag_start = None
+                self._is_dragging = False
+                self.update()
+                return
 
             if self.select_mode:
                 shift = bool(ev.modifiers() & Qt.ShiftModifier)
@@ -101,6 +108,10 @@ class SketchWidgetEventsMixin:
                     self._selecting = True
                     self._select_start = QPoint(wpt)
                     self._selection_rect = None
+                    if getattr(self, "select_tool", "box") == "lasso":
+                        self._lasso_points = [QPoint(wpt)]
+                    else:
+                        self._lasso_points = []
                     self.grabMouse()
                 self.update()
                 return
@@ -186,6 +197,23 @@ class SketchWidgetEventsMixin:
                         lambda on, h=hit["id"]: self._set_explicit_carbon_visible(h, on)
                     )
                     menu.addAction(act_xc)
+                if not _is_wildcard_node(hit):
+                    act_lp = QAction("Lone Pairs", self)
+                    act_lp.setCheckable(True)
+                    act_lp.setChecked(bool(hit.get("show_lone_pairs")))
+                    act_lp.setToolTip("Show Lewis lone pairs on this atom only.")
+                    act_lp.toggled.connect(
+                        lambda on, h=hit["id"]: self._set_atom_lone_pairs_visible(h, on)
+                    )
+                    menu.addAction(act_lp)
+                    act_ox = QAction("Oxidation State", self)
+                    act_ox.setCheckable(True)
+                    act_ox.setChecked(bool(hit.get("show_oxidation_state")))
+                    act_ox.setToolTip("Show the approximate oxidation state on this atom only.")
+                    act_ox.toggled.connect(
+                        lambda on, h=hit["id"]: self._set_atom_oxidation_visible(h, on)
+                    )
+                    menu.addAction(act_ox)
                 if _is_wildcard_node(hit):
                     act_ed = QAction("Edit wildcard elements...", self)
                     act_ed.triggered.connect(lambda ch, h=hit: self._edit_wildcard_dialog(h))
@@ -197,6 +225,7 @@ class SketchWidgetEventsMixin:
                 act_st.setChecked(_hid in self._stereo_label_node_ids)
                 act_st.toggled.connect(lambda on, h=_hid: self._set_stereo_label_visible(h, on))
                 menu.addAction(act_st)
+                self._add_selection_transform_actions(menu, hit_ids={hit["id"]})
                 self._add_group_action_if_applicable(menu)
                 menu.exec_(self.mapToGlobal(pt))
             else:
@@ -249,6 +278,7 @@ class SketchWidgetEventsMixin:
                         sa.triggered.connect(_set_st)
                         stereo_menu.addAction(sa)
 
+                    self._add_selection_transform_actions(menu, hit_ids={a_idx, b_idx})
                     self._add_group_action_if_applicable(menu)
                     menu.exec_(self.mapToGlobal(pt))
                 else:
@@ -287,6 +317,7 @@ class SketchWidgetEventsMixin:
         self._sync_selected_bonds_from_nodes()
         self._selection_rect = None
         self._selecting = False
+        self._lasso_points = []
         self._maybe_move = False
         self._moving = False
         self._move_orig = {}
@@ -312,6 +343,20 @@ class SketchWidgetEventsMixin:
                 self.update()
                 return
             if self._selecting and self._select_start is not None:
+                if getattr(self, "select_tool", "box") == "lasso":
+                    pts = getattr(self, "_lasso_points", None)
+                    if pts is None:
+                        self._lasso_points = [QPoint(self._select_start), QPoint(wpt)]
+                    else:
+                        last = pts[-1]
+                        dx = wpt.x() - last.x()
+                        dy = wpt.y() - last.y()
+                        if dx * dx + dy * dy >= 4:
+                            pts.append(QPoint(wpt))
+                    self._selection_rect = None
+                    self._apply_lasso_selection_from_points()
+                    self.update()
+                    return
                 sx, sy = self._select_start.x(), self._select_start.y()
                 minx, maxx = min(sx, wpt.x()), max(sx, wpt.x())
                 miny, maxy = min(sy, wpt.y()), max(sy, wpt.y())
@@ -350,13 +395,14 @@ class SketchWidgetEventsMixin:
                     return
 
         if self._drag_candidate is not None and not self._is_dragging and self._mouse_down_pos is not None:
-            dx = wpt.x() - self._mouse_down_pos.x()
-            dy = wpt.y() - self._mouse_down_pos.y()
-            if dx * dx + dy * dy >= (6**2):
-                self._is_dragging = True
-                self._drag_start = self._drag_candidate
-                self._drag_pos = QPoint(pt)
-                self.setCursor(Qt.ClosedHandCursor)
+            if not self.text_mode:
+                dx = wpt.x() - self._mouse_down_pos.x()
+                dy = wpt.y() - self._mouse_down_pos.y()
+                if dx * dx + dy * dy >= (6**2):
+                    self._is_dragging = True
+                    self._drag_start = self._drag_candidate
+                    self._drag_pos = QPoint(pt)
+                    self.setCursor(Qt.ClosedHandCursor)
 
         if self._is_dragging:
             self._drag_pos = QPoint(pt)
@@ -369,7 +415,14 @@ class SketchWidgetEventsMixin:
         hit = self._hit_node(pt)
         bi, _ = self._hit_bond(pt)
         sel = self._selected_node_set()
-        if self.select_mode:
+        if self.text_mode:
+            if hit:
+                self.hover = hit["id"]
+                self.setCursor(Qt.IBeamCursor)
+            else:
+                self.hover = None
+                self.setCursor(Qt.IBeamCursor)
+        elif self.select_mode:
             if hit and hit["id"] in sel:
                 self.hover = hit["id"]
                 self.setCursor(Qt.OpenHandCursor)
@@ -404,6 +457,21 @@ class SketchWidgetEventsMixin:
         if ev.button() != Qt.LeftButton:
             return
 
+        if self.text_mode:
+            nid = self._drag_candidate
+            self._drag_candidate = None
+            self._mouse_down_pos = None
+            if nid is not None:
+                hit = next((n for n in self.nodes if n["id"] == nid), None)
+                if hit is not None:
+                    self._open_edit_atom_dialog(hit)
+            try:
+                self._refresh_hover_from_cursor()
+            except Exception:
+                self.setCursor(Qt.IBeamCursor)
+            self.update()
+            return
+
         if self.select_mode:
             if self._moving:
                 moves = []
@@ -428,6 +496,7 @@ class SketchWidgetEventsMixin:
                 self._selecting = False
                 self._select_start = None
                 self._selection_rect = None
+                self._lasso_points = []
                 self._select_additive_base_nodes = None
                 self._select_additive_base_bonds = None
                 self._release_marquee_mouse_grab_if_any()
@@ -495,12 +564,50 @@ class SketchWidgetEventsMixin:
                     dx = ex0 - bx
                     dy = ey0 - by
                     dist = math.hypot(dx, dy)
+                    do_snap = bool(getattr(self, "snap_geometry", True)) and not (
+                        ev.modifiers() & Qt.ShiftModifier
+                    )
+                    med = float(getattr(self, "_median_bond_length_px", None) or SKETCH_MEDIAN_BOND_PX)
+                    order, pst = self._bond_tool_order_stereo()
                     # Place the new atom at the drop point so bond length and angle match the drag.
                     if dist < 1e-6:
-                        MIN_BOND = 30
-                        ix, iy = self._compute_extension_vector(start_id)
-                        ex = int(round(bx + ix * MIN_BOND))
-                        ey = int(round(by + iy * MIN_BOND))
+                        ix, iy = self._compute_extension_vector(
+                            start_id, snap=do_snap, new_bond_order=order
+                        )
+                        ex = int(round(bx + ix * med))
+                        ey = int(round(by + iy * med))
+                    elif do_snap:
+                        ang = math.atan2(dy, dx)
+                        neigh_angs = []
+                        neigh_orders = []
+                        for bond in self.bonds:
+                            a0, b0, o0, __ = _bond_unpack(bond)
+                            if a0 != start_id and b0 != start_id:
+                                continue
+                            oid = b0 if a0 == start_id else a0
+                            on = next((n for n in self.nodes if n["id"] == oid), None)
+                            if on:
+                                neigh_angs.append(
+                                    math.atan2(on["pos"].y() - by, on["pos"].x() - bx)
+                                )
+                                neigh_orders.append(int(o0))
+                        from .iupac_style import snap_extension_angle
+
+                        max_exist = max(neigh_orders) if neigh_orders else 1
+                        prefer_linear = max_exist >= 3 or order >= 3 or (max_exist == 2 and order == 2)
+                        prefer_trigonal = (not prefer_linear) and (max_exist == 2 or order == 2)
+                        ang = (
+                            snap_extension_angle(
+                                ang,
+                                neigh_angs,
+                                prefer_linear=prefer_linear,
+                                prefer_trigonal=prefer_trigonal,
+                            )
+                            if neigh_angs
+                            else ang
+                        )
+                        ex = int(round(bx + math.cos(ang) * med))
+                        ey = int(round(by + math.sin(ang) * med))
                     else:
                         ex = int(round(ex0))
                         ey = int(round(ey0))
@@ -511,8 +618,12 @@ class SketchWidgetEventsMixin:
                     if pel == WILDCARD_ELEMENT:
                         node["wildcard_els"] = list(DEFAULT_WILDCARD_ELEMENTS)
                     self.nodes.append(node)
-                    order, pst = self._bond_tool_order_stereo()
-                    bond = _bond_make(start_id, nid, order, pst)
+                    from .bonds import BOND_STEREO_HASH, BOND_STEREO_WEDGE
+
+                    if order == 1 and pst in (BOND_STEREO_WEDGE, BOND_STEREO_HASH):
+                        bond = _bond_make(start_id, nid, order, pst)
+                    else:
+                        bond = _bond_make(start_id, nid, order, pst)
                     self.bonds.append(bond)
                     self._push_undo("add_bonded_node", (node, bond))
                     self._after_sketch_edit()
@@ -548,7 +659,11 @@ class SketchWidgetEventsMixin:
             if self._drag_candidate is not None:
                 self.place_template(tpl, attach_to=self._drag_candidate)
             else:
-                self.place_template(tpl, center=end_pt)
+                bi, _ = self._hit_bond(end_pt)
+                if bi is not None:
+                    self.place_template(tpl, fuse_bond=bi)
+                else:
+                    self.place_template(tpl, center=end_pt)
             self._drag_candidate = None
             self._mouse_down_pos = None
             return
@@ -557,7 +672,11 @@ class SketchWidgetEventsMixin:
             base_id = self._drag_candidate
             tgt = next((n for n in self.nodes if n["id"] == base_id), None)
             if tgt is not None and self.place_element == "C":
-                is_plain_carbon = tgt.get("element") == "C" and not _is_wildcard_node(tgt)
+                is_plain_carbon = (
+                    tgt.get("element") == "C"
+                    and not _is_wildcard_node(tgt)
+                    and not tgt.get("abbrev")
+                )
                 if is_plain_carbon:
                     self.add_carbon_to(base_id)
                     node = self.nodes[-1]

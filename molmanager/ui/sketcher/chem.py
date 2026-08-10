@@ -157,3 +157,89 @@ def sketch_lone_pair_count(
     if unpaired < 2:
         return 0
     return min(4, unpaired // 2)
+
+
+# Approximate Pauling electronegativities for oxidation-state assignment (GR-style display).
+_ELEMENT_EN: dict[str, float] = {
+    "H": 2.20,
+    "D": 2.20,
+    "T": 2.20,
+    "B": 2.04,
+    "C": 2.55,
+    "N": 3.04,
+    "O": 3.44,
+    "F": 3.98,
+    "Si": 1.90,
+    "P": 2.19,
+    "S": 2.58,
+    "Cl": 3.16,
+    "Br": 2.96,
+    "I": 2.66,
+    "Se": 2.55,
+    "As": 2.18,
+    "Na": 0.93,
+    "K": 0.82,
+    "Mg": 1.31,
+    "Ca": 1.00,
+    "Fe": 1.83,
+    "Ni": 1.91,
+    "Pd": 2.20,
+    "Pt": 2.28,
+    "Cu": 1.90,
+    "Zn": 1.65,
+}
+
+
+def sketch_oxidation_state(
+    element: str,
+    bond_partners: list[tuple[str, int]],
+    *,
+    implicit_h: int = 0,
+) -> int | None:
+    """
+    Approximate integer oxidation state for sketcher annotation.
+
+    Assigns bonding electrons to the more electronegative atom (equal EN → split).
+    Includes implicit hydrogens as bonds to H. Returns None when undefined.
+    """
+    el = str(element or "")
+    if not el or el == WILDCARD_ELEMENT:
+        return None
+    try:
+        pt = Chem.GetPeriodicTable()
+        an = int(pt.GetAtomicNumber(el if el not in ("D", "T") else "H"))
+        if an <= 0:
+            return None
+        valence_e = int(pt.GetNOuterElecs(an if el not in ("D", "T") else 1))
+        if el in ("D", "T"):
+            valence_e = 1
+    except Exception:
+        return None
+    if valence_e <= 0:
+        return None
+    partners = list(bond_partners)
+    for _ in range(max(0, int(implicit_h))):
+        partners.append(("H", 1))
+    en_self = _ELEMENT_EN.get(el)
+    if en_self is None:
+        try:
+            # Fallback: use outer-electron count band as a weak EN proxy — skip unknowns.
+            return None
+        except Exception:
+            return None
+    assigned = 0
+    bond_sum = 0
+    for pel, order in partners:
+        o = max(0, int(order))
+        bond_sum += o
+        en_p = _ELEMENT_EN.get(str(pel), _ELEMENT_EN.get("C", 2.55))
+        if en_self > en_p + 1e-6:
+            assigned += 2 * o
+        elif abs(en_self - en_p) <= 1e-6:
+            assigned += o
+        # else: more electronegative partner keeps both electrons → 0 assigned here
+    # Nonbonding electrons from leftover valence after bonding (ignore formal charge for OS).
+    nonbonding = max(0, valence_e - bond_sum)
+    if nonbonding % 2 == 1:
+        nonbonding -= 1
+    return int(valence_e - nonbonding - assigned)

@@ -32,6 +32,11 @@ def test_explicit_carbon_toggle(qapp) -> None:  # noqa: ARG001
     assert not w.nodes[0].get("explicit_carbon")
     w._set_explicit_carbon_visible(1, True)
     assert w.nodes[0].get("explicit_carbon") is True
+    # Terminal methyl-like carbon (one single bond) → CH3
+    assert w._explicit_carbon_display_label(w.nodes[0]) == "CH3"
+    w.nodes[0]["charge"] = 1
+    # Charge-aware valence: C+ with one bond still has room for H's
+    assert w._explicit_carbon_display_label(w.nodes[0]).startswith("CH")
     w.undo()
     assert not w.nodes[0].get("explicit_carbon")
     w.redo()

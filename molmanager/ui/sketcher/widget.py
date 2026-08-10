@@ -13,9 +13,13 @@ from PyQt5.QtWidgets import (
     QAction,
     QApplication,
     QDialog,
+    QDialogButtonBox,
+    QDoubleSpinBox,
+    QFormLayout,
     QInputDialog,
     QMenu,
     QMessageBox,
+    QVBoxLayout,
     QWidget,
 )
 
@@ -26,13 +30,24 @@ from .bonds import (
     BOND_STEREO_HASH,
     BOND_STEREO_PLAIN,
     BOND_STEREO_VALUES,
+    BOND_STEREO_WAVY,
     BOND_STEREO_WEDGE,
     _bond_make,
     _bond_record_ok,
     _bond_unpack,
-    reorient_wedged_bonds_tip_away_from_multiples,
+    sanitize_sketch_stereo_bonds,
 )
-from .chem import _parse_atom_symbol_input
+from .contracted_labels import contracted_max_bonds, parse_edit_atom_input
+from .iupac_rings import (
+    exterior_ring_substituent_direction,
+    fusion_ring_offsets_for_bond,
+    ring_circumradius_for_bond_length,
+    ring_vertex_offsets_y_up,
+    rotate_offsets_to_inward_heteroatoms,
+    spiro_second_ring_offsets_y_up,
+)
+from .iupac_style import snap_extension_angle
+from .iupac_validate import format_iupac_issues, validate_iupac_sketch
 from .sketch_graph import connected_components_from_graph, topology_fingerprint
 from .sketch_rdkit import SketchWidgetRdkitMixin
 from .constants import (
@@ -87,6 +102,8 @@ class SketchWidget(SketchWidgetEventsMixin, SketchWidgetPaintMixin, SketchWidget
         self.place_element: str | None = None
         self.erase_mode = False
         self.select_mode = False
+        self.select_tool = "box"  # "box" | "lasso" while select_mode is on
+        self.text_mode = False
         self.active_template: str | None = None
         self.active_charge: int | None = None  # +1, -1, or None
         self.active_bond_order: int = 1  # 1/2/3 for newly drawn or applied bonds
@@ -100,6 +117,7 @@ class SketchWidget(SketchWidgetEventsMixin, SketchWidgetPaintMixin, SketchWidget
         self._selecting = False
         self._select_start: QPoint | None = None
         self._selection_rect: QRect | None = None
+        self._lasso_points: list[QPoint] = []
         # When Shift+marquee: keep prior selection and union with the drag rect.
         self._select_additive_base_nodes: list[int] | None = None
         self._select_additive_base_bonds: set[int] | None = None
@@ -139,6 +157,10 @@ class SketchWidget(SketchWidgetEventsMixin, SketchWidgetPaintMixin, SketchWidget
         self._stereo_cip_by_node_id: dict[int, str] = {}
         self._alkene_ez_by_bond_index: dict[int, str] = {}
         self._stereo_label_node_ids: set[int] = set()
+        self._iupac_issue_atom_ids: set[int] = set()
+        self._iupac_issue_bond_indices: set[int] = set()
+        self._iupac_issues_summary: str = ""
+        self.snap_geometry: bool = True  # Shift bypasses while drawing
 
         self._ccache_fp: tuple[tuple[int, ...], tuple[tuple[int, int], ...]] | None = None
         self._ccache_comps: tuple[frozenset[int], ...] = ()
@@ -152,6 +174,7 @@ class SketchWidget(SketchWidgetEventsMixin, SketchWidgetPaintMixin, SketchWidget
             self.place_element == "C"
             and not self.select_mode
             and not self.erase_mode
+            and not self.text_mode
             and self.active_template is None
         )
 
@@ -275,6 +298,70 @@ class SketchWidget(SketchWidgetEventsMixin, SketchWidgetPaintMixin, SketchWidget
             if self._segment_intersects_rect(x1, y1, x2, y2, r):
                 buds.add(bi)
         self.selected_bond_indices = buds
+
+    def _lasso_path_model(self) -> "QPainterPath":
+        from PyQt5.QtGui import QPainterPath
+
+        path = QPainterPath()
+        pts = getattr(self, "_lasso_points", None) or []
+        if not pts:
+            return path
+        m0 = self._widget_point_to_model(pts[0])
+        path.moveTo(float(m0.x()), float(m0.y()))
+        for wp in pts[1:]:
+            m = self._widget_point_to_model(wp)
+            path.lineTo(float(m.x()), float(m.y()))
+        if len(pts) >= 3:
+            path.closeSubpath()
+        return path
+
+    def _sync_selected_bonds_from_lasso_path(self, path) -> None:
+        """Lasso: bonds whose segment samples fall inside the freeform path."""
+        from PyQt5.QtCore import QPointF
+
+        if path is None or path.isEmpty():
+            self.selected_bond_indices = set()
+            return
+        buds: set[int] = set()
+        for bi, bond in enumerate(self.bonds):
+            a, b, _, __ = _bond_unpack(bond)
+            na = next((n for n in self.nodes if n["id"] == a), None)
+            nb = next((n for n in self.nodes if n["id"] == b), None)
+            if not na or not nb:
+                continue
+            x1, y1 = float(na["pos"].x()), float(na["pos"].y())
+            x2, y2 = float(nb["pos"].x()), float(nb["pos"].y())
+            hit = False
+            for i in range(9):
+                t = i / 8.0
+                if path.contains(QPointF(x1 + (x2 - x1) * t, y1 + (y2 - y1) * t)):
+                    hit = True
+                    break
+            if hit:
+                buds.add(bi)
+        self.selected_bond_indices = buds
+
+    def _apply_lasso_selection_from_points(self) -> None:
+        """Update atom/bond selection from the in-progress widget-space lasso polyline."""
+        from PyQt5.QtCore import QPointF
+
+        path = self._lasso_path_model()
+        if len(getattr(self, "_lasso_points", []) or []) < 3 or path.isEmpty():
+            rect_nodes: list[int] = []
+            self.selected_bond_indices = set()
+        else:
+            rect_nodes = [
+                n["id"] for n in self.nodes if path.contains(QPointF(float(n["pos"].x()), float(n["pos"].y())))
+            ]
+            self._sync_selected_bonds_from_lasso_path(path)
+        base_nodes = self._select_additive_base_nodes
+        base_bonds = self._select_additive_base_bonds
+        if base_nodes is not None and base_bonds is not None:
+            seen = set(base_nodes)
+            self.selected_nodes = list(base_nodes) + [nid for nid in rect_nodes if nid not in seen]
+            self.selected_bond_indices = set(base_bonds) | set(self.selected_bond_indices)
+        else:
+            self.selected_nodes = rect_nodes
 
     def _atoms_for_selection_move(self) -> set[int]:
         """Atoms to translate: explicitly selected plus endpoints of selected bonds."""
@@ -421,6 +508,9 @@ class SketchWidget(SketchWidgetEventsMixin, SketchWidgetPaintMixin, SketchWidget
         return base
 
     def _max_bond_order_sum_for_node(self, n: dict[str, Any], fc: int) -> int:
+        ab_cap = contracted_max_bonds(n.get("abbrev"))
+        if ab_cap is not None:
+            return int(ab_cap)
         if _is_wildcard_node(n):
             els = _normalize_wildcard_elements(n)
             return max(self._max_bond_order_sum(el, fc) for el in els)
@@ -565,17 +655,63 @@ class SketchWidget(SketchWidgetEventsMixin, SketchWidgetPaintMixin, SketchWidget
             pass
 
     # ---------- Valence checks ----------
-    def _max_valence(self, element: str) -> int:
+    def _valence_list_for_element(self, element: str) -> list[int]:
+        """RDKit allowed valences for *element* (ascending), or empty if unknown."""
+        if element in ("H", "D", "T"):
+            return [1]
+        try:
+            pt = Chem.GetPeriodicTable()
+            an = pt.GetAtomicNumber(element)
+            if an <= 0:
+                return []
+            return sorted({int(v) for v in pt.GetValenceList(an) if int(v) > 0})
+        except Exception:
+            return []
+
+    def _default_valence(self, element: str) -> int:
+        """Common / lowest preferred valence (e.g. S=2), not the hypervalent maximum."""
         if element in ("H", "D", "T"):
             return 1
         try:
             pt = Chem.GetPeriodicTable()
             an = pt.GetAtomicNumber(element)
-            if an <= 0:
-                return 8
-            dv = pt.GetDefaultValence(an)
-            if dv > 0:
-                return dv
+            if an > 0:
+                dv = pt.GetDefaultValence(an)
+                if dv > 0:
+                    return int(dv)
+        except Exception:
+            pass
+        vlist = self._valence_list_for_element(element)
+        if vlist:
+            return min(vlist)
+        if element in ("Na", "K", "Rb", "Cs", "Li"):
+            return 1
+        if element in ("Mg", "Ca", "Sr", "Ba"):
+            return 2
+        if element in ("Zn", "Cd", "Hg", "Cu", "Ag", "Au", "Ni", "Pd", "Pt", "Co"):
+            return 4
+        return 4
+
+    def _max_valence(self, element: str) -> int:
+        """
+        Maximum allowed sum of incident bond orders (validation ceiling).
+
+        Uses RDKit's valence-list high end so sulfonamides / sulfones (S=6) and
+        phosphates (P=5/7) are legal. Do **not** use this for implicit-H counts —
+        see ``_target_valence_for_implicit_h``.
+        """
+        if element in ("H", "D", "T"):
+            return 1
+        vlist = self._valence_list_for_element(element)
+        if vlist:
+            return max(vlist)
+        try:
+            pt = Chem.GetPeriodicTable()
+            an = pt.GetAtomicNumber(element)
+            if an > 0:
+                dv = pt.GetDefaultValence(an)
+                if dv > 0:
+                    return int(dv)
         except Exception:
             pass
         if element in ("Na", "K", "Rb", "Cs", "Li"):
@@ -584,7 +720,50 @@ class SketchWidget(SketchWidgetEventsMixin, SketchWidgetPaintMixin, SketchWidget
             return 2
         if element in ("Zn", "Cd", "Hg", "Cu", "Ag", "Au", "Ni", "Pd", "Pt", "Co"):
             return 4
+        if element in ("P", "As"):
+            return 5
+        if element in ("S", "Se", "Te"):
+            return 6
         return 8
+
+    def _target_valence_for_implicit_h(self, element: str, bond_sum: int, fc: int) -> int:
+        """
+        Valence used to estimate implicit H / condensed labels / lone pairs.
+
+        Chooses the smallest allowed valence ≥ current bond-order sum so divalent
+        sulfur (disulfides, thioethers) stays at 2 (not SH₄), while S with two
+        S=O doubles targets 6.
+        """
+        need = max(0, int(bond_sum))
+        if fc != 0 and element in ("N", "O", "S", "P"):
+            # Prefer the same charge-aware caps used for validation when specialized.
+            if fc == 1 and element in ("N", "O", "S", "P"):
+                return max(need, self._max_bond_order_sum(element, fc))
+            if fc == -1 and element in ("O", "N"):
+                return max(need, self._max_bond_order_sum(element, fc))
+        vlist = self._valence_list_for_element(element)
+        if not vlist:
+            base = self._default_valence(element)
+            if fc > 0:
+                return max(need, base - fc)
+            if fc < 0:
+                return max(need, base - fc)
+            return max(need, base)
+        candidates = [v for v in vlist if v >= need]
+        target = min(candidates) if candidates else max(vlist)
+        if fc > 0:
+            return max(need, target - fc)
+        if fc < 0:
+            return max(need, target - fc)
+        return target
+
+    def _heavy_neighbor_count(self, node_id: int) -> int:
+        n = 0
+        for bond in self.bonds:
+            a, b, _o, _s = _bond_unpack(bond)
+            if a == node_id or b == node_id:
+                n += 1
+        return n
 
     def _current_valence(self, node_id: int) -> int:
         s = 0
@@ -610,23 +789,37 @@ class SketchWidget(SketchWidgetEventsMixin, SketchWidgetPaintMixin, SketchWidget
             mol, sk2rd = out
             if mol is None or mol.GetNumAtoms() == 0:
                 return
-            mol.UpdatePropertyCache(strict=False)
+            try:
+                mol.UpdatePropertyCache(strict=False)
+            except Exception:
+                pass
+            try:
+                Chem.SanitizeMol(
+                    mol,
+                    sanitizeOps=Chem.SanitizeFlags.SANITIZE_PROPERTIES
+                    | Chem.SanitizeFlags.SANITIZE_SYMMRINGS,
+                )
+            except Exception:
+                pass
             inv = {v: k for k, v in sk2rd.items()}
-            for cen in Chem.FindMolChiralCenters(
-                mol,
-                includeUnassigned=True,
-                includeCIP=True,
-                useLegacyImplementation=False,
-            ):
-                idx = cen[0]
-                if idx not in inv:
+            # Atoms that already have a wedge/hash tip (legal drawn stereo).
+            stereo_tip_ids: set[int] = set()
+            for bond in self.bonds:
+                a, _b, o, s = _bond_unpack(bond)
+                if o == 1 and s in (BOND_STEREO_WEDGE, BOND_STEREO_HASH):
+                    stereo_tip_ids.add(a)
+
+            cip_by_rd = self._assign_tetrahedral_cip(mol)
+
+            for rd_idx, tag in cip_by_rd.items():
+                if rd_idx not in inv:
                     continue
-                nid = inv[idx]
+                nid = inv[rd_idx]
                 self._chiral_center_ids.add(nid)
-                tag = cen[1] if len(cen) >= 2 else ""
                 if tag in ("R", "S"):
                     self._stereo_cip_by_node_id[nid] = str(tag)
-                else:
+                elif nid not in stereo_tip_ids:
+                    # Unassigned CIP with no drawn wedge/hash → unspecified caution.
                     self._chiral_stereo_issue_ids.add(nid)
             try:
                 ez_rd = infer_alkene_ez_for_sketch_mol(mol)
@@ -666,6 +859,9 @@ class SketchWidget(SketchWidgetEventsMixin, SketchWidgetPaintMixin, SketchWidget
         self._valence_violations = bad
         self._charge_violations = charge_bad
         self._recompute_chiral_highlights()
+        # Stereo tip / between-center cleanup may depend on freshly computed chiral ids.
+        self._ensure_bonds_sanitized()
+        self.refresh_iupac_validation()
         self._refresh_sketch_draw_metrics()
         self.update()
         if notify:
@@ -729,10 +925,37 @@ class SketchWidget(SketchWidgetEventsMixin, SketchWidgetPaintMixin, SketchWidget
             return False
         a, b, order, st = _bond_unpack(self.bonds[bi])
         new_order, new_st = self._bond_tool_order_stereo()
-        if order == new_order and st == new_st:
+        new_a, new_b = a, b
+        # ST-0.5: do not place wedge/hash between two stereocenters.
+        if (
+            new_order == 1
+            and new_st in (BOND_STEREO_WEDGE, BOND_STEREO_HASH)
+            and a in getattr(self, "_chiral_center_ids", set())
+            and b in getattr(self, "_chiral_center_ids", set())
+        ):
+            new_st = BOND_STEREO_PLAIN
+        # Tip at the atom under the cursor when applying stereo; else most substituted.
+        if new_order == 1 and new_st in (BOND_STEREO_WEDGE, BOND_STEREO_HASH):
+            tip = self.hover if isinstance(self.hover, int) else None
+            if tip == b:
+                new_a, new_b = b, a
+            elif tip == a:
+                new_a, new_b = a, b
+            else:
+                mult: set[int] = set()
+                for bond in self.bonds:
+                    xa, xb, xo, _ = _bond_unpack(bond)
+                    if xo >= 2:
+                        mult.add(xa)
+                        mult.add(xb)
+                if new_a in mult and new_b not in mult:
+                    new_a, new_b = new_b, new_a
+                elif new_a not in mult and new_b not in mult:
+                    if self._heavy_neighbor_count(new_b) > self._heavy_neighbor_count(new_a):
+                        new_a, new_b = new_b, new_a
+        if (new_a, new_b, new_order, new_st) == (a, b, order, st):
             return False
-        # Preserve wedge/hash direction when only switching between plain/wavy/dative would reset ends.
-        self.bonds[bi] = _bond_make(a, b, new_order, new_st)
+        self.bonds[bi] = _bond_make(new_a, new_b, new_order, new_st)
         self._push_undo("chg_bond", (a, b, (order, st), (new_order, new_st)))
         return True
 
@@ -773,6 +996,7 @@ class SketchWidget(SketchWidgetEventsMixin, SketchWidgetPaintMixin, SketchWidget
         self._selection_rect = None
         self._selecting = False
         self._select_start = None
+        self._lasso_points = []
         self._release_marquee_mouse_grab_if_any()
         self._stereo_label_node_ids = {int(x) for x in (payload.get("stereo_labels") or [])}
         salt_nodes = payload.get("salt_nodes")
@@ -807,11 +1031,80 @@ class SketchWidget(SketchWidgetEventsMixin, SketchWidgetPaintMixin, SketchWidget
             elif s not in BOND_STEREO_VALUES:
                 s = BOND_STEREO_PLAIN
             out.append(_bond_make(a, bo, o, s))
-        out = reorient_wedged_bonds_tip_away_from_multiples(out)
+        chiral = getattr(self, "_chiral_center_ids", None) or set()
+        out = sanitize_sketch_stereo_bonds(out, chiral_center_ids=chiral)
         if len(out) != len(self.bonds):
             self.selected_bond_indices = set()
         if out != self.bonds:
             self.bonds = out
+
+    def refresh_iupac_validation(self) -> list:
+        """Recompute IUPAC issues and soft-highlight sets; return the issue list."""
+        issues = validate_iupac_sketch(
+            self.nodes,
+            self.bonds,
+            chiral_center_ids=getattr(self, "_chiral_center_ids", set()) or set(),
+            median_bond_px=getattr(self, "_median_bond_length_px", None),
+        )
+        self._iupac_issue_atom_ids = {aid for iss in issues for aid in iss.atom_ids}
+        self._iupac_issue_bond_indices = {bi for iss in issues for bi in iss.bond_indices}
+        self._iupac_issues_summary = format_iupac_issues(issues)
+        return issues
+
+    def structure_issue_report(self) -> tuple[str, list[str]]:
+        """
+        Aggregate valence / stereo / IUPAC findings for the toolbar status control.
+
+        Returns ``(level, messages)`` where *level* is ``\"ok\"``, ``\"caution\"``,
+        or ``\"error\"``. Unspecified stereochemistry is caution; invalid valence is error.
+        """
+        errors: list[str] = []
+        cautions: list[str] = []
+
+        for n in self.nodes:
+            nid = int(n["id"])
+            if nid in getattr(self, "_valence_violations", set()):
+                el = str(n.get("element") or "?")
+                errors.append(f"Invalid valence at atom {nid} ({el}).")
+            elif nid in getattr(self, "_charge_violations", set()):
+                el = str(n.get("element") or "?")
+                errors.append(f"Charge/valence conflict at atom {nid} ({el}).")
+
+        for nid in sorted(getattr(self, "_chiral_stereo_issue_ids", set()) or ()):
+            cautions.append(f"Unspecified tetrahedral stereochemistry at atom {nid}.")
+
+        for bond in self.bonds:
+            a, b, _o, st = _bond_unpack(bond)
+            if st == BOND_STEREO_WAVY:
+                cautions.append(f"Unspecified (wavy) stereochemistry on bond {a}–{b}.")
+
+        hard_codes = frozenset({"stereo_on_multiple", "stereo_between_centers", "atom_overlap"})
+        issues = self.refresh_iupac_validation()
+        for iss in issues:
+            if iss.code in hard_codes:
+                errors.append(iss.message)
+            else:
+                cautions.append(iss.message)
+
+        def _uniq(msgs: list[str]) -> list[str]:
+            seen: set[str] = set()
+            out: list[str] = []
+            for m in msgs:
+                if m in seen:
+                    continue
+                seen.add(m)
+                out.append(m)
+            return out
+
+        errors = _uniq(errors)
+        cautions = _uniq(cautions)
+        if errors:
+            return "error", errors + [m for m in cautions if m not in errors]
+        if cautions:
+            return "caution", cautions
+        if not self.nodes:
+            return "ok", ["Empty sketch."]
+        return "ok", ["No valence or stereochemistry issues flagged."]
 
     def undo(self):
         if not self._undo:
@@ -873,6 +1166,8 @@ class SketchWidget(SketchWidgetEventsMixin, SketchWidgetPaintMixin, SketchWidget
             else:
                 nid, old_el, new_el = data[:3]
                 old_w, new_w = None, None
+            old_ab = data[5] if len(data) >= 7 else None
+            new_ab = data[6] if len(data) >= 7 else None
             n = next((n for n in self.nodes if n["id"] == nid), None)
             if n:
                 n["element"] = old_el
@@ -880,7 +1175,11 @@ class SketchWidget(SketchWidgetEventsMixin, SketchWidgetPaintMixin, SketchWidget
                     n["wildcard_els"] = list(old_w) if old_w else list(DEFAULT_WILDCARD_ELEMENTS)
                 else:
                     n.pop("wildcard_els", None)
-                self._redo.append(("chg_atom", (nid, new_el, old_el, new_w, old_w)))
+                if old_ab:
+                    n["abbrev"] = old_ab
+                else:
+                    n.pop("abbrev", None)
+                self._redo.append(("chg_atom", (nid, new_el, old_el, new_w, old_w, new_ab, old_ab)))
         elif op == "chg_charge":
             nid, old, new = data
             n = next((n for n in self.nodes if n["id"] == nid), None)
@@ -899,6 +1198,24 @@ class SketchWidget(SketchWidgetEventsMixin, SketchWidgetPaintMixin, SketchWidget
                 else:
                     n.pop("explicit_carbon", None)
                 self._redo.append(("chg_explicit_carbon", (nid, new, old)))
+        elif op == "chg_show_lone_pairs":
+            nid, old, new = data
+            n = next((n for n in self.nodes if n["id"] == nid), None)
+            if n is not None:
+                if old:
+                    n["show_lone_pairs"] = True
+                else:
+                    n.pop("show_lone_pairs", None)
+                self._redo.append(("chg_show_lone_pairs", (nid, new, old)))
+        elif op == "chg_show_oxidation_state":
+            nid, old, new = data
+            n = next((n for n in self.nodes if n["id"] == nid), None)
+            if n is not None:
+                if old:
+                    n["show_oxidation_state"] = True
+                else:
+                    n.pop("show_oxidation_state", None)
+                self._redo.append(("chg_show_oxidation_state", (nid, new, old)))
         elif op == "chg_bond":
             if len(data) == 4 and isinstance(data[2], int):
                 a, b, old_o, new_o = data
@@ -1062,6 +1379,8 @@ class SketchWidget(SketchWidgetEventsMixin, SketchWidgetPaintMixin, SketchWidget
             else:
                 nid, new_el, old_el = data[:3]
                 new_w, old_w = None, None
+            new_ab = data[5] if len(data) >= 7 else None
+            old_ab = data[6] if len(data) >= 7 else None
             n = next((n for n in self.nodes if n["id"] == nid), None)
             if n is not None:
                 n["element"] = new_el
@@ -1069,7 +1388,11 @@ class SketchWidget(SketchWidgetEventsMixin, SketchWidgetPaintMixin, SketchWidget
                     n["wildcard_els"] = list(new_w) if new_w else list(DEFAULT_WILDCARD_ELEMENTS)
                 else:
                     n.pop("wildcard_els", None)
-                self._undo.append(("chg_atom", (nid, old_el, new_el, old_w, new_w)))
+                if new_ab:
+                    n["abbrev"] = new_ab
+                else:
+                    n.pop("abbrev", None)
+                self._undo.append(("chg_atom", (nid, old_el, new_el, old_w, new_w, old_ab, new_ab)))
             self._after_sketch_edit()
             return
         if op == "chg_charge":
@@ -1099,6 +1422,28 @@ class SketchWidget(SketchWidgetEventsMixin, SketchWidgetPaintMixin, SketchWidget
                 self._undo.append(("chg_explicit_carbon", (nid, old, new)))
             self._after_sketch_edit()
             return
+        if op == "chg_show_lone_pairs":
+            nid, new, old = data
+            n = next((n for n in self.nodes if n["id"] == nid), None)
+            if n is not None:
+                if new:
+                    n["show_lone_pairs"] = True
+                else:
+                    n.pop("show_lone_pairs", None)
+                self._undo.append(("chg_show_lone_pairs", (nid, old, new)))
+            self._after_sketch_edit()
+            return
+        if op == "chg_show_oxidation_state":
+            nid, new, old = data
+            n = next((n for n in self.nodes if n["id"] == nid), None)
+            if n is not None:
+                if new:
+                    n["show_oxidation_state"] = True
+                else:
+                    n.pop("show_oxidation_state", None)
+                self._undo.append(("chg_show_oxidation_state", (nid, old, new)))
+            self._after_sketch_edit()
+            return
         if op == "move_nodes":
             moves = data
             for nid, old_pos, new_pos in moves:
@@ -1126,7 +1471,13 @@ class SketchWidget(SketchWidgetEventsMixin, SketchWidgetPaintMixin, SketchWidget
             self.place_element = element
             self.update()
 
-    def _mutate_atom_element(self, hit: dict[str, Any], new_el: str, wildcard_els: list[str] | None) -> None:
+    def _mutate_atom_element(
+        self,
+        hit: dict[str, Any],
+        new_el: str,
+        wildcard_els: list[str] | None,
+        abbrev: str | None = None,
+    ) -> None:
         """Change an existing atom (with undo). For wildcards, pass ``wildcard_els`` or None for defaults."""
         nid = hit["id"]
         n = next((x for x in self.nodes if x["id"] == nid), None)
@@ -1134,26 +1485,35 @@ class SketchWidget(SketchWidgetEventsMixin, SketchWidgetPaintMixin, SketchWidget
             return
         old_el = n["element"]
         old_w = tuple(_normalize_wildcard_elements(n)) if _is_wildcard_node(n) else None
+        old_ab = n.get("abbrev")
+        new_ab = abbrev
         if new_el == WILDCARD_ELEMENT:
             raw = list(wildcard_els) if wildcard_els else list(DEFAULT_WILDCARD_ELEMENTS)
             clean = [x for x in raw if x in WILDCARD_ELEMENT_CHOICES]
             if not clean:
                 clean = list(DEFAULT_WILDCARD_ELEMENTS)
             new_w_store = tuple(sorted(set(clean)))
-            if old_el == WILDCARD_ELEMENT and old_w == new_w_store:
+            if old_el == WILDCARD_ELEMENT and old_w == new_w_store and not old_ab:
                 return
             n["element"] = WILDCARD_ELEMENT
             n["wildcard_els"] = list(new_w_store)
             n.pop("explicit_carbon", None)
+            n.pop("abbrev", None)
+            new_ab = None
         else:
-            if old_el == new_el:
+            if old_el == new_el and old_ab == new_ab and not _is_wildcard_node(n):
                 return
             n["element"] = new_el
             n.pop("wildcard_els", None)
             if new_el != "C":
                 n.pop("explicit_carbon", None)
+            if new_ab:
+                n["abbrev"] = new_ab
+                n.pop("explicit_carbon", None)
+            else:
+                n.pop("abbrev", None)
         new_w_store = tuple(_normalize_wildcard_elements(n)) if _is_wildcard_node(n) else None
-        self._push_undo("chg_atom", (nid, old_el, new_el, old_w, new_w_store))
+        self._push_undo("chg_atom", (nid, old_el, new_el, old_w, new_w_store, old_ab, new_ab))
         self._after_sketch_edit()
 
     def _edit_wildcard_dialog(self, hit: dict[str, Any]) -> None:
@@ -1167,25 +1527,30 @@ class SketchWidget(SketchWidgetEventsMixin, SketchWidgetPaintMixin, SketchWidget
         self._mutate_atom_element(hit, WILDCARD_ELEMENT, sel)
 
     def _open_edit_atom_dialog(self, hit: dict[str, Any]) -> None:
-        hint = "*" if _is_wildcard_node(hit) else str(hit.get("element", "C"))
+        if hit.get("abbrev"):
+            hint = str(hit["abbrev"])
+        elif _is_wildcard_node(hit):
+            hint = "*"
+        else:
+            hint = str(hit.get("element", "C"))
         txt, ok = QInputDialog.getText(
             self,
             "Edit Atom",
-            "Element symbol or * for wildcard (e.g. C, N, Cl, Br, *):",
+            "Element, contracted group, or * (e.g. C, N, CF3, CF2H, SO2, Ph, OMe, *):",
             text=hint,
         )
         if not ok:
             return
-        parsed = _parse_atom_symbol_input(txt)
+        parsed = parse_edit_atom_input(txt)
         if parsed is None:
             QMessageBox.warning(
                 self,
                 "Edit Atom",
-                "Unknown symbol. Use a standard element (see the Elements toolbar), or * for wildcard.",
+                "Unknown symbol. Use an element, a contracted label (CF3, Ph, OMe, …), or * for wildcard.",
             )
             return
-        new_el, wels = parsed
-        self._mutate_atom_element(hit, new_el, wels)
+        new_el, wels, abbrev = parsed
+        self._mutate_atom_element(hit, new_el, wels, abbrev=abbrev)
 
     @staticmethod
     def _parse_formal_charge_text(raw: str) -> int | None:
@@ -1363,6 +1728,7 @@ class SketchWidget(SketchWidgetEventsMixin, SketchWidgetPaintMixin, SketchWidget
         self._selection_rect = None
         self._selecting = False
         self._select_start = None
+        self._lasso_points = []
         self._release_marquee_mouse_grab_if_any()
         self._chiral_center_ids = set()
         self._chiral_stereo_issue_ids = set()
@@ -1394,14 +1760,14 @@ class SketchWidget(SketchWidgetEventsMixin, SketchWidgetPaintMixin, SketchWidget
         margin: int | None = None,
         max_scale: float = 5.0,
         min_scale: float = 0.06,
+        *,
+        refresh: bool = True,
     ) -> bool:
         """
         Uniformly scale and translate the sketch so all atoms fit inside the widget rect with margin.
-        Does not record undo. Use from View → Fit Structure only; RDKit import uses the same bond
-        scale as hand drawing (``SKETCH_MEDIAN_BOND_PX``) and does not auto-fit here.
+        Does not record undo. Used by View → Fit Structure and ``ensure_sketch_fits_viewport``.
 
-        Returns True if positions were scaled/translated and valence/stereo were refreshed; False
-        if the sketch was left unchanged (empty sketch or viewport too small).
+        Returns True if positions were scaled/translated; False if unchanged.
         """
         if not self.nodes:
             return False
@@ -1419,7 +1785,7 @@ class SketchWidget(SketchWidgetEventsMixin, SketchWidgetPaintMixin, SketchWidget
         bw = max(maxx - minx, 40.0)
         bh = max(maxy - miny, 40.0)
         if margin is None:
-            margin = max(120, min(rw, rh) // 5)
+            margin = max(48, min(rw, rh) // 12)
         avail_w = max(float(rw - 2 * margin), 60.0)
         avail_h = max(float(rh - 2 * margin), 60.0)
         scale = min(avail_w / bw, avail_h / bh)
@@ -1428,16 +1794,58 @@ class SketchWidget(SketchWidgetEventsMixin, SketchWidgetPaintMixin, SketchWidget
         tcy = float(r.center().y())
         mx = 0.5 * (minx + maxx)
         my = 0.5 * (miny + maxy)
+        changed = False
         for n in self.nodes:
             x, y = float(n["pos"].x()), float(n["pos"].y())
             nx = int(round((x - mx) * scale + tcx))
             ny = int(round((y - my) * scale + tcy))
+            if n["pos"].x() != nx or n["pos"].y() != ny:
+                changed = True
             n["pos"] = QPoint(nx, ny)
+        if not changed and abs(scale - 1.0) < 1e-9:
+            return False
         self._view_scale = 1.0
         self._refresh_sketch_draw_metrics()
-        self._after_sketch_edit(notify=True, notify_if_valence_failed=True)
+        if refresh:
+            self._after_sketch_edit(notify=True, notify_if_valence_failed=True)
+        else:
+            self.update()
         return True
 
+    def ensure_sketch_fits_viewport(self, *, margin: int | None = None, refresh: bool = True) -> bool:
+        """
+        If any atom lies outside the canvas (with margin), scale/center so the whole sketch fits.
+
+        Does not enlarge small sketches — only shrinks/translates when needed. Safe after
+        imports, Clean Up, and large template drops.
+        """
+        if not self.nodes:
+            return False
+        r = self.rect()
+        rw, rh = r.width(), r.height()
+        if rw < 48 or rh < 48:
+            return False
+        pad = int(max(self.radius * 1.5, 8))
+        if margin is None:
+            margin = max(36, min(rw, rh) // 16)
+        xs = [n["pos"].x() for n in self.nodes]
+        ys = [n["pos"].y() for n in self.nodes]
+        minx, maxx = float(min(xs)) - pad, float(max(xs)) + pad
+        miny, maxy = float(min(ys)) - pad, float(max(ys)) + pad
+        inner = r.adjusted(margin, margin, -margin, -margin)
+        if (
+            minx >= inner.left()
+            and maxx <= inner.right()
+            and miny >= inner.top()
+            and maxy <= inner.bottom()
+        ):
+            return False
+        return self.fit_sketch_to_viewport(margin=margin, refresh=refresh)
+
+    def resizeEvent(self, event) -> None:  # noqa: N802
+        super().resizeEvent(event)
+        if self.nodes:
+            self.ensure_sketch_fits_viewport(refresh=False)
     def center_sketch_in_viewport(self, push_undo: bool = True) -> None:
         """Translate all atoms so the sketch bounding box is centered in the widget (undoable)."""
         if not self.nodes:
@@ -1497,23 +1905,203 @@ class SketchWidget(SketchWidgetEventsMixin, SketchWidgetPaintMixin, SketchWidget
             act.triggered.connect(self._run_group_selection_menu)
             menu.addAction(act)
 
+    def _selection_transform_atom_ids(self) -> set[int]:
+        """Atoms moved by selection transforms (explicit selection + selected-bond endpoints)."""
+        if not self.select_mode:
+            return set()
+        return self._atoms_for_selection_move()
+
+    def _selection_centroid(self, ids: set[int]) -> tuple[float, float] | None:
+        pts: list[QPoint] = []
+        for nid in ids:
+            n = next((x for x in self.nodes if x["id"] == nid), None)
+            if n is not None:
+                pts.append(n["pos"])
+        if not pts:
+            return None
+        return (
+            sum(float(p.x()) for p in pts) / len(pts),
+            sum(float(p.y()) for p in pts) / len(pts),
+        )
+
+    def _apply_selection_position_moves(
+        self, ids: set[int], new_pos_by_id: dict[int, QPoint]
+    ) -> bool:
+        moves: list[tuple[int, QPoint, QPoint]] = []
+        for nid in ids:
+            n = next((x for x in self.nodes if x["id"] == nid), None)
+            if n is None:
+                continue
+            newp = new_pos_by_id.get(nid)
+            if newp is None:
+                continue
+            oldp = QPoint(n["pos"].x(), n["pos"].y())
+            if oldp.x() == newp.x() and oldp.y() == newp.y():
+                continue
+            n["pos"] = newp
+            moves.append((nid, oldp, newp))
+        if not moves:
+            return False
+        self._push_undo("move_nodes", moves)
+        self._after_sketch_edit()
+        return True
+
+    def rotate_selection(self, degrees: float) -> bool:
+        """Rotate the current selection about its centroid (degrees, counterclockwise on screen)."""
+        ids = self._selection_transform_atom_ids()
+        if len(ids) < 2:
+            return False
+        cen = self._selection_centroid(ids)
+        if cen is None:
+            return False
+        cx, cy = cen
+        # Screen Y increases downward: use [cos sin; −sin cos] for visual counterclockwise.
+        ang = math.radians(float(degrees))
+        ca, sa = math.cos(ang), math.sin(ang)
+        new_pos: dict[int, QPoint] = {}
+        for nid in ids:
+            n = next((x for x in self.nodes if x["id"] == nid), None)
+            if n is None:
+                continue
+            dx = float(n["pos"].x()) - cx
+            dy = float(n["pos"].y()) - cy
+            nx = cx + dx * ca + dy * sa
+            ny = cy - dx * sa + dy * ca
+            new_pos[nid] = QPoint(int(round(nx)), int(round(ny)))
+        return self._apply_selection_position_moves(ids, new_pos)
+
+    def flip_selection_horizontal(self) -> bool:
+        """Mirror the selection across a vertical axis through its centroid."""
+        ids = self._selection_transform_atom_ids()
+        if len(ids) < 2:
+            return False
+        cen = self._selection_centroid(ids)
+        if cen is None:
+            return False
+        cx, _cy = cen
+        new_pos = {
+            nid: QPoint(int(round(2.0 * cx - float(n["pos"].x()))), int(n["pos"].y()))
+            for nid in ids
+            for n in (next((x for x in self.nodes if x["id"] == nid), None),)
+            if n is not None
+        }
+        return self._apply_selection_position_moves(ids, new_pos)
+
+    def flip_selection_vertical(self) -> bool:
+        """Mirror the selection across a horizontal axis through its centroid."""
+        ids = self._selection_transform_atom_ids()
+        if len(ids) < 2:
+            return False
+        cen = self._selection_centroid(ids)
+        if cen is None:
+            return False
+        _cx, cy = cen
+        new_pos = {
+            nid: QPoint(int(n["pos"].x()), int(round(2.0 * cy - float(n["pos"].y()))))
+            for nid in ids
+            for n in (next((x for x in self.nodes if x["id"] == nid), None),)
+            if n is not None
+        }
+        return self._apply_selection_position_moves(ids, new_pos)
+
+    def _open_rotate_selection_dialog(self) -> None:
+        ids = self._selection_transform_atom_ids()
+        if len(ids) < 2:
+            return
+        dlg = QDialog(self)
+        dlg.setWindowTitle("Rotate")
+        form = QFormLayout()
+        cw = QDoubleSpinBox()
+        cw.setRange(0.0, 3600.0)
+        cw.setDecimals(1)
+        cw.setSuffix(" °")
+        cw.setValue(0.0)
+        ccw = QDoubleSpinBox()
+        ccw.setRange(0.0, 3600.0)
+        ccw.setDecimals(1)
+        ccw.setSuffix(" °")
+        ccw.setValue(0.0)
+        form.addRow("Rotation (Clockwise)", cw)
+        form.addRow("Rotation (Counterclockwise)", ccw)
+        buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        buttons.accepted.connect(dlg.accept)
+        buttons.rejected.connect(dlg.reject)
+        root = QVBoxLayout(dlg)
+        root.addLayout(form)
+        root.addWidget(buttons)
+        if dlg.exec_() != QDialog.Accepted:
+            return
+        # rotate_selection is counterclockwise; clockwise is the opposite sense.
+        degrees = float(ccw.value()) - float(cw.value())
+        if abs(degrees) < 1e-9:
+            return
+        self.rotate_selection(degrees)
+
+    def _add_selection_transform_actions(self, menu: QMenu, *, hit_ids: set[int] | None = None) -> None:
+        """Add Rotate / Flip actions when a multi-atom selection includes *hit_ids*."""
+        ids = self._selection_transform_atom_ids()
+        if len(ids) < 2:
+            return
+        if hit_ids is not None and not (ids & hit_ids):
+            return
+        menu.addSeparator()
+        act_rot = QAction("Rotate", self)
+        act_rot.setToolTip("Rotate the selected structure about its center.")
+        act_rot.triggered.connect(self._open_rotate_selection_dialog)
+        menu.addAction(act_rot)
+        act_fv = QAction("Flip Vertical", self)
+        act_fv.setToolTip("Flip the selected structure vertically.")
+        act_fv.triggered.connect(self.flip_selection_vertical)
+        menu.addAction(act_fv)
+        act_fh = QAction("Flip Horizontally", self)
+        act_fh.setToolTip("Flip the selected structure horizontally.")
+        act_fh.triggered.connect(self.flip_selection_horizontal)
+        menu.addAction(act_fh)
+
     # ---------- Placement (chain / templates) ----------
     def add_ring(
         self,
         n: int,
         center: QPoint | None = None,
-        radius: int = SKETCH_MEDIAN_BOND_PX,
+        radius: int | None = None,
         elements=None,
         bond_orders=None,
+        *,
+        bond_length: float | None = None,
     ):
+        """
+        Place an *n*-membered ring with IUPAC bond lengths (GR-1.1 / GR-3.3).
+
+        ``radius`` is legacy circumradius; when omitted, chord length equals the
+        sketch median bond (or *bond_length*). Rings with n≥9 use reentrant shapes.
+        """
         c = center if center is not None else self.rect().center()
         elems = elements if elements is not None else ["C"] * n
         orders = bond_orders if bond_orders is not None else [1] * n
+        bl = float(
+            bond_length
+            if bond_length is not None and bond_length > 0
+            else getattr(self, "_median_bond_length_px", None) or SKETCH_MEDIAN_BOND_PX
+        )
+        if radius is not None and int(radius) > 0 and n < 9:
+            # Legacy path: interpret radius as circumradius (caller may pass chord-derived R).
+            r = float(radius)
+            from .iupac_style import iupac_ring_vertex_offset
+
+            ang0 = iupac_ring_vertex_offset(n)
+            offsets = [
+                (r * math.cos(ang0 + 2 * math.pi * i / n), r * math.sin(ang0 + 2 * math.pi * i / n))
+                for i in range(n)
+            ]
+        else:
+            offsets = ring_vertex_offsets_y_up(n, bond_length=bl)
+            if n >= 9:
+                offsets = rotate_offsets_to_inward_heteroatoms(offsets, elems)
         ids: list[int] = []
         for i in range(n):
-            theta = 2 * math.pi * i / n
-            x = int(c.x() + radius * math.cos(theta))
-            y = int(c.y() + radius * math.sin(theta))
+            dx, dy = offsets[i]
+            x = int(round(c.x() + dx))
+            y = int(round(c.y() - dy))  # Y-up offsets → screen Y-down
             nid = self.next_id
             self.next_id += 1
             self.nodes.append({"id": nid, "pos": QPoint(x, y), "element": elems[i] if i < len(elems) else "C"})
@@ -1524,88 +2112,262 @@ class SketchWidget(SketchWidgetEventsMixin, SketchWidgetPaintMixin, SketchWidget
             o = orders[i] if i < len(orders) else 1
             self.bonds.append(_bond_make(a, b, o, 0))
         self.update()
+        return ids
 
-    def _compute_extension_vector(self, atom_id: int):
+    def _compute_extension_vector(
+        self, atom_id: int, *, snap: bool | None = None, new_bond_order: int | None = None
+    ):
         base = next((n for n in self.nodes if n["id"] == atom_id), None)
         if base is None:
             return (1.0, 0.0)
         bx, by = base["pos"].x(), base["pos"].y()
         neigh = [b for b in self.bonds if _bond_unpack(b)[0] == atom_id or _bond_unpack(b)[1] == atom_id]
-        angles = []
+        angles: list[float] = []
+        neigh_orders: list[int] = []
         for bond in neigh:
-            a, b, _, __ = _bond_unpack(bond)
+            a, b, o, __ = _bond_unpack(bond)
             nid = b if a == atom_id else a
             nnode = next((n for n in self.nodes if n["id"] == nid), None)
             if nnode:
                 ang = math.atan2(nnode["pos"].y() - by, nnode["pos"].x() - bx)
                 angles.append(ang)
+                neigh_orders.append(int(o))
         if not angles:
             return (1.0, 0.0)
+        do_snap = self.snap_geometry if snap is None else bool(snap)
+        if new_bond_order is None:
+            new_bond_order, _ = self._bond_tool_order_stereo()
+        new_o = int(new_bond_order)
+        max_exist = max(neigh_orders) if neigh_orders else 1
+        # Linear: alkyne (any triple) or allene (existing double + new double).
+        prefer_linear = max_exist >= 3 or new_o >= 3 or (max_exist == 2 and new_o == 2)
+        prefer_trigonal = (not prefer_linear) and (max_exist == 2 or new_o == 2)
+
+        # GR-4.2.1: single substituent on a ring atom bisects the larger exterior angle.
+        ring_atoms = self._ring_atom_ids() if hasattr(self, "_ring_atom_ids") else set()
+        if (
+            atom_id in ring_atoms
+            and len(angles) == 2
+            and not prefer_linear
+            and all(
+                (b if a == atom_id else a) in ring_atoms
+                for bond in neigh
+                for a, b, _o, _s in [_bond_unpack(bond)]
+            )
+        ):
+            vec = exterior_ring_substituent_direction(angles)
+            if vec is not None:
+                return vec
+
         if len(angles) == 1:
             neigh_ang = angles[0]
-            sign = self._angle_signs.get(atom_id, 1)
-            has_high_order = any(_bond_unpack(b)[2] >= 2 for b in neigh)
-            # sp2-style (~120° internal) vs sp3 tetrahedral (~109.5° internal)
-            dev = math.radians(60.0) if has_high_order else math.radians(180.0 - 109.47)
-            ang_new = neigh_ang + math.pi - sign * dev
-            self._angle_signs[atom_id] = -sign
+            if prefer_linear:
+                ang_new = neigh_ang + math.pi
+            else:
+                sign = self._angle_signs.get(atom_id, 1)
+                # sp2-style (~120° internal) vs sp3 tetrahedral (~109.5° internal)
+                dev = math.radians(60.0) if prefer_trigonal else math.radians(180.0 - 109.47)
+                ang_new = neigh_ang + math.pi - sign * dev
+                self._angle_signs[atom_id] = -sign
+            if do_snap:
+                ang_new = snap_extension_angle(
+                    ang_new,
+                    angles,
+                    prefer_linear=prefer_linear,
+                    prefer_trigonal=prefer_trigonal,
+                )
             return (math.cos(ang_new), math.sin(ang_new))
-        angles = sorted(angles)
+        angles_s = sorted(angles)
         max_gap = -1.0
         best_mid = 0.0
-        for i in range(len(angles)):
-            a1 = angles[i]
-            a2 = angles[(i + 1) % len(angles)] if i + 1 < len(angles) else angles[0] + 2 * math.pi
+        for i in range(len(angles_s)):
+            a1 = angles_s[i]
+            a2 = angles_s[(i + 1) % len(angles_s)] if i + 1 < len(angles_s) else angles_s[0] + 2 * math.pi
             gap = a2 - a1 if a2 >= a1 else (a2 + 2 * math.pi - a1)
             if gap > max_gap:
                 max_gap = gap
                 best_mid = a1 + gap / 2.0
         sign = self._angle_signs.get(atom_id, 1)
-        # Prefer ~120° spacing at trigonal centers (two neighbors ~60° apart in wide rings)
-        if len(angles) == 2:
-            a1, a2 = angles[0], angles[1]
+        if len(angles_s) == 2:
+            a1, a2 = angles_s[0], angles_s[1]
             d = (a2 - a1) % (2 * math.pi)
             d = min(d, 2 * math.pi - d)
-            if d < math.radians(75) and max_gap > math.radians(100):
+            if prefer_linear and abs(d - math.pi) < math.radians(25):
+                # Already near-linear neighbors; extend in largest gap (already mid).
+                pass
+            elif d < math.radians(75) and max_gap > math.radians(100):
                 best_mid += sign * math.radians(15)
                 self._angle_signs[atom_id] = -sign
         elif max_gap > math.radians(150):
             best_mid += sign * math.radians(25)
             self._angle_signs[atom_id] = -sign
+        if do_snap:
+            best_mid = snap_extension_angle(
+                best_mid,
+                angles_s,
+                prefer_linear=prefer_linear,
+                prefer_trigonal=prefer_trigonal,
+            )
         return (math.cos(best_mid), math.sin(best_mid))
 
     def _activate_select_mode_from_parent(self) -> None:
         dlg = self.parent()
         if dlg is not None and hasattr(dlg, "select_btn") and hasattr(dlg, "_toggle_select"):
+            dlg.select_btn.blockSignals(True)
+            dlg.select_btn.setChecked(True)
+            dlg.select_btn.blockSignals(False)
             dlg._toggle_select(True)
         else:
             self.select_mode = True
+            self.select_tool = "box"
             self.erase_mode = False
+            self.text_mode = False
 
     def place_template(
         self,
         name: str,
         center: QPoint | None = None,
         attach_to: int | None = None,
-        radius: int = SKETCH_MEDIAN_BOND_PX,
-        bond_length: int = SKETCH_MEDIAN_BOND_PX,
+        radius: int | None = None,
+        bond_length: int | None = None,
+        *,
+        fuse_bond: int | None = None,
     ):
         tpl = SKETCH_RING_TEMPLATES.get(name)
         if tpl is None:
             return
         n, elems, orders = tpl
+        bl = float(
+            bond_length
+            if bond_length is not None and bond_length > 0
+            else getattr(self, "_median_bond_length_px", None) or SKETCH_MEDIAN_BOND_PX
+        )
+        ring_r = (
+            int(round(ring_circumradius_for_bond_length(n, bl)))
+            if radius is None
+            else int(radius)
+        )
+
+        # --- Ortho-fusion onto an existing bond (GR-3.3.3) ---
+        if fuse_bond is not None and 0 <= int(fuse_bond) < len(self.bonds):
+            a_id, b_id, _o, _s = _bond_unpack(self.bonds[int(fuse_bond)])
+            na = next((x for x in self.nodes if x["id"] == a_id), None)
+            nb = next((x for x in self.nodes if x["id"] == b_id), None)
+            if na is None or nb is None:
+                return
+            ax, ay = float(na["pos"].x()), float(na["pos"].y())
+            bx, by = float(nb["pos"].x()), float(nb["pos"].y())
+            ring = self._ring_atom_ids() if hasattr(self, "_ring_atom_ids") else set()
+            side = 1.0
+            if a_id in ring and b_id in ring and hasattr(self, "_smallest_cycle_through_bond"):
+                face = self._smallest_cycle_through_bond(a_id, b_id)
+                if face:
+                    cx = sum(float(x["pos"].x()) for x in self.nodes if x["id"] in face) / len(face)
+                    cy = sum(float(x["pos"].y()) for x in self.nodes if x["id"] in face) / len(face)
+                    mx, my = (ax + bx) * 0.5, (ay + by) * 0.5
+                    dx, dy = bx - ax, -(by - ay)
+                    px, py = -dy, dx
+                    if px * (cx - mx) + py * (-(cy - my)) > 0:
+                        side = -1.0
+            world = fusion_ring_offsets_for_bond(
+                n,
+                bond_length=bl,
+                ax=ax,
+                ay=-ay,
+                bx=bx,
+                by=-by,
+                prefer_side=side,
+            )
+            id_map = {0: a_id, 1: b_id}
+            new_ids: list[int] = []
+            for i in range(2, n):
+                wx, wy = world[i]
+                nid = self.next_id
+                self.next_id += 1
+                self.nodes.append(
+                    {
+                        "id": nid,
+                        "pos": QPoint(int(round(wx)), int(round(-wy))),
+                        "element": elems[i] if i < len(elems) else "C",
+                    }
+                )
+                id_map[i] = nid
+                new_ids.append(nid)
+            for i in range(n):
+                ia, ib = id_map[i], id_map[(i + 1) % n]
+                if {ia, ib} == {a_id, b_id}:
+                    continue
+                o = orders[i] if i < len(orders) else 1
+                bond = _bond_make(ia, ib, o, 0)
+                self.bonds.append(bond)
+                self._push_undo("add_bond", bond)
+            for nid in new_ids:
+                nobj = next((no for no in self.nodes if no["id"] == nid), None)
+                if nobj:
+                    self._push_undo("add_node", nobj)
+            self.ensure_sketch_fits_viewport(refresh=False)
+            self._after_sketch_edit()
+            return
 
         if attach_to is not None:
-            base = next((n for n in self.nodes if n["id"] == attach_to), None)
+            base = next((node for node in self.nodes if node["id"] == attach_to), None)
             if base is None:
                 return
             bx, by = base["pos"].x(), base["pos"].y()
+            ring_atoms = self._ring_atom_ids() if hasattr(self, "_ring_atom_ids") else set()
+            ring_neigh_dirs: list[tuple[float, float]] = []
+            if attach_to in ring_atoms:
+                for bond in self.bonds:
+                    a, b, _o, _s = _bond_unpack(bond)
+                    if a != attach_to and b != attach_to:
+                        continue
+                    oid = b if a == attach_to else a
+                    if oid not in ring_atoms:
+                        continue
+                    on = next((x for x in self.nodes if x["id"] == oid), None)
+                    if on is None:
+                        continue
+                    ring_neigh_dirs.append(
+                        (float(on["pos"].x() - bx), float(-(on["pos"].y() - by)))
+                    )
+            if len(ring_neigh_dirs) >= 2:
+                offsets = spiro_second_ring_offsets_y_up(
+                    n, bond_length=bl, existing_ring_neighbor_dirs=ring_neigh_dirs
+                )
+                id_map = {0: attach_to}
+                new_ids = []
+                for i in range(1, n):
+                    dx, dy = offsets[i]
+                    nid = self.next_id
+                    self.next_id += 1
+                    self.nodes.append(
+                        {
+                            "id": nid,
+                            "pos": QPoint(int(round(bx + dx)), int(round(by - dy))),
+                            "element": elems[i] if i < len(elems) else "C",
+                        }
+                    )
+                    id_map[i] = nid
+                    new_ids.append(nid)
+                for i in range(n):
+                    ia, ib = id_map[i], id_map[(i + 1) % n]
+                    o = orders[i] if i < len(orders) else 1
+                    bond = _bond_make(ia, ib, o, 0)
+                    self.bonds.append(bond)
+                    self._push_undo("add_bond", bond)
+                for nid in new_ids:
+                    nobj = next((no for no in self.nodes if no["id"] == nid), None)
+                    if nobj:
+                        self._push_undo("add_node", nobj)
+                self.ensure_sketch_fits_viewport(refresh=False)
+                self._after_sketch_edit()
+                return
+
             ux, uy = self._compute_extension_vector(attach_to)
-            cx = int(bx + ux * (bond_length + radius))
-            cy = int(by + uy * (bond_length + radius))
-            cpt = QPoint(cx, cy)
+            c_r = ring_circumradius_for_bond_length(n, bl) if n < 9 else bl * 1.6
+            cpt = QPoint(int(bx + ux * (bl + c_r)), int(by + uy * (bl + c_r)))
             pre_nodes = [nid["id"] for nid in self.nodes]
-            self.add_ring(n, center=cpt, radius=radius, elements=elems, bond_orders=orders)
+            self.add_ring(n, center=cpt, elements=elems, bond_orders=orders, bond_length=bl)
             new_ids = [nid["id"] for nid in self.nodes if nid["id"] not in pre_nodes]
             if not new_ids:
                 return
@@ -1622,7 +2384,6 @@ class SketchWidget(SketchWidgetEventsMixin, SketchWidgetPaintMixin, SketchWidget
                 return
             bond = _bond_make(attach_to, best["id"], 1, 0)
             self.bonds.append(bond)
-            self._after_sketch_edit()
             for nid in new_ids:
                 nobj = next((no for no in self.nodes if no["id"] == nid), None)
                 if nobj:
@@ -1632,20 +2393,30 @@ class SketchWidget(SketchWidgetEventsMixin, SketchWidgetPaintMixin, SketchWidget
                 if ba in new_ids and bb in new_ids:
                     self._push_undo("add_bond", b)
             self._push_undo("add_bond", bond)
+            self.ensure_sketch_fits_viewport(refresh=False)
+            self._after_sketch_edit()
             return
 
         cpt = center if center is not None else self.rect().center()
         pre_nodes = [nid["id"] for nid in self.nodes]
-        self.add_ring(n, center=cpt, radius=radius, elements=elems, bond_orders=orders)
+        self.add_ring(
+            n,
+            center=cpt,
+            radius=ring_r if n < 9 else None,
+            elements=elems,
+            bond_orders=orders,
+            bond_length=bl,
+        )
         new_ids = [nid["id"] for nid in self.nodes if nid["id"] not in pre_nodes]
         for nid in new_ids:
-            nobj = next((no for no in self.nodes if no["id"] == nid), None)
+            nobj = next((node for node in self.nodes if node["id"] == nid), None)
             if nobj:
                 self._push_undo("add_node", nobj)
         for b in list(self.bonds):
             ba, bb, _, __ = _bond_unpack(b)
             if ba in new_ids and bb in new_ids:
                 self._push_undo("add_bond", b)
+        self.ensure_sketch_fits_viewport(refresh=False)
         self._after_sketch_edit()
 
     def add_carbon_to(self, atom_id: int, bond_length: int = SKETCH_MEDIAN_BOND_PX):
@@ -1653,55 +2424,23 @@ class SketchWidget(SketchWidgetEventsMixin, SketchWidgetPaintMixin, SketchWidget
         if base is None:
             return
         bx, by = base["pos"].x(), base["pos"].y()
-        neigh = [b for b in self.bonds if _bond_unpack(b)[0] == atom_id or _bond_unpack(b)[1] == atom_id]
-        angles = []
-        for bond in neigh:
-            a, b, _, __ = _bond_unpack(bond)
-            nid = b if a == atom_id else a
-            nnode = next((n for n in self.nodes if n["id"] == nid), None)
-            if nnode:
-                ang = math.atan2(nnode["pos"].y() - by, nnode["pos"].x() - bx)
-                angles.append(ang)
-        if not angles:
-            ux, uy = 1.0, 0.0
-        elif len(angles) == 1:
-            neigh_ang = angles[0]
-            sign = self._angle_signs.get(atom_id, 1)
-            ang_new = neigh_ang + math.pi + sign * math.radians(60)
-            self._angle_signs[atom_id] = -sign
-            ux, uy = math.cos(ang_new), math.sin(ang_new)
-        else:
-            angles = sorted(angles)
-            max_gap = -1
-            best_mid = 0
-            for i in range(len(angles)):
-                a1 = angles[i]
-                a2 = angles[(i + 1) % len(angles)] if i + 1 < len(angles) else angles[0] + 2 * math.pi
-                gap = a2 - a1 if a2 >= a1 else (a2 + 2 * math.pi - a1)
-                if gap > max_gap:
-                    max_gap = gap
-                    best_mid = a1 + gap / 2.0
-            ang_new = best_mid
-            sign = self._angle_signs.get(atom_id, 1)
-            if max_gap > math.radians(150):
-                ang_new += sign * math.radians(30)
-                self._angle_signs[atom_id] = -sign
-            ux, uy = math.cos(ang_new), math.sin(ang_new)
-
-        min_bond = max(20, SKETCH_MEDIAN_BOND_PX // 2)
-        bond_length = max(bond_length, min_bond)
+        order, pst = self._bond_tool_order_stereo()
+        ux, uy = self._compute_extension_vector(
+            atom_id,
+            snap=bool(getattr(self, "snap_geometry", True)),
+            new_bond_order=order,
+        )
+        med = float(getattr(self, "_median_bond_length_px", None) or SKETCH_MEDIAN_BOND_PX)
+        bond_length = max(int(bond_length), int(round(med * 0.5)), 20)
+        if getattr(self, "snap_geometry", True):
+            bond_length = int(round(med))
         nx = int(bx + ux * bond_length)
         ny = int(by + uy * bond_length)
-        dist = math.hypot(nx - bx, ny - by)
-        if dist < min_bond:
-            nx = int(bx + ux * min_bond)
-            ny = int(by + uy * min_bond)
 
         nid = self.next_id
         self.next_id += 1
         node = {"id": nid, "pos": QPoint(nx, ny), "element": "C"}
         self.nodes.append(node)
-        order, pst = self._bond_tool_order_stereo()
         self.bonds.append(_bond_make(atom_id, nid, order, pst))
         self.update()
 

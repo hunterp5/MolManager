@@ -9,7 +9,7 @@ from PyQt5.QtGui import QImage, QPixmap, QTransform
 from rdkit import Chem
 from rdkit.Chem.Draw import rdMolDraw2D
 
-from .acs_style import acs_sketch_style
+from .iupac_style import iupac_sketch_style
 
 # MolDraw2D Cairo surface is supersampled so bonds stay crisp when the sketch is zoomed.
 SKETCH_RDKIT_RENDER_SCALE = 3
@@ -103,16 +103,30 @@ def _configure_sketch_drawer_style(
     bond_scale_px: float,
     model_per_drawer_scale: float,
 ) -> None:
-    """Set bond and label sizes in Cairo pixels so they map to stable ACS model-space sizes."""
-    style = acs_sketch_style(bond_scale_px)
+    """Set ACS1996 + IUPAC-aligned bond/label sizes in Cairo pixels."""
+    from .iupac_style import iupac_sketch_style
+
+    style = iupac_sketch_style(bond_scale_px)
     sx_eff = max(float(model_per_drawer_scale), 1e-6)
     opts = drawer.drawOptions()
+    try:
+        rdMolDraw2D.SetACS1996Mode(opts, 1.5)
+    except Exception:
+        pass
     opts.padding = 0.02
     opts.bondLineWidth = max(1.0, style.bond_width_px / sx_eff)
+    # Keep multiple-bond offset proportional after ACS mode.
+    try:
+        opts.multipleBondOffset = max(0.12, style.double_bond_offset_px / max(style.median_bond_px, 1.0))
+    except Exception:
+        pass
     font_px = max(8, int(round(style.label_font_pt / sx_eff)))
     opts.minFontSize = font_px
     opts.maxFontSize = font_px + 2
-
+    try:
+        opts.fixedBondLength = max(10.0, style.median_bond_px / sx_eff)
+    except Exception:
+        pass
 
 def _draw_sketch_mol(
     drawer: rdMolDraw2D.MolDraw2D,

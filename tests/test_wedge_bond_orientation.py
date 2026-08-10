@@ -31,3 +31,15 @@ def test_reorient_strips_when_both_endpoints_multiply_bonded():
     ]
     out = reorient_wedged_bonds_tip_away_from_multiples(bonds)
     assert out[0] == _bond_make(3, 4, 1, 0)
+
+
+def test_reorient_tip_at_more_substituted_atom():
+    # 0 has three neighbors; 1 has two — tip should be at 0.
+    bonds = [
+        _bond_make(1, 0, 1, 1),  # tip wrongly at less-substituted 1
+        _bond_make(0, 2, 1, 0),
+        _bond_make(0, 3, 1, 0),
+        _bond_make(1, 4, 1, 0),
+    ]
+    out = reorient_wedged_bonds_tip_away_from_multiples(bonds)
+    assert out[0] == _bond_make(0, 1, 1, 1)
