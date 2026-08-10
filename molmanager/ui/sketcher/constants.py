@@ -13,6 +13,7 @@ DEFAULT_WILDCARD_ELEMENTS = ["C", "N", "O"]
 SKETCH_ELEMENT_SYMBOLS: tuple[str, ...] = (
     "H",
     "D",
+    "T",
     "C",
     "N",
     "O",
@@ -76,7 +77,47 @@ WILDCARD_ELEMENT_CHOICES = SKETCH_ELEMENT_SYMBOLS
 
 ELEMENT_UPPER_MAP: dict[str, str] = {s.upper(): s for s in SKETCH_ELEMENT_SYMBOLS}
 
-# Side-panel element buttons with informal periodic-table headings.
+# Full informal PT families for every sketchable symbol (customize + left-panel grouping).
+ELEMENT_FAMILY_GROUPS: tuple[tuple[str, tuple[str, ...]], ...] = (
+    ("Hydrogen Isotopes", ("H", "D", "T")),
+    ("Alkali Metals", ("Li", "Na", "K", "Rb", "Cs")),
+    ("Alkaline Earth Metals", ("Mg", "Ca", "Sr", "Ba")),
+    ("Boron Group", ("B", "Al", "Ga", "Tl")),
+    ("Carbon Group", ("C", "Si", "Ge", "Sn", "Pb")),
+    ("Pnictogens", ("N", "P", "As", "Sb", "Bi")),
+    ("Chalcogens", ("O", "S", "Se", "Te")),
+    ("Halogens", ("F", "Cl", "Br", "I")),
+    (
+        "Transition Metals",
+        (
+            "Ti",
+            "V",
+            "Cr",
+            "Mn",
+            "Fe",
+            "Co",
+            "Ni",
+            "Cu",
+            "Zn",
+            "Mo",
+            "Ru",
+            "Rh",
+            "Pd",
+            "Ag",
+            "Cd",
+            "W",
+            "Re",
+            "Os",
+            "Ir",
+            "Pt",
+            "Au",
+            "Hg",
+        ),
+    ),
+    ("Lanthanides", ("Sm", "Eu", "Gd", "Lu")),
+)
+
+# Default left-panel buttons (subset of ELEMENT_FAMILY_GROUPS).
 TOOLBAR_ELEMENT_GROUPS: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("Hydrogen Isotopes", ("H", "D", "T")),
     ("Alkali Metals", ("Li", "Na", "K", "Cs")),
@@ -115,7 +156,11 @@ SKETCH_RING_TEMPLATES: dict[str, tuple[int, list[str], list[int]]] = {
     "Cycloundecane": (11, ["C"] * 11, [1] * 11),
     "Cyclododecane": (12, ["C"] * 12, [1] * 12),
     "Pyridine": (6, ["N"] + ["C"] * 5, [2 if i % 2 == 0 else 1 for i in range(6)]),
-    "Pyrimidine": (6, ["N", "C", "N", "C", "C", "C"], [2 if i % 2 == 0 else 1 for i in range(6)]),
+    "Pyrimidine": (
+        6,
+        ["N", "C", "N", "C", "C", "C"],
+        [2 if i % 2 == 0 else 1 for i in range(6)],
+    ),
     "Pyrazine": (6, ["N", "C", "N", "C", "C", "C"], [2, 1, 2, 1, 2, 1]),
     "Pyridazine": (6, ["N", "N", "C", "C", "C", "C"], [1, 2, 1, 2, 1, 2]),
     "Triazine": (6, ["N", "C", "N", "C", "N", "C"], [2, 1, 2, 1, 2, 1]),
