@@ -21,6 +21,7 @@ from PyQt5.QtWidgets import (
     QPushButton,
     QShortcut,
     QSizePolicy,
+    QSplitter,
     QVBoxLayout,
     QWidget,
 )
@@ -29,9 +30,16 @@ from rdkit import Chem
 
 from ...workers import ExportWorker
 
+from ..mol_viewer_3d import Molecule3DEmbedView
 from ..qt_widget_utils import make_window_minimizable
 from .chem import _parse_periodic_element_symbol
-from .constants import TOOLBAR_ELEMENT_GROUPS, WILDCARD_ELEMENT
+from .constants import WILDCARD_ELEMENT
+from .customize_elements import (
+    CustomizeElementsDialog,
+    element_groups_for_symbols,
+    load_toolbar_element_symbols,
+    save_toolbar_element_symbols,
+)
 from .toolbar_glyphs import (
     TOOLBAR_RING_TEMPLATES,
     bond_dative_icon,
@@ -53,6 +61,7 @@ from .toolbar_glyphs import (
     status_caution_icon,
     status_error_icon,
     status_ok_icon,
+    view_3d_icon,
 )
 from .bonds import (
     BOND_STEREO_DATIVE,
@@ -78,6 +87,17 @@ def _toolbar_hsep() -> QFrame:
     line.setFrameShadow(QFrame.Sunken)
     line.setFixedHeight(8)
     return line
+
+
+def _toolbar_header(text: str) -> QLabel:
+    lab = QLabel(text)
+    lab.setObjectName("SketcherToolbarHeader")
+    lab.setAlignment(Qt.AlignHCenter | Qt.AlignVCenter)
+    lab.setStyleSheet(
+        "color: palette(mid); font-size: 11px; font-weight: 600; letter-spacing: 0.3px; "
+        "padding-top: 2px; padding-bottom: 2px;"
+    )
+    return lab
 
 
 def _glyph_tool_button(
@@ -109,17 +129,25 @@ def _sketcher_preferred_dialog_size() -> tuple[int, int]:
 
 
 class SketcherDialog(QDialog):
-    def __init__(self, parent=None, initial_mol: Chem.Mol | None = None):
+    def __init__(
+        self,
+        parent=None,
+        initial_mol: Chem.Mol | None = None,
+        *,
+        element_symbols: list[str] | None = None,
+    ):
         super().__init__(parent)
         self.parent_app = parent
         if initial_mol is not None and not isinstance(initial_mol, Chem.Mol):
             initial_mol = None
         self._initial_mol = initial_mol
+        self._element_symbols_override = element_symbols
         self.setWindowTitle("Sketcher")
         self.resize(*_sketcher_preferred_dialog_size())
         self.setModal(False)
         self.setWindowModality(Qt.NonModal)
         self.setAttribute(Qt.WA_DeleteOnClose, True)
+        self._phys_props_dlg = None
 
         l = QVBoxLayout(self)
         l.setContentsMargins(0, 0, 0, 0)
@@ -282,6 +310,14 @@ class SketcherDialog(QDialog):
         )
         self._act_show_lone_pairs.toggled.connect(self._on_toggle_show_lone_pairs)
         view_menu.addAction(self._act_show_lone_pairs)
+        view_menu.addSeparator()
+        phys_props_act = QAction("Physical Properties", self)
+        phys_props_act.setToolTip(
+            "Show MW, TPSA, LogP, LogD (pH 7.4), and pKa for the current sketch; "
+            "values update when the sketch changes."
+        )
+        phys_props_act.triggered.connect(self._open_physical_properties)
+        view_menu.addAction(phys_props_act)
 
         tools = menubar.addMenu("Tools")
 
@@ -293,9 +329,17 @@ class SketcherDialog(QDialog):
         copy_smarts_act.triggered.connect(self._copy_smarts)
         tools.addAction(copy_smarts_act)
 
+        settings_menu = menubar.addMenu("Settings")
+        customize_el_act = QAction("Customize Elements", self)
+        customize_el_act.setToolTip(
+            "Choose which element buttons appear in the left element panel."
+        )
+        customize_el_act.triggered.connect(self._customize_elements)
+        settings_menu.addAction(customize_el_act)
+
         l.setMenuBar(menubar)
 
-        # --- Top glyph toolbar: modes, bonds, rings, charge ---
+        # --- Top glyph toolbar: modes, bonds, rings, charge, 3D ---
         top_bar = QHBoxLayout()
         top_bar.setSpacing(4)
         top_bar.setContentsMargins(6, 4, 6, 4)
@@ -360,6 +404,14 @@ class SketcherDialog(QDialog):
         self.charge_minus.clicked.connect(lambda checked: self._toggle_charge(-1 if checked else None))
         top_bar.addWidget(self.charge_plus)
         top_bar.addWidget(self.charge_minus)
+
+        self.tb_3d = _glyph_tool_button(
+            view_3d_icon(),
+            "Show a live 3D preview of the sketch beside the canvas.",
+        )
+        self.tb_3d.setChecked(False)
+        self.tb_3d.toggled.connect(self._toggle_3d_view)
+        top_bar.addWidget(self.tb_3d)
         top_bar.addStretch(1)
 
         self.tb_structure_status = _glyph_tool_button(
@@ -382,94 +434,33 @@ class SketcherDialog(QDialog):
         main_h.setContentsMargins(0, 0, 0, 0)
         main_h.setSpacing(0)
 
-        def _toolbar_header(text: str) -> QLabel:
-            lab = QLabel(text)
-            lab.setObjectName("SketcherToolbarHeader")
-            lab.setAlignment(Qt.AlignHCenter | Qt.AlignVCenter)
-            lab.setStyleSheet(
-                "color: palette(mid); font-size: 11px; font-weight: 600; letter-spacing: 0.3px; "
-                "padding-top: 2px; padding-bottom: 2px;"
-            )
-            return lab
-
         toolbar_outer = QVBoxLayout()
         toolbar_outer.setSpacing(4)
         toolbar_outer.setContentsMargins(8, 4, 8, 6)
         toolbar_outer.setAlignment(Qt.AlignTop | Qt.AlignHCenter)
+        self._toolbar_outer = toolbar_outer
 
         # --- Elements by informal PT family; Custom: * wildcard and ? any-element ---
         self.element_buttons: list[QPushButton] = []
         self._element_btn_by_symbol: dict[str, QPushButton] = {}
         self._element_button_group = QButtonGroup(self)
         self._element_button_group.setExclusive(True)
-        el_grid = QGridLayout()
-        el_grid.setHorizontalSpacing(4)
-        el_grid.setVerticalSpacing(3)
-        el_ncols = 4
-        btn_font = QFont("Sans", 8, QFont.Bold)
-        btn_font.setStyleHint(QFont.SansSerif)
-        grid_row = 0
-        for gi, (group_title, symbols) in enumerate(TOOLBAR_ELEMENT_GROUPS):
-            if gi > 0:
-                el_grid.addWidget(_toolbar_hsep(), grid_row, 0, 1, el_ncols)
-                grid_row += 1
-            el_grid.addWidget(_toolbar_header(group_title), grid_row, 0, 1, el_ncols)
-            grid_row += 1
-            for i, el in enumerate(symbols):
-                b = QPushButton(el)
-                b.setCheckable(True)
-                b.setProperty("sketch_element", el)
-                b.setFont(btn_font)
-                b.setFixedSize(28, 26)
-                b.setStyleSheet("padding: 0px;")
-                row, col = i // el_ncols, i % el_ncols
-                if el == "C":
-                    b.setToolTip(
-                        "Carbon: click empty space to place C; click another C to extend a chain; "
-                        "click any other atom to replace it with carbon."
-                    )
-                elif el == "D":
-                    b.setToolTip("Deuterium (hydrogen isotope).")
-                elif el == "T":
-                    b.setToolTip("Tritium (hydrogen isotope).")
-                else:
-                    b.setToolTip(f"Place {el} ({group_title}).")
-                b.clicked.connect(lambda checked, e=el: self._on_element_tool_clicked(e, checked))
-                self._element_button_group.addButton(b)
-                el_grid.addWidget(b, grid_row + row, col)
-                self.element_buttons.append(b)
-                self._element_btn_by_symbol[el] = b
-            grid_row += (len(symbols) + el_ncols - 1) // el_ncols
-
-        el_grid.addWidget(_toolbar_hsep(), grid_row, 0, 1, el_ncols)
-        grid_row += 1
-        el_grid.addWidget(_toolbar_header("Custom"), grid_row, 0, 1, el_ncols)
-        grid_row += 1
-
-        self.tb_wildcard = QPushButton("*")
-        self.tb_wildcard.setCheckable(True)
-        self.tb_wildcard.setFont(btn_font)
-        self.tb_wildcard.setToolTip(
-            "Wildcard atom: SMARTS query over selected elements. Right-click a wildcard to edit choices."
-        )
-        self.tb_wildcard.setFixedSize(28, 26)
-        self.tb_wildcard.setStyleSheet("padding: 0px;")
-        self.tb_wildcard.toggled.connect(self._on_wildcard_tool_toggled)
-
-        self.tb_any_element = QPushButton("?")
-        self.tb_any_element.setCheckable(True)
-        self.tb_any_element.setFont(btn_font)
-        self.tb_any_element.setToolTip(
-            "Type any periodic-table element symbol (e.g. Au, Ru, Se) to place or replace atoms."
-        )
-        self.tb_any_element.setFixedSize(28, 26)
-        self.tb_any_element.setStyleSheet("padding: 0px;")
-        self.tb_any_element.clicked.connect(self._on_any_element_tool_clicked)
+        self._el_btn_font = QFont("Sans", 8, QFont.Bold)
+        self._el_btn_font.setStyleHint(QFont.SansSerif)
+        self._el_ncols = 4
+        self._el_grid = QGridLayout()
+        self._el_grid.setHorizontalSpacing(4)
+        self._el_grid.setVerticalSpacing(3)
         self._any_element_symbol: str | None = None
-
-        el_grid.addWidget(self.tb_wildcard, grid_row, 0)
-        el_grid.addWidget(self.tb_any_element, grid_row, 1)
-        toolbar_outer.addLayout(el_grid)
+        self.tb_wildcard = QPushButton("*")
+        self.tb_any_element = QPushButton("?")
+        toolbar_outer.addLayout(self._el_grid)
+        initial_els = (
+            list(self._element_symbols_override)
+            if self._element_symbols_override is not None
+            else load_toolbar_element_symbols()
+        )
+        self._populate_element_toolbar(initial_els)
 
         toolbar_widget = QWidget()
         toolbar_widget.setObjectName("SketcherToolbarPanel")
@@ -487,10 +478,27 @@ class SketcherDialog(QDialog):
         self.canvas.select_mode = False
         self.canvas.setToolTip("Right-click empty canvas for templates, modes, cleanup, and zoom-related commands in the menu bar.")
         self.canvas.setFocus()
-        main_h.addWidget(self.canvas, 1)
+
+        self.view_3d = Molecule3DEmbedView(self)
+        self.view_3d.setVisible(False)
+        self.view_3d.setMinimumWidth(420)
+
+        self._canvas_splitter = QSplitter(Qt.Horizontal)
+        self._canvas_splitter.setChildrenCollapsible(False)
+        self._canvas_splitter.addWidget(self.canvas)
+        self._canvas_splitter.addWidget(self.view_3d)
+        self._canvas_splitter.setStretchFactor(0, 1)
+        self._canvas_splitter.setStretchFactor(1, 1)
+        main_h.addWidget(self._canvas_splitter, 1)
         l.addLayout(main_h)
 
+        self._3d_refresh_timer = QTimer(self)
+        self._3d_refresh_timer.setSingleShot(True)
+        self._3d_refresh_timer.setInterval(350)
+        self._3d_refresh_timer.timeout.connect(self._refresh_3d_view_now)
+
         self.canvas.sketchChanged.connect(self._update_sketch_status)
+        self.canvas.sketchChanged.connect(self._schedule_3d_refresh)
         self.tb_erase.blockSignals(True)
         self.tb_erase.setChecked(False)
         self.tb_erase.blockSignals(False)
@@ -898,6 +906,129 @@ class SketcherDialog(QDialog):
         self.canvas.show_lone_pairs = bool(checked)
         self.canvas.update()
 
+    def _clear_element_grid_widgets(self) -> None:
+        """Remove element-panel widgets; keep wildcard/? buttons for reuse."""
+        while self._el_grid.count():
+            item = self._el_grid.takeAt(0)
+            w = item.widget()
+            if w is None:
+                continue
+            if w is self.tb_wildcard or w is self.tb_any_element:
+                w.setParent(None)
+                continue
+            if isinstance(w, QPushButton) and w.property("sketch_element"):
+                self._element_button_group.removeButton(w)
+            w.deleteLater()
+        self.element_buttons.clear()
+        self._element_btn_by_symbol.clear()
+
+    def _populate_element_toolbar(self, symbols: list[str]) -> None:
+        """Build left-panel element buttons for ``symbols`` (plus Custom * / ?)."""
+        self._visible_element_symbols = list(symbols)
+        self._clear_element_grid_widgets()
+        el_ncols = self._el_ncols
+        btn_font = self._el_btn_font
+        grid_row = 0
+        groups = element_groups_for_symbols(symbols)
+        for gi, (group_title, group_symbols) in enumerate(groups):
+            if gi > 0:
+                self._el_grid.addWidget(_toolbar_hsep(), grid_row, 0, 1, el_ncols)
+                grid_row += 1
+            self._el_grid.addWidget(_toolbar_header(group_title), grid_row, 0, 1, el_ncols)
+            grid_row += 1
+            for i, el in enumerate(group_symbols):
+                b = QPushButton(el)
+                b.setCheckable(True)
+                b.setProperty("sketch_element", el)
+                b.setFont(btn_font)
+                b.setFixedSize(28, 26)
+                b.setStyleSheet("padding: 0px;")
+                row, col = i // el_ncols, i % el_ncols
+                if el == "C":
+                    b.setToolTip(
+                        "Carbon: click empty space to place C; click another C to extend a chain; "
+                        "click any other atom to replace it with carbon."
+                    )
+                elif el == "D":
+                    b.setToolTip("Deuterium (hydrogen isotope).")
+                elif el == "T":
+                    b.setToolTip("Tritium (hydrogen isotope).")
+                else:
+                    b.setToolTip(f"Place {el} ({group_title}).")
+                b.clicked.connect(lambda checked, e=el: self._on_element_tool_clicked(e, checked))
+                self._element_button_group.addButton(b)
+                self._el_grid.addWidget(b, grid_row + row, col)
+                self.element_buttons.append(b)
+                self._element_btn_by_symbol[el] = b
+            grid_row += (len(group_symbols) + el_ncols - 1) // el_ncols
+
+        self._el_grid.addWidget(_toolbar_hsep(), grid_row, 0, 1, el_ncols)
+        grid_row += 1
+        self._el_grid.addWidget(_toolbar_header("Custom"), grid_row, 0, 1, el_ncols)
+        grid_row += 1
+
+        self.tb_wildcard.setCheckable(True)
+        self.tb_wildcard.setFont(btn_font)
+        self.tb_wildcard.setToolTip(
+            "Wildcard atom: SMARTS query over selected elements. Right-click a wildcard to edit choices."
+        )
+        self.tb_wildcard.setFixedSize(28, 26)
+        self.tb_wildcard.setStyleSheet("padding: 0px;")
+        try:
+            self.tb_wildcard.toggled.disconnect()
+        except TypeError:
+            pass
+        self.tb_wildcard.toggled.connect(self._on_wildcard_tool_toggled)
+
+        self.tb_any_element.setCheckable(True)
+        self.tb_any_element.setFont(btn_font)
+        self.tb_any_element.setToolTip(
+            "Type any periodic-table element symbol (e.g. Au, Ru, Se) to place or replace atoms."
+        )
+        self.tb_any_element.setFixedSize(28, 26)
+        self.tb_any_element.setStyleSheet("padding: 0px;")
+        try:
+            self.tb_any_element.clicked.disconnect()
+        except TypeError:
+            pass
+        self.tb_any_element.clicked.connect(self._on_any_element_tool_clicked)
+
+        self._el_grid.addWidget(self.tb_wildcard, grid_row, 0)
+        self._el_grid.addWidget(self.tb_any_element, grid_row, 1)
+
+        # Drop place-tool if the selected element was removed from the panel.
+        place = getattr(self.canvas, "place_element", None) if hasattr(self, "canvas") else None
+        if place and place not in self._element_btn_by_symbol and place != WILDCARD_ELEMENT:
+            if getattr(self, "canvas", None) is not None:
+                self.canvas.place_element = None
+
+    def _customize_elements(self) -> None:
+        """Settings → Customize Elements: add/remove left-panel element buttons."""
+        current = getattr(self, "_visible_element_symbols", None) or load_toolbar_element_symbols()
+        dlg = CustomizeElementsDialog(self, selected=current)
+        if dlg.exec_() != QDialog.Accepted:
+            return
+        symbols = dlg.selected_symbols()
+        save_toolbar_element_symbols(symbols)
+        self._populate_element_toolbar(symbols)
+        if getattr(self, "_toolbar_panel", None) is not None:
+            self._toolbar_panel.adjustSize()
+
+    def _open_physical_properties(self) -> None:
+        """Open (or raise) the modeless Physical Properties window."""
+        from .physical_properties import SketchPhysicalPropertiesDialog
+
+        dlg = self._phys_props_dlg
+        if dlg is None:
+            dlg = SketchPhysicalPropertiesDialog(self)
+            self._phys_props_dlg = dlg
+            dlg.destroyed.connect(lambda *_: setattr(self, "_phys_props_dlg", None))
+            self.canvas.sketchChanged.connect(dlg.schedule_refresh)
+        dlg.show()
+        dlg.raise_()
+        dlg.activateWindow()
+        dlg.schedule_refresh()
+
     def _undo_sketch(self) -> None:
         self.canvas.undo()
         self._update_sketch_status()
@@ -1149,6 +1280,64 @@ class SketcherDialog(QDialog):
         if hasattr(self, "canvas") and self.canvas is not None:
             self.canvas.update()
         self.update()
+
+    def _toggle_3d_view(self, checked: bool) -> None:
+        """Show or hide the live 3D preview beside the sketch canvas."""
+        on = bool(checked)
+        self.view_3d.setVisible(on)
+        if on:
+            # Keep sketch + 3D comfortable: target ~half the splitter for 3D (≥420px).
+            geo = self.geometry()
+            if geo.width() < 1280:
+                self.resize(max(geo.width() + 420, 1280), max(geo.height(), 720))
+            QTimer.singleShot(0, self._apply_3d_splitter_sizes)
+            self._refresh_3d_view_now()
+            QTimer.singleShot(0, self._recenter_sketch_after_3d_layout)
+            QTimer.singleShot(120, self.view_3d.refit_view)
+            QTimer.singleShot(300, self.view_3d.refit_view)
+        else:
+            self._3d_refresh_timer.stop()
+            QTimer.singleShot(0, self._recenter_sketch_after_3d_layout)
+
+    def _apply_3d_splitter_sizes(self) -> None:
+        total = max(self._canvas_splitter.width(), 1)
+        min_3d = max(420, int(self.view_3d.minimumWidth()))
+        # Prefer ~48% for 3D, but never below min_3d when the window is wide enough.
+        w3 = max(min_3d, int(total * 0.48))
+        if w3 >= total - 280:
+            w3 = max(min_3d, total // 2)
+        self._canvas_splitter.setSizes([max(total - w3, 280), w3])
+        self.view_3d.schedule_refit()
+
+    def _recenter_sketch_after_3d_layout(self) -> None:
+        """Keep the sketched molecule centered when the canvas width changes."""
+        try:
+            self.canvas.ensure_sketch_fits_viewport(refresh=True)
+        except Exception:
+            pass
+
+    def _schedule_3d_refresh(self) -> None:
+        if not self.tb_3d.isChecked() or self.view_3d.isHidden():
+            return
+        self._3d_refresh_timer.start()
+
+    def _sketch_mol_for_3d(self):
+        ids = {n["id"] for n in self.canvas.nodes}
+        if not ids:
+            return None
+        try:
+            return self.canvas._mol_from_node_ids(ids)
+        except Exception:
+            return None
+
+    def _refresh_3d_view_now(self) -> None:
+        if not self.tb_3d.isChecked() or self.view_3d.isHidden():
+            return
+        mol = self._sketch_mol_for_3d()
+        try:
+            self.view_3d.set_molecule(mol)
+        except Exception:
+            pass
 
     def _update_sketch_status(self) -> None:
         """Refresh the pinned structure-status glyph (ok / caution / error)."""
