@@ -83,10 +83,15 @@ class SketchWidget(SketchWidgetEventsMixin, SketchWidgetPaintMixin, SketchWidget
     sketchChanged = pyqtSignal()
 
     def _sketcher_dialog_if(self):
+        """Nearest ``SketcherDialog`` ancestor (canvas may sit under a splitter)."""
         from .dialog import SketcherDialog
 
-        p = self.parent()
-        return p if isinstance(p, SketcherDialog) else None
+        w = self.parent()
+        while w is not None:
+            if isinstance(w, SketcherDialog):
+                return w
+            w = w.parent()
+        return None
 
     def __init__(self, parent: QWidget | None = None):
         super().__init__(parent)
@@ -2211,7 +2216,7 @@ class SketchWidget(SketchWidgetEventsMixin, SketchWidgetPaintMixin, SketchWidget
         return (math.cos(best_mid), math.sin(best_mid))
 
     def _activate_select_mode_from_parent(self) -> None:
-        dlg = self.parent()
+        dlg = self._sketcher_dialog_if()
         if dlg is not None and hasattr(dlg, "select_btn") and hasattr(dlg, "_toggle_select"):
             dlg.select_btn.blockSignals(True)
             dlg.select_btn.setChecked(True)
