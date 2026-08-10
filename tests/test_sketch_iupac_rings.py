@@ -215,6 +215,7 @@ def test_macrocycle_load_from_mol_keeps_rdkit_table_layout(qapp) -> None:  # noq
 def test_macrocycle_stereo_cip_assigned_on_load(qapp) -> None:  # noqa: ARG001
     from rdkit import Chem
 
+    from molmanager.ui.sketcher.bonds import BOND_STEREO_HASH, BOND_STEREO_WEDGE, _bond_unpack
     from molmanager.ui.sketcher.widget import SketchWidget
 
     mol = Chem.MolFromSmiles("C[C@H]1CCCC[C@@H](C)CCCCC1")
@@ -225,12 +226,40 @@ def test_macrocycle_stereo_cip_assigned_on_load(qapp) -> None:  # noqa: ARG001
     assert len(w._chiral_center_ids) >= 2
     assert set(w._stereo_cip_by_node_id.values()) <= {"R", "S"}
     assert len(w._stereo_cip_by_node_id) >= 2
+    # ST-1.2 / ST-1.3: methyl substituents carry wedge/hash; no stereo-H clutter.
+    assert not any(n.get("element") == "H" for n in w.nodes)
+    stereo_bonds = [
+        _bond_unpack(b)
+        for b in w.bonds
+        if _bond_unpack(b)[3] in (BOND_STEREO_WEDGE, BOND_STEREO_HASH)
+    ]
+    assert stereo_bonds
     # Wedges present → no unspecified-stereo cautions at those centers.
     assert not (w._chiral_center_ids & w._chiral_stereo_issue_ids)
 
 
-def test_load_draws_stereochemical_hydrogens(qapp) -> None:  # noqa: ARG001
-    """Table→sketcher load must draw stereo-H so centers are not left unspecified."""
+def test_macrocycle_skips_stereo_h_when_substituent_can_wedge() -> None:
+    """ST-1.2/1.3: omit stereo-H when a substituent can take the wedge/hash."""
+    from rdkit import Chem
+
+    from molmanager.ui.sketcher.sketch_rdkit import SketchWidgetRdkitMixin
+
+    macro = Chem.MolFromSmiles("C[C@H]1CCCCCCCCCC1")
+    Chem.AssignStereochemistry(macro, cleanIt=True, force=True)
+    assert SketchWidgetRdkitMixin._stereocenter_indices_needing_explicit_h(macro) == []
+
+    acyclic = Chem.MolFromSmiles("C[C@H](O)N")
+    Chem.AssignStereochemistry(acyclic, cleanIt=True, force=True)
+    assert SketchWidgetRdkitMixin._stereocenter_indices_needing_explicit_h(acyclic) == []
+
+    # Ring-only ligands + H: no exocyclic wedge target → stereo-H is required.
+    fused = Chem.MolFromSmiles("C1CC[C@H]2CCCC[C@@H]12")
+    Chem.AssignStereochemistry(fused, cleanIt=True, force=True)
+    assert SketchWidgetRdkitMixin._stereocenter_indices_needing_explicit_h(fused) != []
+
+
+def test_load_omits_stereo_h_when_substituent_can_wedge(qapp) -> None:  # noqa: ARG001
+    """Table→sketcher: wedge on a heavy substituent; no explicit stereo-H (ST-1.2)."""
     from rdkit import Chem
 
     from molmanager.ui.sketcher.bonds import BOND_STEREO_HASH, BOND_STEREO_WEDGE, _bond_unpack
@@ -241,9 +270,31 @@ def test_load_draws_stereochemical_hydrogens(qapp) -> None:  # noqa: ARG001
     w.resize(800, 600)
     assert w.load_from_rdkit_mol(mol)
     w._after_sketch_edit(notify=False)
+    assert not any(n.get("element") == "H" for n in w.nodes)
+    stereo_bonds = [
+        _bond_unpack(b)
+        for b in w.bonds
+        if _bond_unpack(b)[3] in (BOND_STEREO_WEDGE, BOND_STEREO_HASH)
+    ]
+    assert stereo_bonds
+    assert w._chiral_center_ids
+    assert not (w._chiral_center_ids & w._chiral_stereo_issue_ids)
+
+
+def test_load_draws_stereo_h_when_ring_only_ligands(qapp) -> None:  # noqa: ARG001
+    """When no exocyclic wedge target exists, draw stereo-H (ST-1.2 / ST-1.3)."""
+    from rdkit import Chem
+
+    from molmanager.ui.sketcher.bonds import BOND_STEREO_HASH, BOND_STEREO_WEDGE, _bond_unpack
+    from molmanager.ui.sketcher.widget import SketchWidget
+
+    mol = Chem.MolFromSmiles("C1CC[C@H]2CCCC[C@@H]12")
+    w = SketchWidget()
+    w.resize(800, 600)
+    assert w.load_from_rdkit_mol(mol)
+    w._after_sketch_edit(notify=False)
     h_ids = {n["id"] for n in w.nodes if n.get("element") == "H"}
-    assert h_ids, "expected an explicit stereochemical hydrogen"
-    # Stereo bond should involve the H (typical WedgeMolBonds placement).
+    assert h_ids, "expected stereochemical hydrogens when only ring ligands exist"
     stereo_bonds = [
         _bond_unpack(b)
         for b in w.bonds
@@ -251,8 +302,6 @@ def test_load_draws_stereochemical_hydrogens(qapp) -> None:  # noqa: ARG001
     ]
     assert stereo_bonds
     assert any(a in h_ids or b in h_ids for a, b, _o, _s in stereo_bonds)
-    assert w._chiral_center_ids
-    assert not (w._chiral_center_ids & w._chiral_stereo_issue_ids)
 
 
 def test_stereo_with_wedge_not_unspecified_caution(qapp) -> None:  # noqa: ARG001
