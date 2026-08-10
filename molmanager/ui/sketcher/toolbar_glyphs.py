@@ -5,7 +5,7 @@ from __future__ import annotations
 import math
 
 from PyQt5.QtCore import QPointF, QRectF, Qt
-from PyQt5.QtGui import QBrush, QColor, QIcon, QPainter, QPainterPath, QPen, QPixmap, QPolygonF
+from PyQt5.QtGui import QBrush, QColor, QFont, QIcon, QPainter, QPainterPath, QPen, QPixmap, QPolygonF
 
 
 _INK = QColor(40, 40, 40)
@@ -394,6 +394,20 @@ def mode_erase_icon(size: int = _ICON_SIZE) -> QIcon:
                 ]
             )
         )
+
+    return _paint_icon(paint, size)
+
+
+def view_3d_icon(size: int = _ICON_SIZE) -> QIcon:
+    """Bold “3D” label for the sketcher live 3D preview toggle."""
+
+    def paint(p: QPainter, s: float) -> None:
+        f = QFont("Arial")
+        f.setBold(True)
+        f.setPixelSize(max(10, int(round(s * 0.48))))
+        p.setFont(f)
+        p.setPen(_INK)
+        p.drawText(QRectF(0.0, 0.0, s, s), int(Qt.AlignCenter), "3D")
 
     return _paint_icon(paint, size)
 
