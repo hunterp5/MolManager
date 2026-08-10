@@ -450,6 +450,7 @@ class ChemicalTableApp(
         self.table.setAlternatingRowColors(True)
         vh = self.table.verticalHeader()
         vh.setDefaultSectionSize(STRUCTURE_ROW_DEFAULT_HEIGHT)
+        vh.setDefaultAlignment(Qt.AlignCenter)
         vh.setContextMenuPolicy(Qt.CustomContextMenu)
         vh.customContextMenuRequested.connect(self.show_row_header_menu)
         # Reorder rows by dragging row numbers (same idea as movable column headers).

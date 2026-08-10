@@ -550,6 +550,8 @@ class CompoundTableModel(QAbstractTableModel):
         if col == 0:
             if role in (Qt.DisplayRole, Qt.EditRole):
                 return str(oid)
+            if role == Qt.TextAlignmentRole:
+                return int(Qt.AlignCenter)
             return None
 
         if col == self.STRUCTURE_COL:
@@ -649,6 +651,10 @@ class CompoundTableModel(QAbstractTableModel):
         return base
 
     def headerData(self, section: int, orientation: Qt.Orientation, role: int = Qt.DisplayRole):  # noqa: N802
+        if role == Qt.TextAlignmentRole:
+            if orientation == Qt.Vertical:
+                return int(Qt.AlignCenter)
+            return None
         if role != Qt.DisplayRole:
             return None
         if orientation == Qt.Horizontal and 0 <= section < len(self._headers):
@@ -1623,6 +1629,7 @@ class CompoundTableView(QTableView):
         self.setSelectionMode(QTableView.ExtendedSelection)
         self.verticalHeader().setDefaultSectionSize(STRUCTURE_ROW_DEFAULT_HEIGHT)
         self.verticalHeader().setSectionsMovable(True)
+        self.verticalHeader().setDefaultAlignment(Qt.AlignCenter)
         hh = self.horizontalHeader()
         hh.setSectionsMovable(True)
         hh.setFirstSectionMovable(False)

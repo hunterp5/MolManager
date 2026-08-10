@@ -8,6 +8,7 @@ from PyQt5.QtWidgets import QAction, QActionGroup, QApplication, QDialog, QFrame
 from .hotkeys import apply_hotkey_to_action
 from .theme import (
     THEME_DARK,
+    THEME_GROOVY,
     THEME_LIGHT,
     apply_application_font_pt,
     apply_application_theme,
@@ -26,7 +27,7 @@ from .theme import (
 
 
 class GuiSettingsMixin:
-    """Settings → GUI: light/dark mode."""
+    """Settings → GUI: light / dark / groovy mode."""
 
     def _init_gui_settings(self) -> None:
         self._hotkey_actions: dict[str, QAction] = {}
@@ -36,12 +37,16 @@ class GuiSettingsMixin:
         apply_application_theme(QApplication.instance(), self._gui_theme)
         self._act_theme_light = QAction("Light Mode", self, checkable=True)
         self._act_theme_dark = QAction("Dark Mode", self, checkable=True)
+        self._act_theme_groovy = QAction("Groovy Mode", self, checkable=True)
         self._theme_action_group = QActionGroup(self)
         self._theme_action_group.setExclusive(True)
         self._theme_action_group.addAction(self._act_theme_light)
         self._theme_action_group.addAction(self._act_theme_dark)
+        self._theme_action_group.addAction(self._act_theme_groovy)
         self._act_theme_light.triggered.connect(lambda: self._set_gui_theme(THEME_LIGHT))
         self._act_theme_dark.triggered.connect(lambda: self._set_gui_theme(THEME_DARK))
+        # Always re-apply so choosing Groovy again (after another mode) rolls a new palette.
+        self._act_theme_groovy.triggered.connect(lambda: self._set_gui_theme(THEME_GROOVY))
         self._sync_theme_menu_checks()
         self._refresh_filter_card_styles()
         self._table_font_pt = load_saved_table_font_pt()
@@ -91,26 +96,34 @@ class GuiSettingsMixin:
         gui_menu = settings_menu.addMenu("&GUI")
         gui_menu.addAction(self._act_theme_light)
         gui_menu.addAction(self._act_theme_dark)
+        gui_menu.addAction(self._act_theme_groovy)
         settings_menu.addSeparator()
         settings_menu.addAction(QAction("&Font…", self, triggered=self.open_font_dialog))
         settings_menu.addAction(QAction("&Hotkeys…", self, triggered=self.open_hotkeys_dialog))
 
     def _sync_theme_menu_checks(self) -> None:
-        dark = current_theme_name() == THEME_DARK
-        self._act_theme_light.setChecked(not dark)
-        self._act_theme_dark.setChecked(dark)
+        name = current_theme_name()
+        self._act_theme_light.setChecked(name == THEME_LIGHT)
+        self._act_theme_dark.setChecked(name == THEME_DARK)
+        self._act_theme_groovy.setChecked(name == THEME_GROOVY)
+
+    def refresh_theme(self) -> None:
+        """Hook for ``refresh_open_windows_theme`` — refresh main-window chrome."""
+        self._refresh_filter_card_styles()
+        self._refresh_structure_delegate_theme()
+        self._apply_table_font()
+        table = getattr(self, "table", None)
+        if table is not None:
+            table.viewport().update()
 
     def _set_gui_theme(self, theme: str) -> None:
         theme = apply_application_theme(QApplication.instance(), theme)
         self._gui_theme = theme
         save_theme_name(theme)
         self._sync_theme_menu_checks()
-        self._refresh_filter_card_styles()
-        self._refresh_structure_delegate_theme()
+        # apply_application_theme already refreshes open windows; ensure main chrome is current.
+        self.refresh_theme()
         apply_application_font_pt(int(getattr(self, "_app_font_pt", 0) or default_app_font_pt()))
-        self._apply_table_font()
-        if hasattr(self, "table") and self.table is not None:
-            self.table.viewport().update()
 
     def _preview_app_font(self, pt: int) -> None:
         self._app_font_pt = int(pt)

@@ -24,6 +24,15 @@ def test_append_row_and_oid_index(model: CompoundTableModel):
     assert (model.cell_text(0, model._headers.index("SMILES")) or "") == "CC"
 
 
+def test_oid_and_row_header_centered(model: CompoundTableModel):
+    model.append_row(42, {"SMILES": "C", "MW": "16"})
+    oid_idx = model.index(0, 0)
+    assert model.data(oid_idx, Qt.DisplayRole) == "42"
+    assert model.data(oid_idx, Qt.TextAlignmentRole) == int(Qt.AlignCenter)
+    assert model.headerData(0, Qt.Vertical, Qt.TextAlignmentRole) == int(Qt.AlignCenter)
+    assert model.headerData(0, Qt.Vertical, Qt.DisplayRole) == "1"
+
+
 def test_set_cell_text_updates_value(model: CompoundTableModel):
     model.append_row(1, {"SMILES": "C", "MW": "16"})
     model.set_cell_text(1, "MW", "16.043")
