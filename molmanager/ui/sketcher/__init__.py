@@ -12,7 +12,7 @@ diastereomer sets are not auto-enumerated; see ``docs/STEREO_AND_ISOMERISM.md``.
 orientation, and interactive angle/length snap — see ``docs/IUPAC_DRAWING.md``.
 
 **Bonds & valence:** internal bond ``order`` is 1–3 (single/double/triple); valence warnings sum incident
-orders vs element/charge caps. Aromatic RDKit bonds load as order 1; see ``docs/VALENCE_BONDS_AND_AROMATICITY.md``.
+orders vs element/charge caps. Aromatic rings are Kekulized on load so doubles are preserved; see ``docs/VALENCE_BONDS_AND_AROMATICITY.md``.
 """
 
 from .constants import (
