@@ -1,17 +1,9 @@
 ## Samples
 
-This folder contains small example datasets you can load into **molmanager**.
+This folder contains example datasets you can load into **MolManager**.
 
 ### Files
-- **`example_structures.sdf`**: a tiny SDF you can open via **File → Open…**
-- **`example_chem.db`**: an example SQLite database with a `chemicals` table.
+- **`fda_approved_physprops.sdf`**: FDA-approved compounds with physical property columns (open via **File → Open…**).
+- **`fda_approved_physprops.cms`**: matching MolManager session for the same set (**File → Open Session…**).
 
-### Load the SQLite sample
-In molmanager:
-- Go to **External → Connect to SQL database…**
-- Click **SQLite…** and select `samples/example_chem.db`
-- Choose **Table name** and enter `chemicals`
-- Click **Load into main table**
-
-The sample includes a `SMILES` column, so molmanager will render structures automatically.
-
+Large BindingDB extracts under this folder (if present) are gitignored and are not part of the distributed repo.

@@ -37,13 +37,11 @@ htmlcov/
 .mypy_cache/
 .ruff_cache/
 
-# IDE (machine-local; keep .cursor/rules if you version team rules)
+# IDE / editor (machine-local)
 .idea/
 
-# Cursor (machine-local; keep project rules in version control)
-.cursor/*
-!.cursor/rules/
-!.cursor/rules/**
+# Cursor (local state and project rules — do not version)
+.cursor/
 
 # Optional CLI binaries placed under resources/bin (keep README + .gitkeep)
 molmanager/resources/bin/**/*
