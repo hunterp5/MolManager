@@ -388,12 +388,8 @@ class SessionMixin:
                 if callable(widths):
                     content_min, _pref = widths()
                 if saved_w >= content_min and callable(ensure):
-                    from PyQt5.QtCore import QTimer
-
                     QTimer.singleShot(0, lambda: ensure(int(saved_w)))
                 elif callable(ensure):
-                    from PyQt5.QtCore import QTimer
-
                     QTimer.singleShot(0, ensure)
         co = doc.get("column_logical_order")
         if isinstance(co, list):

@@ -81,6 +81,10 @@ class MolManagerConfig:
     descriptor_process_pool_min_rows: int
     descriptor_fp_process_pool_min_rows: int
     descriptor_process_pool_batch_size: int
+    fast_prepare_batch_size: int
+    fast_prepare_process_pool_min_rows: int
+    render2d_process_workers: int | None
+    render2d_batch_size: int
     background_job_poll_ms: int
     bulk_update_defer_color_cache_rows: int
     protomer_process_workers: int | None
@@ -96,6 +100,7 @@ class MolManagerConfig:
     bounds_async_min_rows: int
     bounds_chunk_rows: int
     ingest_gui_chunk_size: int
+    ingest_gui_subslice_rows: int
     ingest_gui_time_budget_ms: int
     ingest_worker_batch_size: int
     ingest_csv_text_first: bool
@@ -120,6 +125,10 @@ class MolManagerConfig:
     memory_guard_conf_max_rows: int
     memory_guard_conf_max_row_confs: int
     memory_guard_cluster_max_rows: int
+    memory_guard_diverse_max_rows: int
+    memory_guard_diverse_max_kn: int
+    diverse_subset_exact_max_rows: int
+    diverse_subset_fast_candidate_cap: int
     memory_guard_fp_matrix_max_cells: int
     memory_guard_enum_max_products: int
     memory_guard_dimred_max_points: int
@@ -164,6 +173,17 @@ def load_config() -> MolManagerConfig:
         descriptor_process_pool_batch_size=_env_int(
             "MOLMANAGER_DESCRIPTOR_PROCESS_POOL_BATCH_SIZE", 32, lo=1, hi=512
         ),
+        render2d_process_workers=_env_optional_positive_int(
+            "MOLMANAGER_RENDER2D_PROCESS_WORKERS", lo=1, hi=32
+        ),
+        # Molecules per child-process render task. One-per-task made the parent process the
+        # throughput ceiling, so extra workers bought nothing.
+        render2d_batch_size=_env_int("MOLMANAGER_RENDER2D_BATCH_SIZE", 64, lo=1, hi=4096),
+        fast_prepare_batch_size=_env_int("MOLMANAGER_FAST_PREPARE_BATCH_SIZE", 64, lo=1, hi=2048),
+        # Below this row count, child-process startup costs more than the work it saves.
+        fast_prepare_process_pool_min_rows=_env_int(
+            "MOLMANAGER_FAST_PREPARE_PROCESS_POOL_MIN_ROWS", 250, lo=2, hi=10_000_000
+        ),
         background_job_poll_ms=_env_int(
             "MOLMANAGER_BACKGROUND_JOB_POLL_MS", 500, lo=100, hi=5000
         ),
@@ -199,6 +219,7 @@ def load_config() -> MolManagerConfig:
             "MOLMANAGER_BOUNDS_CHUNK_ROWS", 2000, lo=64, hi=100_000
         ),
         ingest_gui_chunk_size=_env_int("MOLMANAGER_INGEST_GUI_CHUNK", 512, lo=16, hi=10_000),
+        ingest_gui_subslice_rows=_env_int("MOLMANAGER_INGEST_GUI_SUBSLICE", 128, lo=16, hi=10_000),
         ingest_gui_time_budget_ms=_env_int("MOLMANAGER_INGEST_GUI_TIME_MS", 30, lo=5, hi=200),
         ingest_worker_batch_size=_env_int("MOLMANAGER_INGEST_WORKER_BATCH", 2000, lo=64, hi=20_000),
         ingest_csv_text_first=_env_bool("MOLMANAGER_INGEST_CSV_TEXT_FIRST", True),
@@ -211,7 +232,7 @@ def load_config() -> MolManagerConfig:
         perf_log_every=_env_int("MOLMANAGER_PERF_LOG_EVERY", 25, lo=1, hi=10_000),
         sqlite_backend_page_size=_env_int("MOLMANAGER_SQLITE_BACKEND_PAGE_SIZE", 5000, lo=100, hi=200_000),
         auto_render_2d_max_rows=_env_int(
-            "MOLMANAGER_AUTO_RENDER_2D_MAX_ROWS", 8_000, lo=0, hi=10_000_000
+            "MOLMANAGER_AUTO_RENDER_2D_MAX_ROWS", 25_000, lo=0, hi=10_000_000
         ),
         structure_render_lazy_min_rows=_env_int(
             "MOLMANAGER_STRUCTURE_RENDER_LAZY_MIN_ROWS", 5_000, lo=500, hi=10_000_000
@@ -236,7 +257,9 @@ def load_config() -> MolManagerConfig:
         ),
         table_undo_limit=_env_int("MOLMANAGER_TABLE_UNDO_LIMIT", 50, lo=1, hi=500),
         structure_render_png_max_entries=_env_int(
-            "MOLMANAGER_STRUCTURE_RENDER_PNG_MAX", 20_000, lo=0, hi=10_000_000
+            # 0 = unlimited PNG bytes in the lazy structure store (decoded QPixmaps stay LRU-capped).
+            # A positive cap was dropping Fast Prepare / Render 2D drawings beyond this limit.
+            "MOLMANAGER_STRUCTURE_RENDER_PNG_MAX", 0, lo=0, hi=10_000_000
         ),
         memory_guard_conf_max_rows=_env_int(
             "MOLMANAGER_MEMORY_GUARD_CONF_MAX_ROWS", 5_000, lo=1, hi=10_000_000
@@ -246,6 +269,21 @@ def load_config() -> MolManagerConfig:
         ),
         memory_guard_cluster_max_rows=_env_int(
             "MOLMANAGER_MEMORY_GUARD_CLUSTER_MAX_ROWS", 25_000, lo=100, hi=10_000_000
+        ),
+        memory_guard_diverse_max_rows=_env_int(
+            "MOLMANAGER_MEMORY_GUARD_DIVERSE_MAX_ROWS", 200_000, lo=100, hi=10_000_000
+        ),
+        memory_guard_diverse_max_kn=_env_int(
+            "MOLMANAGER_MEMORY_GUARD_DIVERSE_MAX_KN",
+            50_000_000,
+            lo=1_000,
+            hi=2_000_000_000,
+        ),
+        diverse_subset_exact_max_rows=_env_int(
+            "MOLMANAGER_DIVERSE_SUBSET_EXACT_MAX_ROWS", 50_000, lo=100, hi=10_000_000
+        ),
+        diverse_subset_fast_candidate_cap=_env_int(
+            "MOLMANAGER_DIVERSE_SUBSET_FAST_CANDIDATE_CAP", 10_000, lo=100, hi=500_000
         ),
         memory_guard_fp_matrix_max_cells=_env_int(
             "MOLMANAGER_MEMORY_GUARD_FP_MATRIX_MAX_CELLS",

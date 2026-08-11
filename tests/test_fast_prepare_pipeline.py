@@ -1,0 +1,140 @@
+"""Fast Prepare end-to-end: one fused job writes the neutralized parent and the fragments column."""
+
+from __future__ import annotations
+
+from rdkit import Chem
+
+from molmanager.ui.main_window import ChemicalTableApp
+from molmanager.utils import mol_to_canonical_smiles
+from molmanager.workers.fast_prepare import FastPrepareWorker
+
+SALTS = [
+    "CC(=O)Oc1ccccc1C(=O)[O-].[Na+]",
+    "C[NH+](C)C.[Cl-]",
+    "c1ccccc1",
+]
+
+
+def _seeded_window() -> ChemicalTableApp:
+    win = ChemicalTableApp()
+    win.headers = ["ID_HIDDEN", "Structure", "SMILES"]
+    win._table_model.set_headers(list(win.headers))
+    win.table.setColumnHidden(0, True)
+    for smiles in SALTS:
+        mol = Chem.MolFromSmiles(smiles)
+        assert mol is not None
+        oid = win.next_oid
+        win.next_oid += 1
+        cells = win._ingest_store_mol(oid, mol)
+        cells["SMILES"] = smiles
+        win._table_model.append_row(oid, cells)
+    return win
+
+
+def _run_fast_prepare_inline(win: ChemicalTableApp, src: str) -> None:
+    """Run the worker synchronously, then feed its results to the real GUI handler."""
+    prepare_col = getattr(win, "_fast_prepare_source", src)
+    need_smiles = win._fast_prepare_target_is_text(prepare_col)
+    is_smiles = src != "Structure"
+    if is_smiles:
+        col = win.headers.index(src)
+        items = [
+            (oid, win._table_cell_text(win.get_row_by_id(oid), col))
+            for oid in win._all_oids_in_table_order()
+        ]
+    else:
+        items = [
+            (oid, win.mols.get(oid), None)
+            for oid in win._all_oids_in_table_order()
+            if win.mols.get(oid) is not None
+        ]
+
+    captured: list = []
+
+    class _Sig:
+        def __init__(self, sink):
+            self._sink = sink
+
+        def emit(self, *args):
+            self._sink(*args)
+
+    class _Recorder:
+        fast_prepared = _Sig(captured.append)
+        tool_progress = _Sig(lambda *_a: None)
+        partial_results = _Sig(lambda *_a: None)
+
+    FastPrepareWorker(
+        items,
+        _Recorder(),
+        is_smiles=is_smiles,
+        need_smiles=need_smiles,
+        process_pool_min_rows=10**9,
+    ).run()
+    assert captured, "worker emitted no results"
+    win.on_fast_prepare_finished(captured[0])
+
+
+def test_fast_prepare_structure_target_neutralizes_and_lists_fragments(qapp):  # noqa: ARG001
+    win = _seeded_window()
+    try:
+        win._fast_prepare_source = "Structure"
+        win._fast_prepare_fragments_col = "Fragments"
+        win._fast_prepare_update_target = True
+        win._fast_prepare_allowed_oids = None
+
+        _run_fast_prepare_inline(win, "Structure")
+
+        assert "Fragments" in win.headers
+        assert len(win.mols) == len(SALTS)
+        for mol in win.mols.values():
+            assert Chem.GetFormalCharge(mol) == 0
+            assert len(Chem.GetMolFrags(mol)) == 1
+
+        frag_col = win.headers.index("Fragments")
+        frag_values = {
+            win._table_cell_text(win.get_row_by_id(oid), frag_col) for oid in win.mols
+        }
+        assert mol_to_canonical_smiles(Chem.MolFromSmiles("[Cl-]")) in frag_values
+        assert "" in frag_values  # benzene has no smaller fragments
+    finally:
+        win.close()
+
+
+def test_fast_prepare_new_column_target_gets_canonical_smiles(qapp):  # noqa: ARG001
+    win = _seeded_window()
+    try:
+        target = "Largest fragment SMILES"
+        win._fast_prepare_source = target
+        win._fast_prepare_fragments_col = "Fragments"
+        win._fast_prepare_update_target = False
+        win._fast_prepare_allowed_oids = None
+
+        # A column the dialog named but that does not exist yet must still count as a text target,
+        # otherwise the worker would skip canonical SMILES and the column would be written empty.
+        assert win._fast_prepare_target_is_text(target) is True
+
+        _run_fast_prepare_inline(win, "Structure")
+
+        assert target in win.headers
+        col = win.headers.index(target)
+        values = [
+            win._table_cell_text(win.get_row_by_id(oid), col)
+            for oid in win._all_oids_in_table_order()
+        ]
+        assert all(v for v in values), f"expected SMILES in every row, got {values}"
+        for v in values:
+            parsed = Chem.MolFromSmiles(v)
+            assert parsed is not None
+            assert Chem.GetFormalCharge(parsed) == 0
+            assert len(Chem.GetMolFrags(parsed)) == 1
+    finally:
+        win.close()
+
+
+def test_fast_prepare_structure_target_is_not_text(qapp):  # noqa: ARG001
+    win = _seeded_window()
+    try:
+        assert win._fast_prepare_target_is_text("Structure") is False
+        assert win._fast_prepare_target_is_text("SMILES") is True
+    finally:
+        win.close()

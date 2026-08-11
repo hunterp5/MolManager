@@ -806,13 +806,8 @@ class ToolsSqlPredictMixin:
         picked = [int(o) for o in (picked_oids or [])]
 
         def _apply_results() -> None:
-            if ctx.get("select_subset") and picked:
-                self.select_table_oids(picked, extra_status="")
             col_name = (ctx.get("pending_column_name") or "").strip()
             if col_name and column_rows:
-                scope_oids = ctx.get("scope_oids") or set()
-                oid_map = {int(oid): rank for oid, rank in column_rows}
-                full_map = {oid: oid_map.get(oid, "") for oid in scope_oids}
                 m = self._table_model
                 nc = m.columnCount()
                 self.headers.append(col_name)
@@ -822,13 +817,34 @@ class ToolsSqlPredictMixin:
                 except Exception:
                     pass
                 try:
-                    m.fill_column_from_oid_map(col_name, full_map, default="")
+                    # Sparse write: only picked ranks (avoid BindingDB-scale full-column fill).
+                    m.set_column_text_by_oids(
+                        col_name,
+                        [(int(oid), str(rank)) for oid, rank in column_rows],
+                    )
                     self._sync_global_bounds_for_headers([col_name], refresh_filters=True)
                 finally:
                     try:
                         self.table.setUpdatesEnabled(True)
                     except Exception:
                         pass
+            # Select after column insert — inserting columns clears Qt selection.
+            # Keep an OID override so Export Selected survives filter/header churn.
+            if ctx.get("select_subset") and picked:
+                source_rows: list[int] = []
+                for oid in picked:
+                    try:
+                        row = self.get_row_by_id(int(oid))
+                    except (TypeError, ValueError):
+                        continue
+                    if row >= 0:
+                        source_rows.append(int(row))
+                self._finish_oid_override_selection(
+                    source_rows,
+                    frozenset(int(o) for o in picked),
+                    clear_oid_override=False,
+                    extra_status="",
+                )
             cache_note = ""
             if n_cached or n_computed:
                 cache_note = f" ({n_cached} cached fingerprint(s), {n_computed} computed)"

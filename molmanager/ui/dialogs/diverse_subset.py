@@ -1,27 +1,39 @@
 from __future__ import annotations
 
 from PyQt5.QtWidgets import (
+    QApplication,
     QCheckBox,
     QComboBox,
     QDialog,
     QFormLayout,
     QHBoxLayout,
     QLineEdit,
+    QMessageBox,
     QPushButton,
     QSpinBox,
     QVBoxLayout,
 )
 
+from ...config import load_config
+from ...memory_guards import check_diverse_subset_workload
 from ...rdkit_fingerprints import descriptor_onbits_column_name
 from ...workers import (
     DiverseSubsetWorker,
     SIMILARITY_FP_TYPE_LABELS,
-    build_diverse_subset_pool,
 )
 from ..qt_widget_utils import make_window_minimizable
 from .scope import selection_scope_checked
 
+_OID_SCAN_PUMP_EVERY = 4096
+_MOLS_COVERAGE_THRESHOLD = 0.9
+
 _DEFAULT_COLUMN = "Diverse subset rank"
+
+_MODE_LABELS: tuple[tuple[str, str], ...] = (
+    ("Auto (exact when small, Fast when large)", "auto"),
+    ("Exact MaxMin", "exact"),
+    ("Fast (staged prefilter + MaxMin)", "fast"),
+)
 
 
 class DiverseSubsetDialog(QDialog):
@@ -31,10 +43,10 @@ class DiverseSubsetDialog(QDialog):
         super().__init__(parent)
         self.parent_app = parent
         self.setWindowTitle("Diverse Subset")
-        self.setMinimumWidth(440)
+        self.setMinimumWidth(460)
         n_sel = len(parent._selected_logical_rows()) if parent is not None else 0
         self._have_selection = n_sel > 0
-        self._scope_oids: set[int] = set()
+        self._scope_oids: list[int] = []
         self._pending_column_name = ""
         self._onbits_column: str | None = None
 
@@ -53,6 +65,16 @@ class DiverseSubsetDialog(QDialog):
         self.fp_combo = QComboBox()
         self.fp_combo.addItems(SIMILARITY_FP_TYPE_LABELS)
         form.addRow("Fingerprint:", self.fp_combo)
+
+        self.mode_combo = QComboBox()
+        for label, _key in _MODE_LABELS:
+            self.mode_combo.addItem(label)
+        self.mode_combo.setToolTip(
+            "Exact MaxMin on the full pool. Fast prefilters (Leader / subsample) then "
+            "MaxMin on a candidate pool — better for BindingDB-scale tables. Auto picks "
+            "Exact when the pool is at or below the configured exact-row threshold."
+        )
+        form.addRow("Algorithm:", self.mode_combo)
 
         self.subset_size_spin = QSpinBox()
         self.subset_size_spin.setRange(1, 1_000_000)
@@ -96,6 +118,12 @@ class DiverseSubsetDialog(QDialog):
 
         make_window_minimizable(self)
 
+    def _selected_mode_key(self) -> str:
+        idx = int(self.mode_combo.currentIndex())
+        if 0 <= idx < len(_MODE_LABELS):
+            return _MODE_LABELS[idx][1]
+        return "auto"
+
     def _refresh_structure_sources(self) -> None:
         self.src_combo.clear()
         if self.parent_app is None:
@@ -118,29 +146,77 @@ class DiverseSubsetDialog(QDialog):
             cnt += 1
         return f"{name} ({cnt})"
 
-    def _scope_oids_in_table(self, only_selected: bool) -> set[int]:
+    def _scope_oids_in_table(self, only_selected: bool) -> list[int]:
+        """OID list in table order (cheap; no RDKit). Pumps the event loop on large tables."""
         allowed = self.parent_app._selected_oids_set() if only_selected else None
-        oids: set[int] = set()
+        oids: list[int] = []
         m = self.parent_app._table_model
-        for r in range(m.rowCount()):
+        n = m.rowCount()
+        for r in range(n):
+            if r > 0 and r % _OID_SCAN_PUMP_EVERY == 0:
+                QApplication.processEvents()
             oid = m.row_oid(r)
             if allowed is not None and oid not in allowed:
                 continue
-            oids.add(oid)
+            oids.append(int(oid))
         return oids
 
-    def _onbits_values_for_scope(self, scope_oids: set[int]) -> dict[int, str] | None:
+    def _onbits_values_single_pass(self, oid_set: set[int]) -> dict[int, str] | None:
+        """One table scan for on-bits cells (avoids per-OID row lookups on BindingDB)."""
         col = self._onbits_column
-        if not col or col not in self.parent_app.headers:
+        app = self.parent_app
+        if not col or col not in app.headers:
             return None
-        hidx = self.parent_app.headers.index(col)
+        hidx = app.headers.index(col)
+        m = app._table_model
         out: dict[int, str] = {}
-        for oid in scope_oids:
-            row = self.parent_app.get_row_by_id(oid)
-            if row < 0:
+        n = m.rowCount()
+        for r in range(n):
+            if r > 0 and r % _OID_SCAN_PUMP_EVERY == 0:
+                QApplication.processEvents()
+            oid = int(m.row_oid(r))
+            if oid not in oid_set:
                 continue
-            out[int(oid)] = self.parent_app._table_cell_text(row, hidx) or ""
+            out[oid] = app._table_cell_text(r, hidx) or ""
         return out
+
+    def _prepare_structure_inputs(
+        self,
+        oids: list[int],
+        src: str,
+        only_selected: bool,
+    ) -> tuple[dict[int, object] | None, list[tuple[int, str]] | None]:
+        """
+        Snapshot molecules / structure text on the GUI thread for the worker.
+
+        Prefer ``app.mols`` (no Qt from the worker). Fall back to SMILES/text collection
+        with event pumping when coverage is low or the source is a data column.
+        """
+        app = self.parent_app
+        mols_src = getattr(app, "mols", None) or {}
+        mols_by_oid: dict[int, object] = {}
+        for i, oid in enumerate(oids):
+            if i > 0 and i % _OID_SCAN_PUMP_EVERY == 0:
+                QApplication.processEvents()
+            mol = mols_src.get(oid)
+            if mol is not None:
+                mols_by_oid[int(oid)] = mol
+
+        n = len(oids)
+        coverage = (len(mols_by_oid) / n) if n else 1.0
+        if src == "Structure" and coverage >= _MOLS_COVERAGE_THRESHOLD:
+            return mols_by_oid, None
+
+        app.status_label.setText("Diverse subset: collecting structures…")
+        QApplication.processEvents()
+        texts = app.collect_scoped_table_smiles(
+            src,
+            only_selected=only_selected,
+            process_ui_every=256,
+        )
+        if mols_by_oid and coverage > 0:
+            return mols_by_oid, texts
+        return (mols_by_oid or None), texts
 
     def run(self) -> None:
         app = self.parent_app
@@ -152,68 +228,105 @@ class DiverseSubsetDialog(QDialog):
             )
             return
 
-        self._scope_oids = self._scope_oids_in_table(only_sel)
-        rows = app.collect_scoped_table_mols(src, only_selected=only_sel)
-        valid = [(oid, mol) for oid, mol in rows if mol is not None]
-        if not valid:
-            app.status_label.setText("Diverse subset: no valid structures in this scope.")
+        app.status_label.setText("Diverse subset: preparing…")
+        QApplication.processEvents()
+
+        # Cheap OID enumeration only — molecule resolution uses snapshots, not Qt in the worker.
+        oids = self._scope_oids_in_table(only_sel)
+        if not oids:
+            app.status_label.setText("Diverse subset: no rows in this scope.")
             return
 
         fp_choice = self.fp_combo.currentText()
+        mode = self._selected_mode_key()
         self._onbits_column = self._matching_onbits_column(fp_choice)
-        onbits_by_oid = self._onbits_values_for_scope(self._scope_oids)
         use_onbits_col = self._onbits_column is not None
-        pool, err = build_diverse_subset_pool(
-            valid,
-            fp_choice,
-            onbits_by_oid=onbits_by_oid,
-            require_onbits_column=use_onbits_col,
-        )
-        if err:
-            app.status_label.setText(f"Diverse subset: {err}")
-            return
-        if not pool:
-            app.status_label.setText(
-                "Diverse subset: no eligible rows "
-                + (
-                    f"with values in “{self._onbits_column}”."
-                    if use_onbits_col
-                    else "in this scope."
+        onbits_by_oid = None
+        if use_onbits_col:
+            onbits_by_oid = self._onbits_values_single_pass(set(oids))
+
+        # Approximate eligible count for guards (on-bits filter applied in worker).
+        n_est = len(oids)
+        if use_onbits_col and onbits_by_oid is not None:
+            n_est = 0
+            for oid in oids:
+                t = (onbits_by_oid.get(oid, "") or "").strip()
+                if not t or t.upper() == "N/A":
+                    continue
+                try:
+                    int(float(t))
+                except ValueError:
+                    continue
+                n_est += 1
+            if n_est <= 0:
+                app.status_label.setText(
+                    f"Diverse subset: no eligible rows with values in “{self._onbits_column}”."
                 )
-            )
-            return
+                return
 
         k = int(self.subset_size_spin.value())
         if k < 1:
             app.status_label.setText("Diverse subset: subset size must be at least 1.")
             return
-        if k > len(pool):
+        if k > n_est:
             app.status_label.setText(
-                f"Diverse subset: subset size ({k}) exceeds eligible rows ({len(pool)})."
+                f"Diverse subset: subset size ({k}) exceeds eligible rows ({n_est})."
             )
             return
 
+        guard = check_diverse_subset_workload(n_est, k, mode=mode)
+        if not guard.ok:
+            QMessageBox.warning(self, "Diverse Subset", guard.message)
+            return
+
+        cfg = load_config()
+        if mode == "exact" and n_est > int(cfg.diverse_subset_exact_max_rows):
+            reply = QMessageBox.question(
+                self,
+                "Diverse Subset",
+                f"Exact MaxMin on {n_est:,} compounds may be slow. Continue anyway?\n\n"
+                f"Tip: choose Fast or Auto for large libraries "
+                f"(exact threshold {cfg.diverse_subset_exact_max_rows:,}).",
+                QMessageBox.Yes | QMessageBox.No,
+                QMessageBox.No,
+            )
+            if reply != QMessageBox.Yes:
+                return
+
+        mols_by_oid, structure_texts = self._prepare_structure_inputs(oids, src, only_sel)
+        if not mols_by_oid and not structure_texts:
+            app.status_label.setText(
+                "Diverse subset: no molecules available for this structure source "
+                "(load/prepare structures first)."
+            )
+            return
+
+        self._scope_oids = list(oids)
         self._pending_column_name = ""
         if self.add_column_cb.isChecked():
             self._pending_column_name = self._unique_column_name(self.column_name_edit.text())
 
         app._diverse_subset_run_ctx = {
-            "scope_oids": set(self._scope_oids),
             "pending_column_name": self._pending_column_name,
             "select_subset": self.select_subset_cb.isChecked(),
         }
         prog = app._tool_progress_state
         sig = app._ensure_diverse_subset_signals()
-        app._begin_tool_progress("Diverse subset", len(pool))
+        app._begin_tool_progress("Diverse subset", n_est)
         app.process_queue.enqueue(
-            f"Diverse subset ({len(pool)} rows, pick {k})",
-            lambda ev, r=valid, c=fp_choice, kk=k, s=sig, st=prog, ob=onbits_by_oid, uo=use_onbits_col: DiverseSubsetWorker(
-                r,
+            f"Diverse subset ({n_est} rows, pick {k}, {mode})",
+            lambda ev, o=list(oids), c=fp_choice, kk=k, s=sig, st=prog, ob=onbits_by_oid, uo=use_onbits_col, src_col=src, md=mode, mb=mols_by_oid, tx=structure_texts: DiverseSubsetWorker(
+                None,
                 c,
                 kk,
                 s,
+                oids=o,
+                structure_source=src_col,
+                mols_by_oid=mb,
+                structure_texts=tx,
                 onbits_by_oid=ob,
                 use_onbits_column=uo,
+                mode=md,
                 cancel_event=ev,
                 progress_state=st,
             ),

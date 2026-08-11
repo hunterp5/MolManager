@@ -101,57 +101,24 @@ class IngestExportMixin:
         if getattr(self, "_export_busy", False):
             QMessageBox.warning(self, "Export", "An export is already in progress.")
             return
-        t_mols = dict(self.mols)
         # Export in current visual column order (but always include ID/Structure first).
         vis_cols = self._visual_logical_columns()
         ordered_headers = [self.headers[i] for i in vis_cols if i < len(self.headers)]
-        t_heads = ["ID_HIDDEN", "Structure"] + [h for h in ordered_headers if h not in ("ID_HIDDEN", "Structure")]
+        t_heads = ["ID_HIDDEN", "Structure"] + [
+            h for h in ordered_headers if h not in ("ID_HIDDEN", "Structure")
+        ]
         if selected:
-            sel = self.table.selectionModel()
-            selected_rows = []
-            if sel is not None:
-                selected_rows = [i.row() for i in sel.selectedRows()]
-                if not selected_rows:
-                    items = sel.selectedIndexes()
-                    selected_rows = [i.row() for i in items]
-
-            # Large programmatic selections may use an OID override without highlighting all rows.
-            oids_override = getattr(self, "_selected_oids_override", None)
-            if not selected_rows and oids_override:
-                try:
-                    oids_override = [int(o) for o in oids_override]
-                except Exception:
-                    oids_override = []
-                if not oids_override:
-                    QMessageBox.information(
-                        self,
-                        "Export Selected",
-                        "No rows are selected. Select one or more rows in the table first.",
-                    )
-                    return
-                t_mols = {oid: self.mols.get(oid) for oid in oids_override}
-                rows = []
-            else:
-                if not selected_rows:
-                    QMessageBox.information(
-                        self,
-                        "Export Selected",
-                        "No rows are selected. Select one or more rows in the table first.",
-                    )
-                    return
-                rows = sorted(set(int(r) for r in selected_rows))
-            t_mols = {}
-            if rows:
-                for r in rows:
-                    tr = self._table_model.cell_text(r, 0)
-                    if tr.isdigit():
-                        k = int(tr)
-                        t_mols[k] = self.mols.get(k)
-            items = sel.selectedIndexes() if sel is not None else []
-            cols = list(set(i.column() for i in items))
-            cols = [c for c in cols if c > 1]  # never export the hidden ID or Structure via selection list
-            cols.sort(key=self.table.horizontalHeader().visualIndex)
-            t_heads = ["ID_HIDDEN", "Structure"] + [self.headers[c] for c in cols if c < len(self.headers)]
+            # Prefer logical selection (OID override / Qt / model highlights) so tool
+            # picks like Diverse Subset export correctly even when Qt selection was cleared.
+            oids = sorted(int(o) for o in self._selected_oids_set())
+            if not oids:
+                QMessageBox.information(
+                    self,
+                    "Export Selected",
+                    "No rows are selected. Select one or more rows in the table first.",
+                )
+                return
+            t_mols = {oid: self.mols.get(oid) for oid in oids}
         else:
             oids_all = self._table_model.all_oids_in_order()
             t_mols = {oid: self.mols.get(oid) for oid in oids_all}

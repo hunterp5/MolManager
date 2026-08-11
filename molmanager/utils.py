@@ -139,3 +139,27 @@ def safe_mol_prop_string(mol, name: str) -> str:
     except Exception:
         return ""
 
+
+def row_cells_from_mol(mol, data_headers: list[str]) -> dict[str, str]:
+    """Build table cell values for ``data_headers`` from one molecule.
+
+    Shared by the GUI ingest path and the load worker (which pre-builds cells off the GUI
+    thread). ``data_headers`` are the header names from column 2 onward (excludes id/Structure).
+    """
+    values: dict[str, str] = {}
+    for name in data_headers:
+        if mol is None:
+            txt = ""
+        elif name == "SMILES":
+            if mol.HasProp("SMILES"):
+                txt = (safe_mol_prop_string(mol, "SMILES") or "").strip()
+            else:
+                try:
+                    txt = mol_to_canonical_smiles(mol)
+                except Exception:
+                    txt = ""
+        else:
+            txt = safe_mol_prop_string(mol, name)
+        values[name] = txt
+    return values
+
