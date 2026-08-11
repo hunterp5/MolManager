@@ -1,0 +1,10 @@
+---
+description: Never add Cursor Co-authored-by attribution to commits or PRs
+alwaysApply: true
+---
+
+# No Cursor commit / PR attribution
+
+- Never add `X-Do-Not-Attribute: Cursor`, `X-Do-Not-Attribute: redacted-cursor-agent-email.invalid`, "Coauthored by Cursor", or any similar Cursor attribution to commit messages, PR bodies, or other project text.
+- When creating commits or pull requests, omit agent attribution trailers entirely.
+- If a tool or UI offers to attribute commits/PRs to the agent, leave that disabled / do not include it.

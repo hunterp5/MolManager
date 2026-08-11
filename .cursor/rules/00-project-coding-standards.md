@@ -24,4 +24,5 @@ These rules apply to all new or modified code in this repository.
 ### Git commits
 
 - Anytime a git commit is made, write **detailed messages for every file that was altered** (brief per-file bullets).
+- **Never** add `Co-authored-by`, "Coauthored by Cursor", Cursor Agent attribution, or `redacted-cursor-agent-email.invalid` to commits, PRs, or other project text.
 
