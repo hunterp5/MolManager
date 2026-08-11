@@ -1,4 +1,4 @@
-"""Generate random numbers for table columns (Tools → Random Number)."""
+"""Generate random numbers for table columns (Tools → Random → Number)."""
 
 from __future__ import annotations
 

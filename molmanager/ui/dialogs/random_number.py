@@ -1,4 +1,4 @@
-"""Random Number column dialog (Tools → Random Number)."""
+"""Random Number column dialog (Tools → Random → Number)."""
 
 from __future__ import annotations
 

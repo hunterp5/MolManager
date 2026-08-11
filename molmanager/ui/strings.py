@@ -14,6 +14,7 @@ TOOL_REMOVE_EXPLICIT_HYDROGENS = "Remove Explicit Hydrogens"
 TOOL_REACTION_ENUMERATION = "Reaction Based Enumeration"
 TOOL_MMP = "Matched Molecular Pairs"
 TOOL_RANDOM_NUMBER = "Random Number"
+TOOL_RANDOM_MOLECULE = "Random Molecule"
 
 # Column header when importing similarity hits (PubChem, ChEMBL, SureChEMBL) or adding FP similarity scores.
 COLUMN_TANIMOTO_SIMILARITY = "Tanimoto Similarity"

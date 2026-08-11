@@ -7,6 +7,7 @@ from PyQt5.QtWidgets import QAction, QActionGroup, QApplication, QDialog, QFrame
 
 from .hotkeys import apply_hotkey_to_action
 from .theme import (
+    THEME_CUSTOM,
     THEME_DARK,
     THEME_GROOVY,
     THEME_LIGHT,
@@ -21,13 +22,14 @@ from .theme import (
     load_saved_table_font_pt,
     load_saved_theme_name,
     save_app_font_pt,
+    save_custom_palette_colors,
     save_table_font_pt,
     save_theme_name,
 )
 
 
 class GuiSettingsMixin:
-    """Settings → GUI: light / dark / groovy mode."""
+    """Settings → GUI: light / dark / groovy / custom mode."""
 
     def _init_gui_settings(self) -> None:
         self._hotkey_actions: dict[str, QAction] = {}
@@ -38,15 +40,18 @@ class GuiSettingsMixin:
         self._act_theme_light = QAction("Light Mode", self, checkable=True)
         self._act_theme_dark = QAction("Dark Mode", self, checkable=True)
         self._act_theme_groovy = QAction("Groovy Mode", self, checkable=True)
+        self._act_theme_custom = QAction("Custom Mode", self, checkable=True)
         self._theme_action_group = QActionGroup(self)
         self._theme_action_group.setExclusive(True)
         self._theme_action_group.addAction(self._act_theme_light)
         self._theme_action_group.addAction(self._act_theme_dark)
         self._theme_action_group.addAction(self._act_theme_groovy)
+        self._theme_action_group.addAction(self._act_theme_custom)
         self._act_theme_light.triggered.connect(lambda: self._set_gui_theme(THEME_LIGHT))
         self._act_theme_dark.triggered.connect(lambda: self._set_gui_theme(THEME_DARK))
         # Always re-apply so choosing Groovy again (after another mode) rolls a new palette.
         self._act_theme_groovy.triggered.connect(lambda: self._set_gui_theme(THEME_GROOVY))
+        self._act_theme_custom.triggered.connect(self._on_custom_theme_triggered)
         self._sync_theme_menu_checks()
         self._refresh_filter_card_styles()
         self._table_font_pt = load_saved_table_font_pt()
@@ -97,6 +102,11 @@ class GuiSettingsMixin:
         gui_menu.addAction(self._act_theme_light)
         gui_menu.addAction(self._act_theme_dark)
         gui_menu.addAction(self._act_theme_groovy)
+        gui_menu.addAction(self._act_theme_custom)
+        gui_menu.addSeparator()
+        act_customize = QAction("Customize Colors…", self, triggered=self.open_custom_theme_dialog)
+        act_customize.setToolTip("Pick and save colors for Custom Mode.")
+        gui_menu.addAction(act_customize)
         settings_menu.addSeparator()
         settings_menu.addAction(QAction("&Font…", self, triggered=self.open_font_dialog))
         settings_menu.addAction(QAction("&Hotkeys…", self, triggered=self.open_hotkeys_dialog))
@@ -106,6 +116,27 @@ class GuiSettingsMixin:
         self._act_theme_light.setChecked(name == THEME_LIGHT)
         self._act_theme_dark.setChecked(name == THEME_DARK)
         self._act_theme_groovy.setChecked(name == THEME_GROOVY)
+        self._act_theme_custom.setChecked(name == THEME_CUSTOM)
+
+    def _on_custom_theme_triggered(self) -> None:
+        """Selecting Custom Mode opens the color editor, then applies the saved palette."""
+        if self.open_custom_theme_dialog():
+            return
+        # Cancelled: keep previous theme selection checked.
+        self._sync_theme_menu_checks()
+
+    def open_custom_theme_dialog(self) -> bool:
+        """Edit Custom theme colors; on Accept save and apply Custom Mode. Returns True if applied."""
+        from .dialogs.custom_theme import CustomThemeDialog
+
+        dlg = CustomThemeDialog(self)
+        if dlg.exec_() != QDialog.Accepted:
+            return False
+        save_custom_palette_colors(dlg.selected_colors())
+        self._set_gui_theme(THEME_CUSTOM)
+        if hasattr(self, "status_label"):
+            self.status_label.setText("Custom theme colors saved.")
+        return True
 
     def refresh_theme(self) -> None:
         """Hook for ``refresh_open_windows_theme`` — refresh main-window chrome."""

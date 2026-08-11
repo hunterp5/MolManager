@@ -90,6 +90,14 @@ class ToolsSqlPredictMixin:
         d.accepted.connect(lambda *_, dlg=d: self._on_random_number_dialog_accepted(dlg))
         d.show()
 
+    def open_random_molecule_dialog(self) -> None:
+        from ..dialogs import RandomMoleculeDialog
+
+        d = RandomMoleculeDialog(self)
+        self._prepare_tool_dialog(d)
+        d.setAttribute(Qt.WA_DeleteOnClose, True)
+        d.show()
+
     def _on_random_number_dialog_accepted(self, d) -> None:
         from ...random_numbers import generate_random_values
 

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import colorsys
+import json
 import random
 
 from PyQt5.QtCore import QSettings
@@ -12,10 +13,12 @@ from PyQt5.QtWidgets import QApplication, QWidget
 THEME_LIGHT = "light"
 THEME_DARK = "dark"
 THEME_GROOVY = "groovy"
+THEME_CUSTOM = "custom"
 
 _SETTINGS_ORG = "MolManager"
 _SETTINGS_APP = "MolManager"
 _SETTINGS_KEY_THEME = "gui/theme"
+_SETTINGS_KEY_CUSTOM_PALETTE = "gui/custom_palette"
 _SETTINGS_KEY_TABLE_FONT_PT = "gui/table_font_pt"
 _SETTINGS_KEY_APP_FONT_PT = "gui/app_font_pt"
 
@@ -29,6 +32,25 @@ DEFAULT_FONT_PT = 10
 # Backwards-compatible aliases (table-specific names used elsewhere).
 MIN_TABLE_FONT_PT = MIN_FONT_PT
 MAX_TABLE_FONT_PT = MAX_FONT_PT
+
+# User-editable roles for the Custom theme (key → label, QPalette role).
+CUSTOM_PALETTE_ROLES: tuple[tuple[str, str, object], ...] = (
+    ("window", "Window", QPalette.Window),
+    ("window_text", "Window text", QPalette.WindowText),
+    ("base", "Base (tables / fields)", QPalette.Base),
+    ("alternate_base", "Alternate base", QPalette.AlternateBase),
+    ("text", "Text", QPalette.Text),
+    ("button", "Button", QPalette.Button),
+    ("button_text", "Button text", QPalette.ButtonText),
+    ("highlight", "Highlight (selection)", QPalette.Highlight),
+    ("highlighted_text", "Highlighted text", QPalette.HighlightedText),
+    ("mid", "Mid (borders)", QPalette.Mid),
+    ("light", "Light", QPalette.Light),
+    ("dark", "Dark", QPalette.Dark),
+    ("link", "Link", QPalette.Link),
+    ("tooltip_base", "Tooltip background", QPalette.ToolTipBase),
+    ("tooltip_text", "Tooltip text", QPalette.ToolTipText),
+)
 
 
 def current_theme_name() -> str:
@@ -95,6 +117,8 @@ def _normalize_theme_name(theme: str | None) -> str:
         return THEME_DARK
     if raw in ("groovy", "groovy_mode", "psychedelic"):
         return THEME_GROOVY
+    if raw in ("custom", "custom_mode"):
+        return THEME_CUSTOM
     return THEME_LIGHT
 
 
@@ -109,6 +133,85 @@ def load_saved_theme_name() -> str:
 def save_theme_name(theme: str) -> None:
     name = _normalize_theme_name(theme)
     QSettings(_SETTINGS_ORG, _SETTINGS_APP).setValue(_SETTINGS_KEY_THEME, name)
+
+
+def default_custom_palette_colors() -> dict[str, str]:
+    """Default Custom theme colors seeded from the Fusion light palette."""
+    p = _light_palette()
+    out: dict[str, str] = {}
+    for key, _label, role in CUSTOM_PALETTE_ROLES:
+        out[key] = QColor(p.color(role)).name()
+    return out
+
+
+def load_saved_custom_palette_colors() -> dict[str, str]:
+    """Saved Custom theme colors merged onto the light defaults."""
+    base = default_custom_palette_colors()
+    settings = QSettings(_SETTINGS_ORG, _SETTINGS_APP)
+    raw = settings.value(_SETTINGS_KEY_CUSTOM_PALETTE, "")
+    data: dict | None = None
+    if isinstance(raw, dict):
+        data = raw
+    else:
+        text = str(raw or "").strip()
+        if text:
+            try:
+                parsed = json.loads(text)
+            except (TypeError, ValueError, json.JSONDecodeError):
+                parsed = None
+            if isinstance(parsed, dict):
+                data = parsed
+    if not data:
+        return base
+    for key, _label, _role in CUSTOM_PALETTE_ROLES:
+        val = data.get(key)
+        if not isinstance(val, str):
+            continue
+        c = QColor(val)
+        if c.isValid():
+            base[key] = c.name()
+    return base
+
+
+def save_custom_palette_colors(colors: dict[str, str]) -> dict[str, str]:
+    """Persist Custom theme colors; returns the normalized saved mapping."""
+    base = default_custom_palette_colors()
+    for key, _label, _role in CUSTOM_PALETTE_ROLES:
+        val = colors.get(key)
+        if not isinstance(val, str):
+            continue
+        c = QColor(val)
+        if c.isValid():
+            base[key] = c.name()
+    QSettings(_SETTINGS_ORG, _SETTINGS_APP).setValue(
+        _SETTINGS_KEY_CUSTOM_PALETTE,
+        json.dumps(base, separators=(",", ":"), sort_keys=True),
+    )
+    return base
+
+
+def _custom_palette(colors: dict[str, str] | None = None) -> QPalette:
+    """Build a Fusion palette from saved/edited Custom theme colors."""
+    merged = default_custom_palette_colors()
+    if colors:
+        for key, val in colors.items():
+            if key not in merged or not isinstance(val, str):
+                continue
+            c = QColor(val)
+            if c.isValid():
+                merged[key] = c.name()
+    p = QPalette()
+    for key, _label, role in CUSTOM_PALETTE_ROLES:
+        p.setColor(role, QColor(merged[key]))
+    # Derived extras for readability when disabled.
+    mid = QColor(merged["mid"])
+    disabled = QColor(mid.red(), mid.green(), mid.blue(), 160)
+    p.setColor(QPalette.BrightText, QColor(255, 255, 80))
+    p.setColor(QPalette.Shadow, QColor(20, 20, 20))
+    p.setColor(QPalette.Disabled, QPalette.Text, disabled)
+    p.setColor(QPalette.Disabled, QPalette.ButtonText, disabled)
+    p.setColor(QPalette.Disabled, QPalette.WindowText, disabled)
+    return p
 
 
 def polish_widget_property(widget: QWidget, prop: str, value: object) -> None:
@@ -366,6 +469,8 @@ def palette_for_theme(theme: str, *, rng: random.Random | None = None) -> QPalet
         return _dark_palette()
     if name == THEME_GROOVY:
         return _groovy_palette(rng)
+    if name == THEME_CUSTOM:
+        return _custom_palette(load_saved_custom_palette_colors())
     return _light_palette()
 
 

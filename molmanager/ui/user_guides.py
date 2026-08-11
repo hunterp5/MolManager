@@ -129,8 +129,8 @@ GUIDE_SECTIONS: tuple[GuideSection, ...] = (
             GuideEntry(
                 "tools_adv",
                 "Decomposition & QSAR",
-                "BRICS/RECAP, R-group, MMP, QSAR",
-                "Fragmentation, recomposition, matched pairs, and predictive models.",
+                "BRICS/RECAP, R-group, MMP, QSAR, MPO",
+                "Fragmentation, recomposition, matched pairs, predictive models, and MPO scoring.",
             ),
         ),
     ),
@@ -442,6 +442,16 @@ fingerprints (X), and a scikit-learn model (ridge, lasso, MLR, PLS, KNN, SVR, ra
 gradient boosting, and classification counterparts). Each algorithm exposes its tunable
 hyperparameters in the dialog. Review validation metrics, then predict in-scope rows into a
 new column.</p>
+<h3>MPO Scoring (Data → MPO Scoring)</h3>
+<p>Assign a desirability from 0–1 to each numeric property, then combine them into an overall score
+(arithmetic mean by default, or geometric). Supported shapes:</p>
+<ul>
+<li><b>Linear</b> — maximize, minimize, or peak at a target between Low/High bounds.</li>
+<li><b>Gaussian</b> — bell curve peaked at a center with width σ.</li>
+<li><b>Step</b> — hard pass/fail at a threshold or within a range.</li>
+</ul>
+<p>Optional weights per property; optionally write individual desirability columns
+(<b>MPO_d_&lt;property&gt;</b>) alongside the overall column.</p>
 """,
     "tools_ion": """
 <h2>Ionization and permeability</h2>
@@ -466,10 +476,13 @@ back to table row selection.</p>
 <p>Compare 2–6 numeric properties on a spider chart for chosen rows or the full filtered set.</p>
 <h3>Calculator (Tools → Calculator)</h3>
 <p>Build a numeric column from expressions like <code>sqrt([MW])</code> using column names in brackets.</p>
-<h3>Random Number (Tools → Random Number)</h3>
-<p>Fill a named column with random values for all rows or only the selection. Choose uniform
-(continuous or integer) or normal distribution, set the range (and mean/std for normal), optionally
-seed for reproducibility, and control decimal places.</p>
+<h3>Random (Tools → Random)</h3>
+<p><b>Number</b> fills a named column with random values for all rows or only the selection. Choose
+uniform (continuous or integer) or normal distribution, set the range (and mean/std for normal),
+optionally seed for reproducibility, and control decimal places.</p>
+<p><b>Molecule</b> fetches a specified number of random ChEMBL small molecules (canonical SMILES +
+ChEMBL_ID) and adds them to the table. Optional seed and skip-existing-structure controls are
+available.</p>
 <h3>Sketcher (Tools → Sketcher)</h3>
 <p>Draw or edit structures; send results to the table or export to a file.</p>
 """,

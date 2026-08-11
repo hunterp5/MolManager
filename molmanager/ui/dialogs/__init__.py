@@ -29,6 +29,7 @@ from .mol_tools import (
     CalculateRmsdDialog,
 )
 from .mmp import MmpDialog, MmpDialogParams
+from .random_molecule import RandomMoleculeDialog, RandomMoleculeDialogParams
 from .random_number import RandomNumberDialog, RandomNumberDialogParams
 from .permeability import PermeabilityPredictorDialog
 from .pka import PKaPredictorDialog
@@ -37,6 +38,7 @@ from .protomer import ProtomerGeneratorDialog
 from .pdbqt_generator import PdbqtGeneratorDialog
 from .protonate import ProtonateDialog
 from .qsar import QSARDialog
+from .mpo_scoring import MPOScoringDialog, MPOScoringDialogParams
 from .reaction_enumeration import ReactionEnumerationDialog
 from .render_2d import Render2DStructureDialog
 from .scope import selection_scope_checked
@@ -70,6 +72,10 @@ __all__ = [
     "PdbqtGeneratorDialog",
     "ProtonateDialog",
     "QSARDialog",
+    "MPOScoringDialog",
+    "MPOScoringDialogParams",
+    "RandomMoleculeDialog",
+    "RandomMoleculeDialogParams",
     "RandomNumberDialog",
     "RandomNumberDialogParams",
     "ReactionEnumerationDialog",

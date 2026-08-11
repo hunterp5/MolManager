@@ -50,6 +50,7 @@ from .cluster_mixin import ClusterMixin
 from .dimension_reduction_mixin import DimensionReductionMixin
 from .medchem_space_mixin import MedChemSpaceMixin
 from .qsar_mixin import QsarMixin
+from .mpo_mixin import MpoMixin
 from .session_mixin import SessionMixin
 from .table_ui_mixin import TableUIMixin
 from .ingest_export_mixin import IngestExportMixin
@@ -100,6 +101,7 @@ class ChemicalTableApp(
     DimensionReductionMixin,
     MedChemSpaceMixin,
     QsarMixin,
+    MpoMixin,
     GuiSettingsMixin,
 ):
     """Main PyQt window: compound table, structure column, tools, and RDKit-backed chemistry.
@@ -942,11 +944,18 @@ class ChemicalTableApp(
 
         tools.addSeparator()
         tools.addAction(self._act_custom_calc)
-        act_random = QAction("Random Number…", self, triggered=self.open_random_number_dialog)
-        act_random.setToolTip(
+        random_menu = tools.addMenu("&Random")
+        random_menu.setToolTipsVisible(True)
+        act_random_number = QAction("Number…", self, triggered=self.open_random_number_dialog)
+        act_random_number.setToolTip(
             "Fill a column with random numbers (uniform, integer, or normal) for all or selected rows."
         )
-        tools.addAction(act_random)
+        random_menu.addAction(act_random_number)
+        act_random_molecule = QAction("Molecule…", self, triggered=self.open_random_molecule_dialog)
+        act_random_molecule.setToolTip(
+            "Fetch a specified number of random small molecules from ChEMBL and add them to the table."
+        )
+        random_menu.addAction(act_random_molecule)
 
         tools.addSeparator()
         filter_menu = tools.addMenu("&Filter")
@@ -1002,11 +1011,17 @@ class ChemicalTableApp(
                 QAction("Analyze Table…", self, triggered=self.open_data_analysis),
             )
         )
+        data_menu.addSeparator()
         act_qsar = QAction("QSAR…", self, triggered=self.open_qsar_dialog)
         act_qsar.setToolTip(
             "Train regression or classification models on activity vs descriptors or fingerprints."
         )
         data_menu.addAction(act_qsar)
+        act_mpo = QAction("MPO Scoring…", self, triggered=self.open_mpo_scoring_dialog)
+        act_mpo.setToolTip(
+            "Score rows with linear, Gaussian, or step desirability functions and combine into an overall MPO score."
+        )
+        data_menu.addAction(act_mpo)
         data_menu.addSeparator()
         data_menu.addAction(
             QAction("Principal Component Analysis…", self, triggered=self.open_pca_dialog)

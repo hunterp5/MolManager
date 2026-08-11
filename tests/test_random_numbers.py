@@ -1,4 +1,4 @@
-"""Tests for Tools → Random Number generation helpers."""
+"""Tests for Tools → Random → Number generation helpers."""
 
 import pytest
 

@@ -1,13 +1,16 @@
 from __future__ import annotations
 
 from molmanager.ui.theme import (
+    THEME_CUSTOM,
     THEME_DARK,
     THEME_GROOVY,
     THEME_LIGHT,
     current_theme_name,
     filter_card_stylesheet,
+    load_saved_custom_palette_colors,
     load_saved_theme_name,
     palette_for_theme,
+    save_custom_palette_colors,
     save_theme_name,
 )
 
@@ -27,6 +30,8 @@ def test_theme_save_and_load(tmp_path, monkeypatch):
     assert load_saved_theme_name() == THEME_LIGHT
     save_theme_name(THEME_GROOVY)
     assert load_saved_theme_name() == THEME_GROOVY
+    save_theme_name(THEME_CUSTOM)
+    assert load_saved_theme_name() == THEME_CUSTOM
 
 
 def test_filter_card_stylesheet_uses_palette_roles():
@@ -51,6 +56,40 @@ def test_apply_application_theme_sets_current(qapp):
     assert current_theme_name() == THEME_LIGHT
     apply_application_theme(QApplication.instance(), THEME_GROOVY)
     assert current_theme_name() == THEME_GROOVY
+    apply_application_theme(QApplication.instance(), THEME_CUSTOM)
+    assert current_theme_name() == THEME_CUSTOM
+
+
+def test_custom_palette_save_load_and_apply(qapp, tmp_path, monkeypatch):
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+    from PyQt5.QtGui import QPalette
+    from PyQt5.QtWidgets import QApplication
+
+    from molmanager.ui.theme import (
+        _SETTINGS_APP,
+        _SETTINGS_KEY_CUSTOM_PALETTE,
+        _SETTINGS_ORG,
+        apply_application_theme,
+        default_custom_palette_colors,
+    )
+    from PyQt5.QtCore import QSettings
+
+    QSettings(_SETTINGS_ORG, _SETTINGS_APP).remove(_SETTINGS_KEY_CUSTOM_PALETTE)
+    defaults = default_custom_palette_colors()
+    assert "window" in defaults and defaults["window"].startswith("#")
+    custom = dict(defaults)
+    custom["window"] = "#112233"
+    custom["highlight"] = "#aabbcc"
+    saved = save_custom_palette_colors(custom)
+    assert saved["window"].lower() == "#112233"
+    loaded = load_saved_custom_palette_colors()
+    assert loaded["window"].lower() == "#112233"
+    assert loaded["highlight"].lower() == "#aabbcc"
+    pal = palette_for_theme(THEME_CUSTOM)
+    assert pal.color(QPalette.Window).name().lower() == "#112233"
+    apply_application_theme(QApplication.instance(), THEME_CUSTOM)
+    assert current_theme_name() == THEME_CUSTOM
+    assert QApplication.instance().palette().color(QPalette.Window).name().lower() == "#112233"
 
 
 def test_both_themes_use_fusion_without_global_stylesheet(qapp):
@@ -59,7 +98,7 @@ def test_both_themes_use_fusion_without_global_stylesheet(qapp):
     from molmanager.ui.theme import apply_application_theme
 
     app = QApplication.instance()
-    for theme in (THEME_LIGHT, THEME_DARK, THEME_GROOVY):
+    for theme in (THEME_LIGHT, THEME_DARK, THEME_GROOVY, THEME_CUSTOM):
         apply_application_theme(app, theme)
         assert app.style().objectName().lower() == "fusion"
         assert app.styleSheet() == ""
