@@ -59,8 +59,28 @@ class StructureRenderStore:
         self._trim_png_entries()
 
     def ingest_batch(self, items: list[tuple[int, bytes]]) -> None:
+        if not items:
+            return
+        # Expand the cap to fit this batch so a positive limit cannot drop earlier
+        # members of the same intentional render pass during ingest.
+        if self._max_png_entries > 0:
+            self._max_png_entries = max(self._max_png_entries, len(self._png) + len(items))
         for oid, png_bytes in items:
-            self.ingest_png(oid, png_bytes)
+            oid_i = int(oid)
+            if oid_i in self._png:
+                del self._png[oid_i]
+            self._png[oid_i] = bytes(png_bytes)
+            self._lru.pop(oid_i, None)
+        self._trim_png_entries()
+
+    def expand_png_capacity(self, needed: int) -> None:
+        """Raise the PNG entry cap so at least *needed* entries can be retained (0 = unlimited)."""
+        need = max(0, int(needed))
+        if need <= 0:
+            return
+        if self._max_png_entries <= 0:
+            return
+        self._max_png_entries = max(self._max_png_entries, need)
 
     def pixmap(self, oid: int) -> QPixmap | None:
         oid_i = int(oid)

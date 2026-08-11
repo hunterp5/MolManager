@@ -8,6 +8,7 @@ from molmanager.fingerprint_cache import get as get_fp
 from molmanager.memory_guards import (
     check_cluster_workload,
     check_conformer_workload,
+    check_diverse_subset_workload,
     check_fp_matrix_workload,
     check_product_enumeration,
 )
@@ -25,7 +26,8 @@ def test_fingerprint_cache_clear_empties_store() -> None:
 
 def test_structure_render_store_png_entry_cap() -> None:
     store = StructureRenderStore(max_decoded_pixmaps=4, max_png_entries=2)
-    store.ingest_batch([(1, b"a"), (2, b"b"), (3, b"c")])
+    for i, raw in enumerate((b"a", b"b", b"c"), start=1):
+        store.ingest_png(i, raw)
     assert len(store) == 2
     assert not store.has_png(1)
     assert store.has_png(2)
@@ -56,6 +58,8 @@ def test_memory_guards_block_oversized_workloads(monkeypatch) -> None:
     monkeypatch.setenv("MOLMANAGER_MEMORY_GUARD_CONF_MAX_ROWS", "10")
     monkeypatch.setenv("MOLMANAGER_MEMORY_GUARD_CONF_MAX_ROW_CONFS", "100")
     monkeypatch.setenv("MOLMANAGER_MEMORY_GUARD_CLUSTER_MAX_ROWS", "150")
+    monkeypatch.setenv("MOLMANAGER_MEMORY_GUARD_DIVERSE_MAX_ROWS", "200")
+    monkeypatch.setenv("MOLMANAGER_MEMORY_GUARD_DIVERSE_MAX_KN", "1000")
     monkeypatch.setenv("MOLMANAGER_MEMORY_GUARD_FP_MATRIX_MAX_CELLS", "100000")
     monkeypatch.setenv("MOLMANAGER_MEMORY_GUARD_ENUM_MAX_PRODUCTS", "50")
 
@@ -65,6 +69,11 @@ def test_memory_guards_block_oversized_workloads(monkeypatch) -> None:
 
     assert not check_cluster_workload(151).ok
     assert check_cluster_workload(5).ok
+
+    assert not check_diverse_subset_workload(201, 10, mode="fast").ok
+    assert not check_diverse_subset_workload(50, 50, mode="exact").ok  # 50*50 > 1000
+    assert check_diverse_subset_workload(50, 10, mode="exact").ok
+    assert check_diverse_subset_workload(150, 50, mode="fast").ok  # k·N skipped for fast
 
     assert not check_fp_matrix_workload(200, n_bits=2048).ok
     assert check_fp_matrix_workload(2, n_bits=64).ok

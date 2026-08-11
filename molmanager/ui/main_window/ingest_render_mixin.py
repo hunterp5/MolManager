@@ -166,26 +166,69 @@ class IngestRenderMixin:
             self._table_model.begin_silent_appends()
 
     def _ingest_append_batch_items(self, items: list, new_rows: list[tuple[int, dict[str, str]]]) -> None:
-        """Convert one worker batch (mols or cell dicts) into pending table rows."""
+        """Convert one worker batch (mol blobs or cell dicts) into pending table rows."""
         if is_ingest_cell_batch(items):
             for cells in items:
                 oid = self.next_oid
                 self.next_oid += 1
                 new_rows.append((oid, dict(cells)))
             return
-        for m in items:
-            m = self._apply_structure_field_override(m)
+        override_field = getattr(self, "_structure_field_override", None)
+        for item in items:
+            blob, cells = self._split_ingest_item(item)
+            if override_field:
+                m, precomputed = self._resolve_override_ingest_mol(blob, cells, override_field)
+            else:
+                m = self._coerce_ingest_mol(blob)
+                precomputed = cells
             oid = self.next_oid
             self.next_oid += 1
-            new_rows.append((oid, self._ingest_store_mol(oid, m)))
+            new_rows.append((oid, self._ingest_store_mol(oid, m, precomputed_cells=precomputed)))
 
-    def _ingest_store_mol(self, oid: int, mol: Chem.Mol) -> dict[str, str]:
+    def _resolve_override_ingest_mol(self, blob, cells, field: str):
+        """Apply a structure-column override during ingest, reading the field from the cell dict.
+
+        Ingest blobs carry structure only (no properties), so the override source column is taken
+        from the worker-built cells. When it parses, cells are recomputed from the override mol
+        (matching the non-blob behavior); otherwise the parsed structure and its cells are kept.
+        """
+        raw = (cells.get(field) or "").strip() if isinstance(cells, dict) else ""
+        if raw:
+            nm = self._mol_from_structure_text(raw)
+            if nm is not None:
+                return nm, None
+        return self._coerce_ingest_mol(blob), cells
+
+    @staticmethod
+    def _split_ingest_item(item):
+        """Return ``(blob_or_mol, precomputed_cells)`` from a worker ingest item."""
+        if isinstance(item, tuple):
+            return item[0], item[1]
+        return item, None
+
+    @staticmethod
+    def _coerce_ingest_mol(item) -> Chem.Mol | None:
+        """Rebuild a live RDKit mol from an ingest blob (worker sends binary to avoid UI freezes)."""
+        if isinstance(item, (bytes, bytearray)):
+            try:
+                return Chem.Mol(bytes(item))
+            except Exception:
+                return None
+        return item
+
+    def _ingest_store_mol(
+        self, oid: int, mol: Chem.Mol, precomputed_cells: dict[str, str] | None = None
+    ) -> dict[str, str]:
         """
         Store *mol* for row *oid*.
 
         When the molecule carries 3D coordinates, pack them into ``confs`` (for View
         Conformers) and keep a 2D depiction in ``self.mols`` for the Structure column.
+
+        *precomputed_cells* are row cells built off the GUI thread by the load worker; when
+        provided they are used verbatim (avoids re-reading every property on the GUI thread).
         """
+        cells = dict(precomputed_cells) if precomputed_cells is not None else self._row_cells_from_mol(mol)
         if mol is not None and mol_has_3d_coordinates(mol):
             from ..mol_viewer_3d import prepare_mol_2d
 
@@ -212,11 +255,10 @@ class IngestRenderMixin:
                 sc[(int(oid), "confs")] = b64
             depict = prepare_mol_2d(mol)
             self.mols[oid] = depict if depict is not None else mol
-            cells = self._row_cells_from_mol(mol)
             cells["confs"] = light
             return cells
         self.mols[oid] = mol
-        return self._row_cells_from_mol(mol)
+        return cells
 
     def on_file_loaded(self, mols_list, headers, is_first, is_last):
         # Append batch to pending queue and schedule incremental processing
@@ -256,34 +298,37 @@ class IngestRenderMixin:
             self.table.setUpdatesEnabled(False)
         except Exception:
             pass
+        # Consume each worker batch in small sub-slices, re-checking the time budget between them,
+        # so a single tick stays near ``ingest_gui_time_budget_ms`` even as per-row cost grows
+        # (mol rebuild + property extraction + SQLite). This keeps the UI smooth during ingest.
+        sub_slice = max(32, min(int(chunk_size), int(cfg.ingest_gui_subslice_rows)))
         try:
             with scope("ingest.process_chunk"):
                 while self._pending_batches and processed < chunk_size and time.monotonic() < deadline:
-                    mols_list, is_last = self._pending_batches.pop(0)
-                    remain = max(0, int(chunk_size - processed))
-                    take = mols_list[:remain]
-                    if take:
+                    mols_list, is_last = self._pending_batches[0]
+                    step = min(len(mols_list), sub_slice, max(0, int(chunk_size - processed)))
+                    if step:
+                        take = mols_list[:step]
                         new_rows: list[tuple[int, dict[str, str]]] = []
                         self._ingest_append_batch_items(take, new_rows)
                         self._table_model.append_rows_batch(new_rows, defer_color_cache=True)
                         self._ingest_sqlite_append_batch(new_rows)
                         processed += len(new_rows)
-                        n = self._table_model.rowCount()
-                        self.status_label.setText(f"Loaded {n:,} molecules — preparing table…")
-                        if self._table_stack.currentIndex() == 0:
-                            self._loading_detail.setText(
-                                f"Building table…\n{n} molecule(s); 2D structures draw when ready"
-                            )
-                        if getattr(self, "_ingest_loading", False):
-                            if not self._import_building_progress_shown:
-                                self._import_building_progress_shown = True
-                                self._on_tool_progress("Building table…", -1, -1)
-                        del mols_list[: len(take)]
-                    if mols_list:
-                        self._pending_batches.insert(0, (mols_list, is_last))
-                        break
-                    if is_last:
-                        self._last_batch_received = True
+                        del mols_list[:step]
+                    if not mols_list:
+                        self._pending_batches.pop(0)
+                        if is_last:
+                            self._last_batch_received = True
+            if processed:
+                n = self._table_model.rowCount()
+                self.status_label.setText(f"Loaded {n:,} molecules — preparing table…")
+                if self._table_stack.currentIndex() == 0:
+                    self._loading_detail.setText(
+                        f"Building table…\n{n} molecule(s); 2D structures draw when ready"
+                    )
+                if getattr(self, "_ingest_loading", False) and not self._import_building_progress_shown:
+                    self._import_building_progress_shown = True
+                    self._on_tool_progress("Building table…", -1, -1)
         finally:
             try:
                 self.table.setUpdatesEnabled(True)
@@ -352,7 +397,11 @@ class IngestRenderMixin:
         self._post_ingest_after_color_caches()
 
     def _post_ingest_after_color_caches(self) -> None:
-        self.calculate_global_bounds(on_complete=self._reveal_table_after_ingest_prep)
+        # Reveal as soon as rows + color caches are ready. The numeric-bounds scan only feeds
+        # filter ranges / plot axes, and it is already time-budget chunked, so it can run behind
+        # the live table instead of holding the loading page for seconds on wide files.
+        self._reveal_table_after_ingest_prep()
+        self.calculate_global_bounds()
 
     def _reveal_table_after_ingest_prep(self) -> None:
         """Switch from the loading page to the table once prep work is finished."""
@@ -609,12 +658,59 @@ class IngestRenderMixin:
         if need > cur:
             self.table.setColumnWidth(col, need)
 
-    def on_row_ready(self, idx, props, img, success, w, h, batch_session=None):
+    def _render2d_batch_session_accepted(self, batch_session) -> bool:
+        """False when a render result belongs to a superseded / cancelled batch."""
         rs = 0 if batch_session is None else int(batch_session)
-        if rs != 0:
-            cur = getattr(self, "_render2d_accept_session", None)
-            if cur is None or rs != cur:
-                return
+        if rs == 0:
+            return True
+        cur = getattr(self, "_render2d_accept_session", None)
+        return cur is not None and rs == cur
+
+    def on_render2d_rows_ready(self, rows, batch_session) -> None:
+        """Store one batch of subprocess render results (see ``WorkerSignals.rendered_batch``).
+
+        The per-molecule path below does the same work one row at a time; batching keeps the GUI
+        thread from being the bottleneck when tens of thousands of rows are drawn.
+        """
+        if not rows or not self._render2d_batch_session_accepted(batch_session):
+            return
+        pending = self._render2d_pending
+        for oid, img, success, w, h in rows:
+            oid = int(oid)
+            if success and self._resolve_structure_row_for_oid(oid) != -1:
+                pending[oid] = (bytes(img), True, int(w), int(h))
+            else:
+                pending[oid] = (b"", False, int(w), int(h))
+        self._advance_render2d_batch_progress(len(rows))
+
+    def _advance_render2d_batch_progress(self, n_done: int) -> None:
+        """Report render progress and finish the batch once every row has landed."""
+        if not getattr(self, "_import_progress_active", False) or self._import_render_goal <= 0:
+            return
+        self._import_render_done += int(n_done)
+        done = min(self._import_render_done, self._import_render_goal)
+        total_g = self._import_render_goal
+        if getattr(self, "_render2d_batch_active", False):
+            now = time.monotonic()
+            last_t = float(getattr(self, "_render2d_progress_last_emit", 0.0))
+            last_d = int(getattr(self, "_render2d_progress_last_done", 0))
+            step = max(1, total_g // 50)
+            if done <= 1 or done >= total_g or (done - last_d) >= step or (now - last_t) >= 0.12:
+                self._render2d_progress_last_emit = now
+                self._render2d_progress_last_done = done
+                self._on_tool_progress("Drawing 2D structures…", done, total_g)
+        else:
+            self._on_tool_progress("Drawing 2D structures…", done, total_g)
+        if self._import_render_done >= self._import_render_goal:
+            self._import_progress_active = False
+            self._clear_tool_progress()
+            self.status_label.setText("Ready")
+            self._flush_render2d_batch_results()
+            self._restore_render2d_batch_environment()
+
+    def on_row_ready(self, idx, props, img, success, w, h, batch_session=None):
+        if not self._render2d_batch_session_accepted(batch_session):
+            return
 
         row = self._resolve_structure_row_for_oid(int(idx))
         oid = int(idx)
@@ -649,33 +745,7 @@ class IngestRenderMixin:
             if batch:
                 self._render2d_pending[oid] = (b"", False, int(w), int(h))
 
-        if getattr(self, "_import_progress_active", False) and self._import_render_goal > 0:
-            self._import_render_done += 1
-            done = min(self._import_render_done, self._import_render_goal)
-            total_g = self._import_render_goal
-            if getattr(self, "_render2d_batch_active", False):
-                now = time.monotonic()
-                last_t = float(getattr(self, "_render2d_progress_last_emit", 0.0))
-                last_d = int(getattr(self, "_render2d_progress_last_done", 0))
-                step = max(1, total_g // 50)
-                emit = (
-                    done <= 1
-                    or done >= total_g
-                    or (done - last_d) >= step
-                    or (now - last_t) >= 0.12
-                )
-                if emit:
-                    self._render2d_progress_last_emit = now
-                    self._render2d_progress_last_done = done
-                    self._on_tool_progress("Drawing 2D structures…", done, total_g)
-            else:
-                self._on_tool_progress("Drawing 2D structures…", done, total_g)
-            if self._import_render_done >= self._import_render_goal:
-                self._import_progress_active = False
-                self._clear_tool_progress()
-                self.status_label.setText("Ready")
-                self._flush_render2d_batch_results()
-                self._restore_render2d_batch_environment()
+        self._advance_render2d_batch_progress(1)
 
     def _resize_columns_after_render2d(self, pix_target: str | None) -> None:
         """Set structure / pixmap column width from depict size (O(1), safe for huge tables)."""
@@ -758,10 +828,9 @@ class IngestRenderMixin:
             )
             if lazy_structure:
                 cfg = load_config()
-                store = StructureRenderStore(
-                    max_decoded_pixmaps=cfg.structure_render_pixmap_lru,
-                    max_png_entries=cfg.structure_render_png_max_entries,
-                )
+                # Never cap below this completed batch size — otherwise Fast Prepare /
+                # Tools → Render 2D silently drop earlier drawings (old default was 20k).
+                cap = int(cfg.structure_render_png_max_entries)
                 png_items: list[tuple[int, bytes]] = []
                 for oid in ordered:
                     rec = pending.get(oid)
@@ -770,6 +839,12 @@ class IngestRenderMixin:
                     img_b, ok, _rw, _rh = rec
                     if ok and img_b:
                         png_items.append((int(oid), bytes(img_b)))
+                if cap > 0:
+                    cap = max(cap, len(png_items))
+                store = StructureRenderStore(
+                    max_decoded_pixmaps=cfg.structure_render_pixmap_lru,
+                    max_png_entries=cap,
+                )
                 if png_items:
                     store.ingest_batch(png_items)
                 self._table_model.set_structure_png_store(store)

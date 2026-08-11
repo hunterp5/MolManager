@@ -414,8 +414,12 @@ structure, and a similarity metric. Scores are written to a new column for rows 
 similar pairs.</p>
 <h3>Diverse Subset</h3>
 <p>Pick a fingerprint and how many compounds to keep. MolManager selects a <b>maximally diverse</b>
-subset (MaxMin algorithm) and can select those rows in the table. Reuses existing on-bits columns when
-available.</p>
+subset (MaxMin on Tanimoto distance) and can select those rows in the table. Reuses existing on-bits
+columns when available (eligibility filter; bit vectors still come from the session fingerprint cache).</p>
+<p><b>Algorithm</b>: <b>Exact MaxMin</b> on the full pool; <b>Fast</b> prefilters with Leader
+(sphere-exclusion) or a seeded subsample, then MaxMin on a candidate pool (better for large libraries);
+<b>Auto</b> uses Exact below a configurable row threshold and Fast above it. Fingerprints are computed
+with a process pool when needed and stored back into the session cache for reuse.</p>
 <h3>Cluster</h3>
 <p>Group compounds by fingerprint similarity. Methods include K-means, Butina, Jarvis–Patrick, and
 <b>Sphere exclusion (RDKit Leader)</b> for large sets. Exploratory mode tries many parameter sets;

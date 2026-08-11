@@ -23,28 +23,66 @@ from ..fragment_disconnect import largest_fragment_and_rest
 from ..structure_draw import render_molecule_png
 from ..structure_neutralize import neutralize_mol
 from ..structure_hydrogens import add_explicit_hydrogens, remove_explicit_hydrogens
-from ..utils import parse_molecule_from_cell_text, safe_mol_prop_string
+from ..utils import parse_molecule_from_cell_text, row_cells_from_mol, safe_mol_prop_string
 from .signals import WorkerSignals, emit_partial_results_if_cancelled
 
 logger = logging.getLogger(__name__)
 
 
-def _mp_render_structure_row(args: tuple):
-    """Cairo 2D structure render in a child process (picklable args)."""
-    oid, mol_bytes, w, h, skip_mol_props, batch_session = args
-    sid = int(batch_session or 0)
-    if not mol_bytes:
-        return int(oid), {}, b"", False, int(w), int(h), sid
-    try:
-        mol = Chem.Mol(mol_bytes)
-        if skip_mol_props:
-            p = {}
-        else:
-            p = {n: safe_mol_prop_string(mol, n) for n in mol.GetPropNames()}
-        png = render_molecule_png(mol, int(w), int(h))
-        return int(oid), p, png, True, int(w), int(h), sid
-    except Exception:
-        return int(oid), {}, b"", False, int(w), int(h), sid
+def mol_to_ingest_blob(mol: "Chem.Mol") -> bytes:
+    """Serialize a parsed molecule's structure for cross-thread ingest transfer.
+
+    Passing live RDKit Mol objects across the load worker → GUI thread boundary causes multi-second
+    UI freezes for large files, so batches carry these lightweight binary blobs instead. Properties
+    are intentionally *not* pickled here: they travel in the accompanying cell dict (the table is the
+    source of truth for property values), and dropping them makes serialize/rebuild ~4x faster and
+    the payload ~10x smaller.
+    """
+    return mol.ToBinary()
+
+
+def _mol_ingest_item(mol: "Chem.Mol", data_headers: list[str]) -> tuple[bytes, dict[str, str]]:
+    """Ingest payload for one mol: structure blob (rebuilt into ``self.mols``) plus pre-built row cells.
+
+    Extracting cells here keeps property reads off the GUI thread and in parallel with parsing.
+    """
+    return mol_to_ingest_blob(mol), row_cells_from_mol(mol, data_headers)
+
+
+def _mp_render_structure_batch(args: tuple) -> list[tuple]:
+    """Render many structures per child-process task.
+
+    One task per molecule left the parent process submitting futures and unpickling results faster
+    than it could keep up, capping throughput regardless of how many workers were running. Batching
+    moves that ceiling so extra cores actually help. Batch renders never read mol properties, so
+    rows are ``(oid, png, ok, w, h)``.
+    """
+    items, w, h = args
+    width, height = int(w), int(h)
+    out: list[tuple] = []
+    for oid, mol_bytes in items:
+        if not mol_bytes:
+            out.append((int(oid), b"", False, width, height))
+            continue
+        try:
+            png = render_molecule_png(Chem.Mol(mol_bytes), width, height)
+            out.append((int(oid), png, True, width, height))
+        except Exception:
+            out.append((int(oid), b"", False, width, height))
+    return out
+
+
+def render2d_process_worker_count() -> int:
+    """Child-process count for batch 2D rendering.
+
+    PNG encoding is ~70% of each render and runs entirely in the children, so this scales past the
+    physical core count on SMT machines.
+    """
+    cfg = load_config()
+    configured = cfg.render2d_process_workers
+    if configured:
+        return max(1, int(configured))
+    return max(2, min(12, (os.cpu_count() or 4) - 1))
 
 
 class Render2DBatchHeldJob(QRunnable):
@@ -105,9 +143,14 @@ class Render2DBatchProcessWorker(QRunnable):
         self.cancel_event = cancel_event
         self.batch_session = int(batch_session or 0)
 
-    def run(self) -> None:
+    def build_tasks(self) -> list[tuple]:
+        """Serialize the queued mols into ``(rows, w, h)`` child-process tasks.
+
+        Rows are grouped by depict size before batching because a task renders every molecule at one
+        size, and zoomed rows are drawn at 2x.
+        """
         ev = self.cancel_event
-        tasks: list[tuple] = []
+        by_size: dict[tuple[int, int], list[tuple[int, bytes]]] = {}
         for oid, mol, w, h in self.items:
             if ev is not None and ev.is_set():
                 break
@@ -115,19 +158,26 @@ class Render2DBatchProcessWorker(QRunnable):
                 blob = mol.ToBinary() if mol is not None else b""
             except Exception:
                 blob = b""
-            tasks.append((int(oid), blob, int(w), int(h), True, self.batch_session))
+            by_size.setdefault((int(w), int(h)), []).append((int(oid), blob))
 
-        tot = len(tasks)
-        if tot == 0:
+        batch_size = max(1, int(load_config().render2d_batch_size))
+        tasks: list[tuple] = []
+        for (w, h), rows in by_size.items():
+            for start in range(0, len(rows), batch_size):
+                tasks.append((rows[start : start + batch_size], w, h))
+        return tasks
+
+    def run(self) -> None:
+        ev = self.cancel_event
+        tasks = self.build_tasks()
+        if not tasks:
             return
 
-        ncpu = os.cpu_count() or 4
-        proc_workers = min(8, max(2, ncpu - 1), 6)
+        proc_workers = render2d_process_worker_count()
         max_inflight = min(48, max(proc_workers * 4, proc_workers))
 
         it = iter(tasks)
         pending = set()
-        user_cancelled = False
         ex = register_process_pool(ProcessPoolExecutor(max_workers=proc_workers))
 
         def _fill() -> None:
@@ -135,13 +185,12 @@ class Render2DBatchProcessWorker(QRunnable):
                 t = next(it, None)
                 if t is None:
                     break
-                pending.add(ex.submit(_mp_render_structure_row, t))
+                pending.add(ex.submit(_mp_render_structure_batch, t))
 
         try:
             _fill()
             while pending:
                 if should_terminate_process_pool(ev):
-                    user_cancelled = True
                     for f in pending:
                         f.cancel()
                     break
@@ -150,10 +199,14 @@ class Render2DBatchProcessWorker(QRunnable):
                     if f.cancelled():
                         continue
                     try:
-                        idx, p, img, ok, w, h, sid = f.result()
-                        self.signals.rendered.emit(idx, p, img, ok, w, h, sid)
+                        rows = f.result()
                     except Exception:
-                        logger.exception("Render2D batch subprocess row failed")
+                        logger.exception("Render2D batch subprocess task failed")
+                        continue
+                    if rows:
+                        # One signal per batch: a queued emission per molecule made the GUI thread
+                        # the bottleneck on large tables.
+                        self.signals.rendered_batch.emit(rows, self.batch_session)
                 _fill()
         finally:
             shutdown_process_pool_executor(ex, kill_workers=should_terminate_process_pool(ev))
@@ -218,7 +271,7 @@ class UniversalLoadWorker(QRunnable):
                             headers.extend(sorted([str(p) for p in mol.GetPropNames()]))
                             if not self._wait_for_structure_source_choice(headers):
                                 break
-                        batch.append(mol)
+                        batch.append(_mol_ingest_item(mol, headers[2:]))
                         if len(batch) >= batch_size:
                             self.signals.mols_loaded.emit(batch, headers if first_emit else [], first_emit, False)
                             first_emit = False
@@ -275,7 +328,7 @@ class UniversalLoadWorker(QRunnable):
                                     for h in fieldnames:
                                         if h != smi_col:
                                             m.SetProp(h, str(row[h]))
-                                    batch.append(m)
+                                    batch.append(_mol_ingest_item(m, headers[2:]))
                             if len(batch) >= batch_size:
                                 self.signals.mols_loaded.emit(
                                     batch, headers if first_emit else [], first_emit, False
@@ -292,7 +345,7 @@ class UniversalLoadWorker(QRunnable):
                             headers.extend(sorted([str(p) for p in mol.GetPropNames()]))
                             if not self._wait_for_structure_source_choice(headers):
                                 break
-                        batch.append(mol)
+                        batch.append(_mol_ingest_item(mol, headers[2:]))
                         if len(batch) >= batch_size:
                             self.signals.mols_loaded.emit(batch, headers if first_emit else [], first_emit, False)
                             first_emit = False
@@ -303,7 +356,7 @@ class UniversalLoadWorker(QRunnable):
                     if self._cancelled():
                         break
                     if mol:
-                        batch.append(mol)
+                        batch.append(_mol_ingest_item(mol, headers[2:]))
                         if len(batch) >= batch_size:
                             self.signals.mols_loaded.emit(batch, headers if first_emit else [], first_emit, False)
                             first_emit = False

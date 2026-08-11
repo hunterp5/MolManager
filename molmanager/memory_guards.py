@@ -65,6 +65,47 @@ def check_cluster_workload(n_rows: int) -> MemoryGuardResult:
     return MemoryGuardResult(True, estimated_extra_bytes=est)
 
 
+def check_diverse_subset_workload(
+    n_rows: int,
+    subset_size: int,
+    *,
+    mode: str = "auto",
+) -> MemoryGuardResult:
+    """
+    Guard Diverse Subset by pool size and (for exact MaxMin) the k·N product.
+
+    Fast / auto-on-large-N modes still enforce the hard row cap but skip the k·N
+    product check (picking runs on a reduced candidate pool).
+    """
+    cfg = load_config()
+    rows = max(0, int(n_rows))
+    k = max(0, int(subset_size))
+    if rows > cfg.memory_guard_diverse_max_rows:
+        return MemoryGuardResult(
+            False,
+            f"Diverse Subset is limited to {cfg.memory_guard_diverse_max_rows:,} structures "
+            f"(requested {rows:,}). Narrow the scope, use Selected Rows Only, or raise "
+            f"MOLMANAGER_MEMORY_GUARD_DIVERSE_MAX_ROWS."
+            + _rss_hint(),
+        )
+    resolved = (mode or "auto").strip().lower()
+    if resolved == "auto":
+        resolved = "exact" if rows <= int(cfg.diverse_subset_exact_max_rows) else "fast"
+    if resolved == "exact":
+        product = rows * max(1, k)
+        if product > cfg.memory_guard_diverse_max_kn:
+            return MemoryGuardResult(
+                False,
+                f"Exact MaxMin workload {rows:,} × subset {k:,} = {product:,} exceeds the "
+                f"cap of {cfg.memory_guard_diverse_max_kn:,}. Lower subset size, switch to "
+                f"Fast mode, or raise MOLMANAGER_MEMORY_GUARD_DIVERSE_MAX_KN."
+                + _rss_hint(),
+            )
+    # Fingerprints + min-dist vector (order-of-magnitude hint).
+    est = rows * 2_500
+    return MemoryGuardResult(True, estimated_extra_bytes=est)
+
+
 def check_fp_matrix_workload(n_rows: int, n_bits: int = 2048) -> MemoryGuardResult:
     cfg = load_config()
     rows = max(0, int(n_rows))

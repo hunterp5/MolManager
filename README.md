@@ -432,6 +432,9 @@ Optional settings for power users and IT deployments:
 | `MOLMANAGER_DESCRIPTOR_THREADS` | Parallel workers for descriptors (`1`–`32`) |
 | `MOLMANAGER_PROTOMER_PROCESSES` | Parallel processes for protomer generation (`1`–`8`) |
 | `MOLMANAGER_SQL_MAX_ROWS_HARD` | Hard cap for SQL load row count (default `2000000`) |
+| `MOLMANAGER_MEMORY_GUARD_DIVERSE_MAX_ROWS` | Hard cap for Diverse Subset pool size (default `200000`) |
+| `MOLMANAGER_DIVERSE_SUBSET_EXACT_MAX_ROWS` | Auto mode uses Exact MaxMin at or below this size (default `50000`) |
+| `MOLMANAGER_DIVERSE_SUBSET_FAST_CANDIDATE_CAP` | Fast-mode candidate pool size before MaxMin (default `10000`) |
 | `MOLMANAGER_SQL_PRECOUNT_WARN` | Confirm before loading if `COUNT(*)` ≥ this (default `100000`) |
 | `MOLMANAGER_SQLITE_TIMEOUT_S` | SQLite connection timeout seconds (default `30`) |
 | `MOLMANAGER_PG_CONNECT_TIMEOUT` | PostgreSQL connect timeout seconds (default `30`) |

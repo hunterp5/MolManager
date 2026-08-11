@@ -16,6 +16,15 @@ def test_structure_render_store_ingest_remove_and_trim():
 
 def test_structure_render_store_evicts_oldest_png_when_capped():
     store = StructureRenderStore(max_decoded_pixmaps=8, max_png_entries=3)
-    store.ingest_batch([(1, b"1"), (2, b"2"), (3, b"3"), (4, b"4")])
+    for i in range(1, 5):
+        store.ingest_png(i, str(i).encode())
     assert len(store) == 3
     assert list(store._png.keys()) == [2, 3, 4]
+
+
+def test_structure_render_store_batch_expands_cap_to_fit():
+    store = StructureRenderStore(max_decoded_pixmaps=8, max_png_entries=3)
+    items = [(i, str(i).encode()) for i in range(1, 6)]
+    store.ingest_batch(items)
+    assert len(store) == 5
+    assert store.has_png(1) and store.has_png(5)

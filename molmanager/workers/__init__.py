@@ -60,6 +60,7 @@ from .fingerprint_similarity import (
     SIMILARITY_METRIC_LABELS,
     pairwise_fingerprint_similarity,
 )
+from .fast_prepare import FastPrepareWorker
 from .load_render import (
     AddExplicitHydrogensWorker,
     NeutralizeWorker,
@@ -112,6 +113,7 @@ __all__ = [
     "ExportWorker",
     "FilterApplySignals",
     "FilterApplyWorker",
+    "FastPrepareWorker",
     "FragmentDecompositionWorker",
     "FragmentRecompositionWorker",
     "MmpAnalysisWorker",

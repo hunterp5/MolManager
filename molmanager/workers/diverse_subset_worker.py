@@ -4,19 +4,17 @@ from __future__ import annotations
 
 import logging
 import os
-import pickle
 import threading
-import time
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from concurrent.futures import FIRST_COMPLETED, ProcessPoolExecutor, ThreadPoolExecutor, wait
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Literal
 
 import numpy as np
 from PyQt5.QtCore import QRunnable
 from rdkit import Chem
 from rdkit import DataStructs
-from rdkit.SimDivFilters.rdSimDivPickers import MaxMinPicker
+from rdkit.SimDivFilters.rdSimDivPickers import LeaderPicker, MaxMinPicker
 
 from ..config import load_config
 from ..fingerprint_cache import get as cache_get
@@ -39,6 +37,10 @@ logger = logging.getLogger(__name__)
 
 _PROGRESS_LABEL = "Diverse subset"
 _PROCESS_POOL_MIN_ROWS = 64
+# LeaderPicker on BindingDB-scale pools can freeze the process for minutes (GIL-heavy).
+_LEADER_PREFILTER_MAX_ROWS = 25_000
+
+DiverseMode = Literal["exact", "fast", "auto"]
 
 
 class _Cancelled(Exception):
@@ -151,6 +153,155 @@ def maxmin_diverse_pick_bulk(
     if on_pick is not None:
         on_pick(k)
     return picked
+
+
+def _leader_candidate_indices(
+    fps: Sequence,
+    target_count: int,
+    *,
+    cancel_event: threading.Event | None = None,
+) -> list[int] | None:
+    """
+    Sphere-exclusion (Leader) centroids as a diverse prefilter.
+
+    Tries a few Tanimoto-distance thresholds so the centroid count is near *target_count*.
+    Returns ``None`` if Leader picking fails.
+    """
+    n = len(fps)
+    if n <= 0 or target_count <= 0:
+        return []
+    if n <= target_count:
+        return list(range(n))
+    # Higher distance threshold → fewer centroids.
+    thresholds = (0.15, 0.25, 0.35, 0.45, 0.55, 0.65)
+    best: list[int] | None = None
+    best_delta = None
+    lp = LeaderPicker()
+    for thr in thresholds:
+        if cancel_event is not None and cancel_event.is_set():
+            raise _Cancelled()
+        try:
+            cents = [int(i) for i in lp.LazyBitVectorPick(fps, n, float(thr))]
+        except Exception:
+            try:
+
+                def dist(i: int, j: int, _thr=thr) -> float:
+                    if cancel_event is not None and cancel_event.is_set():
+                        raise _Cancelled()
+                    if i == j:
+                        return 0.0
+                    return _tanimoto_distance(fps[i], fps[j])
+
+                cents = [
+                    int(i)
+                    for i in lp.LazyPick(distFunc=dist, poolSize=n, threshold=float(thr))
+                ]
+            except _Cancelled:
+                raise
+            except Exception:
+                continue
+        if not cents:
+            continue
+        delta = abs(len(cents) - int(target_count))
+        if best is None or delta < best_delta:
+            best = cents
+            best_delta = delta
+        if len(cents) <= target_count * 2 and len(cents) >= max(target_count // 2, 1):
+            best = cents
+            break
+    return best
+
+
+def _random_candidate_indices(n: int, cap: int, seed: int) -> list[int]:
+    if n <= cap:
+        return list(range(n))
+    rng = np.random.default_rng(0 if seed < 0 else int(seed))
+    return sorted(int(i) for i in rng.choice(n, size=int(cap), replace=False))
+
+
+def prefilter_candidate_indices(
+    fps: Sequence,
+    candidate_cap: int,
+    *,
+    seed: int = -1,
+    cancel_event: threading.Event | None = None,
+    leader_max_rows: int | None = None,
+) -> list[int]:
+    """
+    Reduce a large fingerprint pool to at most *candidate_cap* indices.
+
+    Prefers Leader (sphere-exclusion) centroids on moderate pools; for BindingDB-scale
+    ``n`` uses a seeded random subsample so the GUI stays responsive.
+    """
+    n = len(fps)
+    cap = max(1, int(candidate_cap))
+    if n <= cap:
+        return list(range(n))
+    leader_limit = (
+        int(leader_max_rows)
+        if leader_max_rows is not None
+        else _LEADER_PREFILTER_MAX_ROWS
+    )
+    if n > max(cap, leader_limit):
+        return _random_candidate_indices(n, cap, seed)
+    leaders = _leader_candidate_indices(fps, cap, cancel_event=cancel_event)
+    if leaders and len(leaders) >= max(2, min(cap // 4, 32)):
+        if len(leaders) > cap:
+            rng = np.random.default_rng(0 if seed < 0 else int(seed))
+            chosen = rng.choice(len(leaders), size=cap, replace=False)
+            return sorted(int(leaders[i]) for i in chosen)
+        return sorted(int(i) for i in leaders)
+    return _random_candidate_indices(n, cap, seed)
+
+
+def staged_maxmin_diverse_pick(
+    fps: list,
+    pick_size: int,
+    *,
+    candidate_cap: int = 10_000,
+    seed: int = -1,
+    cancel_event: threading.Event | None = None,
+    on_pick: Callable[[int], None] | None = None,
+) -> list[int]:
+    """
+    Approximate diverse pick: prefilter to ``candidate_cap`` then exact MaxMin.
+
+    Returns indices into the original ``fps`` list.
+    """
+    n = len(fps)
+    if pick_size <= 0:
+        return []
+    if pick_size >= n:
+        return list(range(n))
+    k = int(pick_size)
+    cap = max(k, int(candidate_cap))
+    if n <= cap:
+        return maxmin_diverse_pick_bulk(
+            fps, k, seed=seed, cancel_event=cancel_event, on_pick=on_pick
+        )
+    cand = prefilter_candidate_indices(
+        fps, cap, seed=seed, cancel_event=cancel_event
+    )
+    if len(cand) < k:
+        cand = _random_candidate_indices(n, max(k, cap), seed)
+    cand_fps = [fps[i] for i in cand]
+    local = maxmin_diverse_pick_bulk(
+        cand_fps, k, seed=seed, cancel_event=cancel_event, on_pick=on_pick
+    )
+    return [int(cand[i]) for i in local]
+
+
+def resolve_diverse_mode(mode: str, n: int, exact_max_rows: int | None = None) -> str:
+    """Return ``exact`` or ``fast`` after resolving ``auto``."""
+    m = (mode or "auto").strip().lower()
+    if m not in ("exact", "fast", "auto"):
+        m = "auto"
+    if m != "auto":
+        return m
+    cap = int(exact_max_rows) if exact_max_rows is not None else int(
+        load_config().diverse_subset_exact_max_rows
+    )
+    return "exact" if int(n) <= max(1, cap) else "fast"
 
 
 def maxmin_diverse_pick_lazy(
@@ -281,6 +432,7 @@ def materialize_pool_fingerprints(
     """
     Return a full ``fps`` list aligned with ``pool``.
 
+    Newly computed fingerprints are stored in the parent-process fingerprint cache.
     ``on_fp_done(done, total)`` is called as fingerprints are resolved.
     """
     n = len(pool)
@@ -378,8 +530,10 @@ def run_diverse_subset_pick(
     on_fp_done: Callable[[int, int], None] | None = None,
     on_pick_done: Callable[[int, int], None] | None = None,
     use_process_pool: bool = False,
+    mode: str = "exact",
+    candidate_cap: int | None = None,
 ) -> tuple[list[int], int, int]:
-    """Materialize fingerprints, then run bulk MaxMin. Returns (pick indices, n_cached, n_computed)."""
+    """Materialize fingerprints, then MaxMin (exact or staged). Returns (pick indices, n_cached, n_computed)."""
     n = len(pool)
     pick_k = min(int(pick_size), n)
     fps, n_cached, n_computed = materialize_pool_fingerprints(
@@ -391,50 +545,36 @@ def run_diverse_subset_pick(
         use_process_pool=use_process_pool,
     )
     fp_base = n
+    resolved = resolve_diverse_mode(mode, n)
+    cap = int(candidate_cap) if candidate_cap is not None else int(
+        load_config().diverse_subset_fast_candidate_cap
+    )
 
     def _on_pick(done: int) -> None:
         if on_pick_done is not None:
             on_pick_done(fp_base + done, fp_base + pick_k)
 
-    pick_idx = maxmin_diverse_pick_bulk(
-        fps,
-        pick_k,
-        seed=seed,
-        cancel_event=cancel_event,
-        on_pick=_on_pick,
-    )
+    if resolved == "fast":
+        pick_idx = staged_maxmin_diverse_pick(
+            fps,
+            pick_k,
+            candidate_cap=cap,
+            seed=seed,
+            cancel_event=cancel_event,
+            on_pick=_on_pick,
+        )
+    else:
+        pick_idx = maxmin_diverse_pick_bulk(
+            fps,
+            pick_k,
+            seed=seed,
+            cancel_event=cancel_event,
+            on_pick=_on_pick,
+        )
     return pick_idx, n_cached, n_computed
 
 
-def _mp_diverse_subset_pick(args: tuple) -> tuple[list[tuple[int, str]], int, int]:
-    """
-    Child-process diverse subset: parallel fingerprinting + bulk MaxMin.
-
-    Returns ``(column_rows, n_cache_used, n_computed)``.
-    """
-    packed_rows, fp_choice, internal_key, pick_k, seed = args
-    pool: list[DiverseSubsetPoolRow] = []
-    n_cache = 0
-    for oid, mol_bytes, fp_bytes in packed_rows:
-        mol = Chem.Mol(mol_bytes) if mol_bytes else None
-        fp = pickle.loads(fp_bytes) if fp_bytes else None
-        if fp is not None:
-            n_cache += 1
-        pool.append(DiverseSubsetPoolRow(oid=int(oid), mol=mol, fp=fp))
-
-    pick_idx, n_cache_resolved, n_computed = run_diverse_subset_pick(
-        pool,
-        fp_choice,
-        pick_k,
-        internal_key,
-        seed=seed,
-        use_process_pool=True,
-    )
-    column_rows = [(pool[i].oid, str(rank + 1)) for rank, i in enumerate(pick_idx)]
-    return column_rows, n_cache_resolved, n_computed
-
-
-def _diverse_subset_process_pool_min_rows() -> int:
+def _diverse_subset_fp_process_pool_min_rows() -> int:
     cfg = load_config()
     return int(cfg.descriptor_fp_process_pool_min_rows or _PROCESS_POOL_MIN_ROWS)
 
@@ -444,23 +584,36 @@ class DiverseSubsetWorker(QRunnable):
 
     def __init__(
         self,
-        rows: list[tuple[int, Chem.Mol]],
+        rows: list[tuple[int, Chem.Mol]] | None,
         fp_choice: str,
         subset_size: int,
         signals: DiverseSubsetSignals,
         *,
+        oids: list[int] | None = None,
+        structure_source: str = "Structure",
+        app: Any | None = None,
+        mols_by_oid: dict[int, Chem.Mol] | None = None,
+        structure_texts: list[tuple[int, str]] | None = None,
         onbits_by_oid: dict[int, str] | None = None,
         use_onbits_column: bool = False,
+        mode: str = "auto",
         cancel_event: threading.Event | None = None,
         progress_state=None,
     ):
         super().__init__()
         self.rows = rows
+        self.oids = [int(o) for o in (oids or [])]
+        self.structure_source = structure_source or "Structure"
+        # Prefer mols_by_oid / structure_texts snapshots — never touch Qt from this thread.
+        self.app = app
+        self.mols_by_oid = mols_by_oid
+        self.structure_texts = structure_texts
         self.fp_choice = fp_choice
         self.subset_size = max(0, int(subset_size))
         self.signals = signals
         self.onbits_by_oid = onbits_by_oid
         self.use_onbits_column = bool(use_onbits_column)
+        self.mode = (mode or "auto").strip().lower()
         self.cancel_event = cancel_event
         self.progress_state = progress_state
 
@@ -473,6 +626,51 @@ class DiverseSubsetWorker(QRunnable):
             force_signal=force,
         )
 
+    def _resolve_rows(self) -> list[tuple[int, Chem.Mol]]:
+        if self.rows is not None:
+            return list(self.rows)
+        out: list[tuple[int, Chem.Mol]] = []
+        seen: set[int] = set()
+        mols_map = self.mols_by_oid
+        if mols_map:
+            oid_iter = self.oids if self.oids else list(mols_map.keys())
+            for oid in oid_iter:
+                if self.cancel_event is not None and self.cancel_event.is_set():
+                    raise _Cancelled()
+                mol = mols_map.get(int(oid))
+                if mol is not None:
+                    oi = int(oid)
+                    out.append((oi, mol))
+                    seen.add(oi)
+        texts = self.structure_texts
+        if texts:
+            from ..utils import parse_molecule_from_cell_text
+
+            for oid, raw in texts:
+                if self.cancel_event is not None and self.cancel_event.is_set():
+                    raise _Cancelled()
+                oi = int(oid)
+                if oi in seen:
+                    continue
+                mol = parse_molecule_from_cell_text(raw or "")
+                if mol is not None:
+                    out.append((oi, mol))
+                    seen.add(oi)
+        if out or mols_map is not None or texts is not None:
+            return out
+        # Legacy fallback (tests / callers that still pass app + oids).
+        app = self.app
+        if app is None:
+            return []
+        mols_fallback = getattr(app, "mols", None) or {}
+        for oid in self.oids:
+            if self.cancel_event is not None and self.cancel_event.is_set():
+                raise _Cancelled()
+            mol = mols_fallback.get(int(oid))
+            if mol is not None:
+                out.append((int(oid), mol))
+        return out
+
     def run(self) -> None:
         try:
             cancel_ev = self.cancel_event
@@ -481,8 +679,14 @@ class DiverseSubsetWorker(QRunnable):
                 self.signals.failed.emit("Unknown fingerprint type.")
                 return
 
+            try:
+                row_pairs = self._resolve_rows()
+            except _Cancelled:
+                self.signals.failed.emit("Cancelled.")
+                return
+
             pool, err = build_diverse_subset_pool(
-                self.rows,
+                row_pairs,
                 self.fp_choice,
                 onbits_by_oid=self.onbits_by_oid,
                 require_onbits_column=self.use_onbits_column,
@@ -509,87 +713,39 @@ class DiverseSubsetWorker(QRunnable):
             pick_k = min(k, n)
             internal_key = spec.internal_key
             progress_total = n + pick_k
+            resolved_mode = resolve_diverse_mode(self.mode, n)
 
             if cancel_ev is not None and cancel_ev.is_set():
                 self.signals.failed.emit("Cancelled.")
                 return
 
-            use_mp = n >= _diverse_subset_process_pool_min_rows()
-            column_rows: list[tuple[int, str]]
-            n_cache = 0
-            n_computed = 0
-
             self._report(0, progress_total, force=True)
 
-            if use_mp:
-                packed = []
-                for row in pool:
-                    mol_bytes = row.mol.ToBinary() if row.mol is not None else b""
-                    fp_bytes = pickle.dumps(row.fp) if row.fp is not None else b""
-                    packed.append((row.oid, mol_bytes, fp_bytes))
-                ex = register_process_pool(ProcessPoolExecutor(max_workers=1))
-                try:
-                    fut = ex.submit(
-                        _mp_diverse_subset_pick,
-                        (packed, self.fp_choice, internal_key, pick_k, -1),
-                    )
-                    last_pulse = 0.0
-                    while not fut.done():
-                        if should_terminate_process_pool(cancel_ev):
-                            fut.cancel()
-                            self.signals.failed.emit("Cancelled.")
-                            return
-                        now = time.monotonic()
-                        if now - last_pulse >= 0.4:
-                            last_pulse = now
-                            self._report(0, progress_total, force=True)
-                        try:
-                            fut.result(timeout=0.2)
-                        except TimeoutError:
-                            continue
-                    column_rows, n_cache, n_computed = fut.result()
-                except _Cancelled:
-                    self.signals.failed.emit("Cancelled.")
-                    return
-                except Exception as e:
-                    if should_terminate_process_pool(cancel_ev):
-                        self.signals.failed.emit("Cancelled.")
-                        return
-                    logger.exception("Diverse subset process pool failed")
-                    self.signals.failed.emit(str(e) or "Diverse subset failed.")
-                    return
-                finally:
-                    shutdown_process_pool_executor(
-                        ex, kill_workers=should_terminate_process_pool(cancel_ev)
-                    )
-            else:
-                use_fp_mp = (
-                    fingerprint_is_gil_heavy(self.fp_choice)
-                    or n >= _PROCESS_POOL_MIN_ROWS
+            use_fp_mp = fingerprint_is_gil_heavy(self.fp_choice) or n >= _diverse_subset_fp_process_pool_min_rows()
+
+            def _on_fp(done: int, _tot: int) -> None:
+                self._report(min(done, n), progress_total)
+
+            def _on_pick(done: int, _tot: int) -> None:
+                self._report(min(n + done, progress_total), progress_total)
+
+            try:
+                pick_idx, n_cache, n_computed = run_diverse_subset_pick(
+                    pool,
+                    self.fp_choice,
+                    pick_k,
+                    internal_key,
+                    cancel_event=cancel_ev,
+                    on_fp_done=_on_fp,
+                    on_pick_done=_on_pick,
+                    use_process_pool=use_fp_mp,
+                    mode=resolved_mode,
                 )
+            except _Cancelled:
+                self.signals.failed.emit("Cancelled.")
+                return
 
-                def _on_fp(done: int, _tot: int) -> None:
-                    self._report(min(done, n), progress_total)
-
-                def _on_pick(done: int, _tot: int) -> None:
-                    self._report(min(n + done, progress_total), progress_total)
-
-                try:
-                    pick_idx, n_cache, n_computed = run_diverse_subset_pick(
-                        pool,
-                        self.fp_choice,
-                        pick_k,
-                        internal_key,
-                        cancel_event=cancel_ev,
-                        on_fp_done=_on_fp,
-                        on_pick_done=_on_pick,
-                        use_process_pool=use_fp_mp,
-                    )
-                except _Cancelled:
-                    self.signals.failed.emit("Cancelled.")
-                    return
-                column_rows = [(pool[i].oid, str(rank + 1)) for rank, i in enumerate(pick_idx)]
-
+            column_rows = [(pool[i].oid, str(rank + 1)) for rank, i in enumerate(pick_idx)]
             picked_oids = [oid for oid, _ in column_rows]
             self._report(progress_total, progress_total, force=True)
             self.signals.finished.emit(picked_oids, column_rows, n_cache, n_computed)

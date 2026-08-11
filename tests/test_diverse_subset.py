@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import threading
+
 from rdkit import Chem
 from rdkit.Chem import AllChem
 
@@ -12,9 +14,14 @@ from molmanager.workers.diverse_subset_worker import (
     DiverseSubsetPoolRow,
     DiverseSubsetWorker,
     build_diverse_subset_pool,
+    materialize_pool_fingerprints,
     maxmin_diverse_pick_bulk,
     maxmin_diverse_pick_indices,
     maxmin_diverse_pick_lazy,
+    prefilter_candidate_indices,
+    resolve_diverse_mode,
+    run_diverse_subset_pick,
+    staged_maxmin_diverse_pick,
 )
 from molmanager.workers.signals import DiverseSubsetSignals
 
@@ -80,6 +87,98 @@ def test_build_pool_uses_onbits_column_filter():
     assert pool_filt[0].fp is not None
 
 
+def test_materialize_stores_fps_in_parent_cache():
+    clear_fp_cache()
+    smis = ["CCO", "c1ccccc1", "CC(=O)O"]
+    pool = []
+    for i, s in enumerate(smis):
+        m = Chem.MolFromSmiles(s)
+        assert m is not None
+        pool.append(DiverseSubsetPoolRow(oid=100 + i, mol=m, fp=None))
+    fps, n_cached, n_computed = materialize_pool_fingerprints(
+        pool, "Morgan (r=2, n=2048)", "FP_Morgan_2_2048", use_process_pool=False
+    )
+    assert n_cached == 0
+    assert n_computed == 3
+    assert len(fps) == 3
+    assert cache_get(100, "FP_Morgan_2_2048") is not None
+    assert cache_get(102, "FP_Morgan_2_2048") is not None
+
+
+def test_staged_pick_size_and_uniqueness():
+    # Build a larger synthetic pool so staging actually prefilters.
+    smis = [
+        "CCO",
+        "CCCO",
+        "CCCCO",
+        "c1ccccc1",
+        "Cc1ccccc1",
+        "Clc1ccccc1",
+        "CC(=O)O",
+        "CCC(=O)O",
+        "C=C",
+        "C#N",
+        "CCN",
+        "c1ccncc1",
+    ]
+    fps = _morgan_fps(smis)
+    picks = staged_maxmin_diverse_pick(fps, 4, candidate_cap=6, seed=7)
+    assert len(picks) == 4
+    assert len(set(picks)) == 4
+    assert all(0 <= i < len(fps) for i in picks)
+
+
+def test_prefilter_respects_cap():
+    fps = _morgan_fps([f"{'C' * (i + 1)}O" for i in range(20)])
+    idx = prefilter_candidate_indices(fps, 8, seed=1)
+    assert len(idx) <= 8
+    assert len(idx) == len(set(idx))
+
+
+def test_resolve_diverse_mode_auto():
+    assert resolve_diverse_mode("exact", 100_000) == "exact"
+    assert resolve_diverse_mode("fast", 10) == "fast"
+    assert resolve_diverse_mode("auto", 10, exact_max_rows=50) == "exact"
+    assert resolve_diverse_mode("auto", 100, exact_max_rows=50) == "fast"
+
+
+def test_run_diverse_subset_pick_fast_mode():
+    clear_fp_cache()
+    smis = ["CCO", "CCCO", "c1ccccc1", "Cc1ccccc1", "CC(=O)O", "CCC", "C=C", "CCN"]
+    pool = []
+    for i, s in enumerate(smis):
+        m = Chem.MolFromSmiles(s)
+        assert m is not None
+        pool.append(DiverseSubsetPoolRow(oid=i, mol=m, fp=None))
+    picks, _nc, _ncomp = run_diverse_subset_pick(
+        pool,
+        "Morgan (r=2, n=2048)",
+        3,
+        "FP_Morgan_2_2048",
+        mode="fast",
+        candidate_cap=5,
+        use_process_pool=False,
+    )
+    assert len(picks) == 3
+    assert len(set(picks)) == 3
+
+
+def test_diverse_subset_worker_cancel():
+    smis = ["CCO", "CCCO", "c1ccccc1", "CC(=O)O", "CCC", "C=C"]
+    rows = []
+    for i, s in enumerate(smis):
+        m = Chem.MolFromSmiles(s)
+        assert m is not None
+        rows.append((i, m))
+    sig = _CaptureSignals()
+    ev = threading.Event()
+    ev.set()
+    worker = DiverseSubsetWorker(rows, "Morgan (r=2, n=2048)", 4, sig, cancel_event=ev)
+    worker.run()
+    assert sig.err == "Cancelled."
+    assert sig.picked == []
+
+
 class _CaptureSignals(DiverseSubsetSignals):
     def __init__(self) -> None:
         super().__init__(None)
@@ -109,10 +208,96 @@ def test_diverse_subset_worker_picks_k():
         assert m is not None
         rows.append((i, m))
     sig = _CaptureSignals()
-    worker = DiverseSubsetWorker(rows, "Morgan (r=2, n=2048)", 4, sig)
+    worker = DiverseSubsetWorker(rows, "Morgan (r=2, n=2048)", 4, sig, mode="exact")
     worker.run()
     assert sig.err is None
     assert len(sig.picked) == 4
     assert len(sig.rows) == 4
     ranks = {oid: rank for oid, rank in sig.rows}
     assert set(ranks.values()) == {"1", "2", "3", "4"}
+
+
+def test_prefilter_skips_leader_on_large_pools(monkeypatch):
+    """BindingDB-scale pools must not run LeaderPicker (would freeze)."""
+    calls = {"n": 0}
+
+    def _boom(*_a, **_k):
+        calls["n"] += 1
+        raise AssertionError("Leader should not run on large pools")
+
+    monkeypatch.setattr(
+        "molmanager.workers.diverse_subset_worker._leader_candidate_indices",
+        _boom,
+    )
+    fps = list(range(30_000))  # opaque stand-ins; Leader is never called
+    idx = prefilter_candidate_indices(fps, 100, seed=3, leader_max_rows=25_000)
+    assert calls["n"] == 0
+    assert len(idx) == 100
+    assert len(set(idx)) == 100
+
+
+def test_diverse_subset_worker_resolves_oids_via_app():
+    class _App:
+        def __init__(self, mols: dict[int, Chem.Mol]):
+            self.mols = mols
+
+    smis = ["CCO", "c1ccccc1", "CC(=O)O", "CCC"]
+    mols = {}
+    for i, s in enumerate(smis):
+        m = Chem.MolFromSmiles(s)
+        assert m is not None
+        mols[i] = m
+    sig = _CaptureSignals()
+    worker = DiverseSubsetWorker(
+        None,
+        "Morgan (r=2, n=2048)",
+        2,
+        sig,
+        oids=list(mols.keys()),
+        structure_source="Structure",
+        app=_App(mols),
+        mode="exact",
+    )
+    worker.run()
+    assert sig.err is None
+    assert len(sig.picked) == 2
+
+
+def test_diverse_subset_worker_resolves_mols_by_oid_snapshot():
+    smis = ["CCO", "c1ccccc1", "CC(=O)O", "CCC"]
+    mols = {}
+    for i, s in enumerate(smis):
+        m = Chem.MolFromSmiles(s)
+        assert m is not None
+        mols[i] = m
+    sig = _CaptureSignals()
+    worker = DiverseSubsetWorker(
+        None,
+        "Morgan (r=2, n=2048)",
+        2,
+        sig,
+        oids=list(mols.keys()),
+        mols_by_oid=mols,
+        mode="exact",
+    )
+    worker.run()
+    assert sig.err is None
+    assert len(sig.picked) == 2
+
+
+def test_diverse_subset_worker_resolves_structure_texts():
+    smis = ["CCO", "c1ccccc1", "CC(=O)O", "CCC"]
+    texts = [(i, s) for i, s in enumerate(smis)]
+    sig = _CaptureSignals()
+    worker = DiverseSubsetWorker(
+        None,
+        "Morgan (r=2, n=2048)",
+        2,
+        sig,
+        oids=[i for i, _ in texts],
+        structure_texts=texts,
+        mode="exact",
+    )
+    worker.run()
+    assert sig.err is None
+    assert len(sig.picked) == 2

@@ -23,6 +23,7 @@ from ...utils import (
     looks_like_mol_block,
     mol_to_canonical_smiles,
     parse_molecule_from_cell_text,
+    row_cells_from_mol,
     safe_mol_prop_string,
 )
 from ...column_log_transform import (
@@ -1023,22 +1024,7 @@ class TableUIMixin(TableSearchMixin, FilterPanelMixin):
 
     def _row_cells_from_mol(self, mol: Chem.Mol | None) -> dict[str, str]:
         """Build row cell values for all data columns from one molecule."""
-        values: dict[str, str] = {}
-        for _c, name in enumerate(self.headers[2:], start=2):
-            if mol is None:
-                txt = ""
-            elif name == "SMILES":
-                if mol.HasProp("SMILES"):
-                    txt = (safe_mol_prop_string(mol, "SMILES") or "").strip()
-                else:
-                    try:
-                        txt = mol_to_canonical_smiles(mol)
-                    except Exception:
-                        txt = ""
-            else:
-                txt = safe_mol_prop_string(mol, name)
-            values[name] = txt
-        return values
+        return row_cells_from_mol(mol, self.headers[2:])
 
     def _mol_for_structure_row(self, row: int) -> Chem.Mol | None:
         """Best-effort RDKit mol: in-memory store, then any parseable chemistry in table columns."""
