@@ -2,9 +2,13 @@
 
 from __future__ import annotations
 
-from PyQt5.QtWidgets import QHBoxLayout, QLabel, QLineEdit, QWidget
+from PyQt5.QtCore import Qt
+from PyQt5.QtWidgets import QHBoxLayout, QLabel, QLineEdit, QSizePolicy, QWidget
 
 from ..plot_color import parse_color_range_bounds
+
+# Min:/Max: labels + two 72px edits + spacing; keep Fixed so parent layouts cannot crush them.
+_COLOR_RANGE_CONTROLS_WIDTH = 220
 
 
 class PlotColorRangeControls(QWidget):
@@ -12,27 +16,33 @@ class PlotColorRangeControls(QWidget):
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
+        self.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
+        self.setFixedWidth(_COLOR_RANGE_CONTROLS_WIDTH)
+
         row = QHBoxLayout(self)
         row.setContentsMargins(0, 0, 0, 0)
         row.setSpacing(6)
 
-        self._range_label = QLabel("Color range:")
-        row.addWidget(self._range_label)
-
         self._min_label = QLabel("Min:")
+        self._min_label.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
         row.addWidget(self._min_label)
         self.color_min = QLineEdit()
         self.color_min.setPlaceholderText("auto")
         self.color_min.setFixedWidth(72)
-        self.color_min.setToolTip("Minimum value mapped to the low end of the spectrum (empty = data min).")
+        self.color_min.setToolTip(
+            "Minimum value mapped to the low end of the spectrum (empty = data min)."
+        )
         row.addWidget(self.color_min)
 
         self._max_label = QLabel("Max:")
+        self._max_label.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
         row.addWidget(self._max_label)
         self.color_max = QLineEdit()
         self.color_max.setPlaceholderText("auto")
         self.color_max.setFixedWidth(72)
-        self.color_max.setToolTip("Maximum value mapped to the high end of the spectrum (empty = data max).")
+        self.color_max.setToolTip(
+            "Maximum value mapped to the high end of the spectrum (empty = data max)."
+        )
         row.addWidget(self.color_max)
 
         self.set_enabled(False)
@@ -47,7 +57,6 @@ class PlotColorRangeControls(QWidget):
 
     def set_enabled(self, enabled: bool) -> None:
         for widget in (
-            self._range_label,
             self._min_label,
             self.color_min,
             self._max_label,

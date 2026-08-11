@@ -19,6 +19,44 @@ CONFS_CELL_JSON_MAX = 2000
 # Packed cell (meta + base64 mol blocks) upper bound; truncate conformers if exceeded.
 CONFS_CELL_PACK_MAX_CHARS = 950_000
 
+
+def conformer_is_3d(conf, *, z_eps: float = 1e-3) -> bool:
+    """True when *conf* is marked 3D or has a non-negligible Z coordinate."""
+    try:
+        if bool(conf.Is3D()):
+            return True
+    except Exception:
+        pass
+    try:
+        n = int(conf.GetNumAtoms())
+    except Exception:
+        return False
+    for i in range(n):
+        try:
+            if abs(float(conf.GetAtomPosition(i).z)) > z_eps:
+                return True
+        except Exception:
+            continue
+    return False
+
+
+def mol_has_3d_coordinates(mol: Chem.Mol | None, *, z_eps: float = 1e-3) -> bool:
+    """True when *mol* has at least one conformer with 3D coordinates."""
+    if mol is None:
+        return False
+    try:
+        nconf = int(mol.GetNumConformers())
+    except Exception:
+        return False
+    for cid in range(nconf):
+        try:
+            if conformer_is_3d(mol.GetConformer(cid), z_eps=z_eps):
+                return True
+        except Exception:
+            continue
+    return False
+
+
 _META_KEYS = (
     "ok",
     "n_requested",
@@ -79,6 +117,84 @@ def conformer_mol_blocks_b64_json(mol: Chem.Mol) -> str:
             continue
     payload = json.dumps(blocks).encode("utf-8")
     return base64.b64encode(payload).decode("ascii")
+
+
+def mol_blocks_b64_json_from_mols(mols: list[Chem.Mol]) -> str:
+    """Base64(JSON list of base64(mol block)) for one structure per molecule (first conformer)."""
+    blocks: list[str] = []
+    for mol in mols:
+        if mol is None:
+            continue
+        try:
+            m = Chem.Mol(mol)
+        except Exception:
+            continue
+        try:
+            if int(m.GetNumConformers()) < 1:
+                continue
+            cid = int(m.GetConformer().GetId())
+            block = Chem.MolToMolBlock(m, confId=cid)
+            blocks.append(base64.b64encode(block.encode("utf-8")).decode("ascii"))
+        except Exception:
+            continue
+    return base64.b64encode(json.dumps(blocks).encode("utf-8")).decode("ascii")
+
+
+def pack_mols_as_confs_cell(
+    meta: dict,
+    mols: list[Chem.Mol],
+    *,
+    max_chars: int = CONFS_CELL_PACK_MAX_CHARS,
+) -> str:
+    """
+    Pack one or more molecules into a ``confs``/``superpose`` cell for the 3D viewer.
+
+    When every molecule has the same atom count, coordinates are merged into a multi-conformer
+    mol so Strain Energy / RMSD tools can rebuild them. Otherwise each molecule is stored as its
+    own mol block (viewer still works; same-topology tools may not).
+    """
+    base = format_confs_table_cell(meta)
+    singles: list[Chem.Mol] = []
+    for mol in mols:
+        if mol is None:
+            continue
+        try:
+            m = Chem.Mol(mol)
+        except Exception:
+            continue
+        try:
+            if int(m.GetNumConformers()) < 1:
+                continue
+            conf = Chem.Conformer(m.GetConformer())
+            m.RemoveAllConformers()
+            m.AddConformer(conf, assignId=True)
+            singles.append(m)
+        except Exception:
+            continue
+    if not singles:
+        return base
+    atom_counts = {int(m.GetNumAtoms()) for m in singles}
+    if len(atom_counts) == 1 and len(singles) >= 1:
+        try:
+            merged = Chem.Mol(singles[0])
+            merged.RemoveAllConformers()
+            for m in singles:
+                merged.AddConformer(Chem.Conformer(m.GetConformer(0)), assignId=True)
+            return pack_confs_cell(meta, merged, max_chars=max_chars)
+        except Exception:
+            logger.debug("pack_mols_as_confs_cell: multi-conf merge failed", exc_info=True)
+    blocks_b64 = mol_blocks_b64_json_from_mols(singles)
+    meta_out = {k: meta[k] for k in _META_KEYS if k in meta}
+    meta_out["n_kept"] = len(singles)
+    meta_out["n_packed"] = len(singles)
+    inner: dict[str, Any] = {"v": CONFS_PACK_VERSION, "m": meta_out, "b": blocks_b64}
+    try:
+        s = json.dumps(inner, separators=(",", ":"), ensure_ascii=True)
+    except (TypeError, ValueError):
+        return base
+    if len(s) <= max_chars:
+        return s
+    return base
 
 
 def pack_confs_cell(meta: dict, mol: Chem.Mol | None, *, max_chars: int = CONFS_CELL_PACK_MAX_CHARS) -> str:
@@ -268,10 +384,13 @@ def deserialize_confs_sidecar(raw: dict | None) -> dict[tuple[int, str], str]:
     return out
 
 
-def mol_from_packed_confs_cell(cell_text: str) -> Chem.Mol | None:
+def mol_from_packed_confs_cell(cell_text: str, *, min_conformers: int = 2) -> Chem.Mol | None:
     """
     Rebuild a multi-conformer :class:`rdkit.Chem.Mol` from a packed ``confs`` / ``superpose`` table cell
-    (version 1 with coordinate payload ``b``). Returns ``None`` if the cell is not packed or has fewer than two conformers.
+    (version 1 with coordinate payload ``b``).
+
+    Returns ``None`` if the cell is not packed or has fewer than *min_conformers* conformers
+    (default 2, matching superpose).
     """
     b64 = unpack_confs_blocks_json_b64(cell_text)
     if b64 is None:
@@ -280,7 +399,8 @@ def mol_from_packed_confs_cell(cell_text: str) -> Chem.Mol | None:
         blocks_enc = json.loads(base64.b64decode(b64.encode("ascii")))
     except Exception:
         return None
-    if not isinstance(blocks_enc, list) or len(blocks_enc) < 2:
+    need = max(1, int(min_conformers))
+    if not isinstance(blocks_enc, list) or len(blocks_enc) < need:
         return None
     blocks: list[str] = []
     for enc in blocks_enc:

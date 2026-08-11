@@ -4,6 +4,11 @@ from __future__ import annotations
 
 from PyQt5.QtWidgets import QWidget
 
+# Floor when no docked content is present (empty host / buttons only).
+PLOT_PANEL_BASE_MINIMUM_WIDTH = 420
+# Comfortable default when embedding a plotter with axes + statistics side-by-side.
+PLOT_PANEL_DEFAULT_WIDTH = 840
+
 
 def iter_plot_selection_views(root: QWidget | None) -> list:
     """Return widgets that implement ``sync_from_table_selection`` (plot ↔ table)."""
@@ -35,3 +40,38 @@ def is_dockable_plot_widget(widget) -> bool:
         getattr(widget, "only_selected_cb", None) is not None
         and bool(iter_plot_selection_views(widget))
     )
+
+
+def plot_embedded_minimum_width(widget: QWidget | None) -> int:
+    """Minimum panel width so docked plot controls do not overlap or clip."""
+    if widget is None:
+        return PLOT_PANEL_BASE_MINIMUM_WIDTH
+    custom = getattr(widget, "embedded_minimum_width", None)
+    if callable(custom):
+        try:
+            return max(PLOT_PANEL_BASE_MINIMUM_WIDTH, int(custom()))
+        except Exception:
+            pass
+    try:
+        hint = int(widget.minimumSizeHint().width())
+    except Exception:
+        hint = 0
+    return max(PLOT_PANEL_BASE_MINIMUM_WIDTH, hint)
+
+
+def plot_embedded_preferred_width(widget: QWidget | None) -> int:
+    """Preferred dock width (at least the minimum needed for controls)."""
+    min_w = plot_embedded_minimum_width(widget)
+    if widget is None:
+        return max(min_w, PLOT_PANEL_DEFAULT_WIDTH)
+    custom = getattr(widget, "embedded_preferred_width", None)
+    if callable(custom):
+        try:
+            return max(min_w, int(custom()))
+        except Exception:
+            pass
+    try:
+        hint = int(widget.sizeHint().width())
+    except Exception:
+        hint = 0
+    return max(min_w, hint, PLOT_PANEL_DEFAULT_WIDTH)

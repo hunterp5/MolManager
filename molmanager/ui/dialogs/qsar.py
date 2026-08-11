@@ -1,8 +1,8 @@
-"""QSAR — quantitative structure–activity relationship modeling (Tools menu)."""
+"""QSAR — quantitative structure–activity relationship modeling (Data menu)."""
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from PyQt5.QtCore import Qt
 from PyQt5.QtGui import QCloseEvent
@@ -28,7 +28,12 @@ from PyQt5.QtWidgets import (
     QWidget,
 )
 
-from ...qsar import CLASSIFICATION_MODELS, REGRESSION_MODELS, QSARFitResult
+from ...qsar import (
+    CLASSIFICATION_MODELS,
+    REGRESSION_MODELS,
+    QSARFitResult,
+    param_specs_for_model,
+)
 from ...workers import SIMILARITY_FP_TYPE_LABELS
 from ...workers.qsar_worker import QSARSignals, QSARPredictWorker, QSARTrainWorker
 from ..data_analysis import numeric_subset, table_to_dataframe
@@ -46,8 +51,8 @@ class QSARDialog(QDialog):
         super().__init__(parent)
         self.parent_app = parent
         self.setWindowTitle("QSAR")
-        self.setMinimumSize(720, 520)
-        self.resize(900, 620)
+        self.setMinimumSize(720, 560)
+        self.resize(900, 680)
         make_window_minimizable(self)
 
         n_sel = len(parent._selected_logical_rows()) if parent is not None else 0
@@ -56,6 +61,7 @@ class QSARDialog(QDialog):
         self._job_running = False
         self._active_progress_label = "QSAR"
         self._active_qsar_job_id: str | None = None
+        self._param_widgets: dict[str, QWidget] = {}
 
         self._signals = QSARSignals(self)
         self._signals.train_finished.connect(self._on_train_finished, Qt.QueuedConnection)
@@ -74,12 +80,12 @@ class QSARDialog(QDialog):
         left_lyt.setSpacing(8)
 
         scope = QHBoxLayout()
-        self.chk_visible = QCheckBox("Visible rows only (respect filters)")
+        self.chk_visible = QCheckBox("Visible Rows Only")
         self.chk_visible.setChecked(True)
         self.chk_visible.stateChanged.connect(self._reload_columns)
         scope.addWidget(self.chk_visible)
-        self.only_selected_cb = QCheckBox("Only selected rows")
-        self._only_selected_scope_prefix = "Only selected rows"
+        self.only_selected_cb = QCheckBox("Selected Rows Only")
+        self._only_selected_scope_prefix = "Selected Rows Only"
         if self._have_selection:
             self.only_selected_cb.setText(f"{self._only_selected_scope_prefix} ({n_sel} row(s))")
         else:
@@ -147,12 +153,15 @@ class QSARDialog(QDialog):
         model_grp = QGroupBox("Model")
         model_form = QFormLayout(model_grp)
         self.model_combo = QComboBox()
+        self.model_combo.currentIndexChanged.connect(self._rebuild_model_params)
         model_form.addRow("Algorithm:", self.model_combo)
         self.train_frac_spin = QDoubleSpinBox()
         self.train_frac_spin.setRange(0.5, 0.95)
         self.train_frac_spin.setSingleStep(0.05)
         self.train_frac_spin.setValue(0.8)
-        self.train_frac_spin.setToolTip("Fraction of labeled rows used for training (remainder is hold-out test).")
+        self.train_frac_spin.setToolTip(
+            "Fraction of labeled rows used for training (remainder is hold-out test)."
+        )
         model_form.addRow("Train fraction:", self.train_frac_spin)
         self.cv_folds_spin = QSpinBox()
         self.cv_folds_spin.setRange(2, 10)
@@ -162,6 +171,13 @@ class QSARDialog(QDialog):
         self.standardize_cb.setChecked(True)
         model_form.addRow("", self.standardize_cb)
         left_lyt.addWidget(model_grp)
+
+        self.param_grp = QGroupBox("Parameters")
+        self._param_form = QFormLayout(self.param_grp)
+        self._param_hint = QLabel("Select an algorithm to edit its hyperparameters.")
+        self._param_hint.setWordWrap(True)
+        self._param_form.addRow(self._param_hint)
+        left_lyt.addWidget(self.param_grp)
 
         out_grp = QGroupBox("Output")
         out_form = QFormLayout(out_grp)
@@ -204,6 +220,69 @@ class QSARDialog(QDialog):
         self._reload_columns()
         self._on_fp_toggled()
         self._on_task_changed(self.task_combo.currentIndex())
+
+    def _clear_param_form(self) -> None:
+        while self._param_form.rowCount():
+            self._param_form.removeRow(0)
+        self._param_widgets.clear()
+
+    def _rebuild_model_params(self, *_args) -> None:
+        self._clear_param_form()
+        model_key = self.model_combo.currentData()
+        specs = param_specs_for_model(str(model_key)) if model_key else []
+        if not specs:
+            hint = QLabel("No tunable parameters for this algorithm.")
+            hint.setWordWrap(True)
+            self._param_form.addRow(hint)
+            self.param_grp.setVisible(bool(model_key))
+            return
+        self.param_grp.setVisible(True)
+        for spec in specs:
+            key = str(spec["key"])
+            label = str(spec.get("label") or key)
+            kind = str(spec.get("kind") or "float")
+            tip = str(spec.get("tooltip") or "")
+            widget: QWidget
+            if kind == "bool":
+                widget = QCheckBox()
+                widget.setChecked(bool(spec.get("default", False)))
+            elif kind == "choice":
+                combo = QComboBox()
+                default = spec.get("default")
+                for value, choice_label in spec.get("choices") or []:
+                    combo.addItem(str(choice_label), value)
+                idx = combo.findData(default)
+                if idx >= 0:
+                    combo.setCurrentIndex(idx)
+                widget = combo
+            elif kind == "int":
+                spin = QSpinBox()
+                spin.setRange(int(spec.get("min", 0)), int(spec.get("max", 1000)))
+                spin.setValue(int(spec.get("default", 0)))
+                widget = spin
+            else:
+                spin_f = QDoubleSpinBox()
+                spin_f.setDecimals(int(spec.get("decimals", 4)))
+                spin_f.setRange(float(spec.get("min", 0.0)), float(spec.get("max", 1e6)))
+                spin_f.setValue(float(spec.get("default", 0.0)))
+                widget = spin_f
+            if tip:
+                widget.setToolTip(tip)
+            self._param_widgets[key] = widget
+            self._param_form.addRow(f"{label}:", widget)
+
+    def _collect_model_params(self) -> dict[str, Any]:
+        out: dict[str, Any] = {}
+        for key, widget in self._param_widgets.items():
+            if isinstance(widget, QDoubleSpinBox):
+                out[key] = float(widget.value())
+            elif isinstance(widget, QSpinBox):
+                out[key] = int(widget.value())
+            elif isinstance(widget, QComboBox):
+                out[key] = widget.currentData()
+            elif isinstance(widget, QCheckBox):
+                out[key] = bool(widget.isChecked())
+        return out
 
     def _scoped_dataframe_and_oids(self) -> tuple:
         app = self.parent_app
@@ -284,17 +363,18 @@ class QSARDialog(QDialog):
 
     def _on_task_changed(self, _index: int) -> None:
         mode = self._task_mode_key()
+        self.model_combo.blockSignals(True)
         self.model_combo.clear()
         if mode == "classification":
             items = CLASSIFICATION_MODELS
-        elif mode == "regression":
-            items = REGRESSION_MODELS
         else:
             items = REGRESSION_MODELS
         for key, label in items.items():
             self.model_combo.addItem(label, key)
         if self.model_combo.count():
             self.model_combo.setCurrentIndex(0)
+        self.model_combo.blockSignals(False)
+        self._rebuild_model_params()
 
     def _collect_mols(self) -> list:
         app = self.parent_app
@@ -348,6 +428,7 @@ class QSARDialog(QDialog):
             "train_fraction": float(self.train_frac_spin.value()),
             "cv_folds": int(self.cv_folds_spin.value()),
             "standardize": bool(self.standardize_cb.isChecked()),
+            "model_params": self._collect_model_params(),
         }
 
     def _set_job_running(self, running: bool) -> None:
@@ -371,7 +452,9 @@ class QSARDialog(QDialog):
         self._disconnect_pq_thread_finished()
         self._active_qsar_job_id = self.parent_app.process_queue.enqueue(
             f"QSAR train ({n} rows)",
-            lambda ev, p=params, sigs=self._signals, st=prog: QSARTrainWorker(p, sigs, cancel_event=ev),
+            lambda ev, p=params, sigs=self._signals, st=prog: QSARTrainWorker(
+                p, sigs, cancel_event=ev
+            ),
         )
         self.parent_app.process_queue.thread_finished.connect(self._on_pq_thread_finished)
 
@@ -397,7 +480,9 @@ class QSARDialog(QDialog):
         self._disconnect_pq_thread_finished()
         self._active_qsar_job_id = self.parent_app.process_queue.enqueue(
             f"QSAR predict ({n} rows)",
-            lambda ev, p=params, sigs=self._signals, st=prog: QSARPredictWorker(p, sigs, cancel_event=ev),
+            lambda ev, p=params, sigs=self._signals, st=prog: QSARPredictWorker(
+                p, sigs, cancel_event=ev
+            ),
         )
         self.parent_app.process_queue.thread_finished.connect(self._on_pq_thread_finished)
 
@@ -444,7 +529,8 @@ class QSARDialog(QDialog):
         self.predict_btn.setEnabled(True)
         if self.parent_app is not None:
             self.parent_app.status_label.setText(
-                f"QSAR: trained {result.model_key} on {result.n_train} rows ({result.n_features} features)."
+                f"QSAR: trained {result.model_key} on {result.n_train} rows "
+                f"({result.n_features} features)."
             )
 
     def _on_predict_finished(self, rows: list) -> None:
@@ -453,7 +539,11 @@ class QSARDialog(QDialog):
         self.parent_app._finish_tool_progress("QSAR predictions", status_message=None)
         self._set_job_running(False)
         if not rows or self.parent_app is None or self._fit_result is None:
-            QMessageBox.information(self, "QSAR", "No rows received predictions (missing features or structures).")
+            QMessageBox.information(
+                self,
+                "QSAR",
+                "No rows received predictions (missing features or structures).",
+            )
             return
         col = self.pred_column_edit.text().strip() or f"QSAR_{self._fit_result.activity_column}"
         res = [(int(oid), {col: next(iter(vals.values()), "N/A")}) for oid, vals in rows]

@@ -35,8 +35,8 @@ class Render2DStructureDialog(QDialog):
         self.src_combo.addItems(candidates)
         form.addRow("Draw from:", self.src_combo)
         ly.addLayout(form)
-        self.only_selected_cb = QCheckBox("Only selected rows")
-        self._only_selected_scope_prefix = "Selected rows only"
+        self.only_selected_cb = QCheckBox("Selected Rows Only")
+        self._only_selected_scope_prefix = "Selected Rows Only"
         if self._have_selection:
             self.only_selected_cb.setText(f"{self._only_selected_scope_prefix} ({selected_row_count})")
         else:

@@ -7,7 +7,7 @@ from PyQt5.QtWidgets import QDialog
 
 def selection_scope_checked(dialog: QDialog) -> bool:
     """
-    True when the dialog's “only selected rows” scope checkbox is checked and the parent
+    True when the dialog's “Selected Rows Only” scope checkbox is checked and the parent
     main window currently has at least one selected table row.
     """
     cb = getattr(dialog, "only_selected_cb", None)

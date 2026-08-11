@@ -186,7 +186,7 @@ class ToolsSqlPredictMixin:
         w = getattr(self, "_docked_plot_widget", None)
         if w is not None:
             try:
-                self._plot_panel.setVisible(True)
+                self.show_docked_plot_panel()
                 self._sync_dialog_only_selected_scope(w)
                 self._sync_active_plots_from_table_selection()
                 self.activateWindow()
@@ -923,7 +923,7 @@ class ToolsSqlPredictMixin:
             QMessageBox.warning(
                 self,
                 "Predict Permeability",
-                "\u201cOnly selected rows\u201d is checked but nothing is selected.",
+                "\u201cSelected Rows Only\u201d is checked but nothing is selected.",
             )
             return
         rows_smi = self.collect_scoped_table_smiles(src, only_selected=only_selected)

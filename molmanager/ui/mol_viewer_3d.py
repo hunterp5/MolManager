@@ -11,8 +11,10 @@ from pathlib import Path
 from PyQt5.QtCore import QTemporaryDir, QTimer, QUrl, Qt
 from PyQt5.QtWidgets import (
     QDialog,
+    QHBoxLayout,
     QLabel,
     QMessageBox,
+    QPushButton,
     QSizePolicy,
     QVBoxLayout,
     QWidget,
@@ -209,9 +211,19 @@ def _offline_embed_index_html(mol_b64: str = "") -> str:
     return _assemble_embed_viewer_page(mol_b64, script_src="3Dmol-min.js")
 
 
-def _offline_index_html_multiconf(blocks_json_b64: str, *, initial_superpose: bool = False) -> str:
+def _offline_index_html_multiconf(
+    blocks_json_b64: str,
+    *,
+    initial_superpose: bool = False,
+    strain_overlay_json_b64: str = "",
+    initial_conf_index: int = 0,
+) -> str:
     return _assemble_viewer_page_multiconf(
-        blocks_json_b64, script_src="3Dmol-min.js", initial_superpose=initial_superpose
+        blocks_json_b64,
+        script_src="3Dmol-min.js",
+        initial_superpose=initial_superpose,
+        strain_overlay_json_b64=strain_overlay_json_b64,
+        initial_conf_index=initial_conf_index,
     )
 
 
@@ -224,11 +236,19 @@ def _cdn_embed_fallback_html(mol_b64: str = "") -> str:
     return _assemble_embed_viewer_page(mol_b64, script_src="https://3dmol.org/build/3Dmol-min.js")
 
 
-def _cdn_fallback_html_multiconf(blocks_json_b64: str, *, initial_superpose: bool = False) -> str:
+def _cdn_fallback_html_multiconf(
+    blocks_json_b64: str,
+    *,
+    initial_superpose: bool = False,
+    strain_overlay_json_b64: str = "",
+    initial_conf_index: int = 0,
+) -> str:
     return _assemble_viewer_page_multiconf(
         blocks_json_b64,
         script_src="https://3dmol.org/build/3Dmol-min.js",
         initial_superpose=initial_superpose,
+        strain_overlay_json_b64=strain_overlay_json_b64,
+        initial_conf_index=initial_conf_index,
     )
 
 
@@ -379,14 +399,20 @@ def _mol_block_b64(mol: Chem.Mol) -> str:
 
 def _viewer_controls_multiconf_html() -> str:
     return """
-<div id="chem-conf-bar" style="position:fixed;left:50%;bottom:52px;transform:translateX(-50%);width:min(480px,calc(100vw - 20px));z-index:22;pointer-events:auto;box-sizing:border-box;display:flex;flex-direction:column;gap:8px;padding:10px 12px;font:12px/1.35 system-ui,Segoe UI,sans-serif;background:rgba(255,255,255,0.97);border:1px solid #c0c0c0;border-radius:10px;box-shadow:0 2px 10px rgba(0,0,0,.14);">
+<div id="chem-strain-overlay" style="display:none;position:fixed;top:8px;left:8px;z-index:25;pointer-events:none;max-width:min(320px,calc(100vw - 16px));padding:8px 10px;font:12px/1.4 system-ui,Segoe UI,sans-serif;color:#1a1a1a;background:rgba(255,255,255,0.94);border:1px solid #c8c8c8;border-radius:8px;box-shadow:0 2px 8px rgba(0,0,0,.12);">
+  <div id="chem-strain-abs" style="font-weight:600;"></div>
+  <div id="chem-strain-delta" style="margin-top:2px;"></div>
+  <div id="chem-strain-rmsd" style="margin-top:2px;"></div>
+  <div id="chem-strain-meta" style="margin-top:4px;color:#555;font-size:11px;"></div>
+</div>
+<div id="chem-conf-bar" style="position:fixed;left:50%;bottom:52px;transform:translateX(-50%);width:min(480px,calc(100vw - 20px));z-index:22;pointer-events:auto;box-sizing:border-box;display:flex;flex-direction:column;gap:14px;padding:10px 12px;font:12px/1.35 system-ui,Segoe UI,sans-serif;background:rgba(255,255,255,0.97);border:1px solid #c0c0c0;border-radius:10px;box-shadow:0 2px 10px rgba(0,0,0,.14);">
   <div style="display:flex;flex-wrap:wrap;align-items:center;column-gap:12px;row-gap:6px;width:100%;">
     <span style="font-weight:600;color:#222;">Conformers</span>
-    <label style="cursor:pointer;display:inline-flex;align-items:center;gap:5px;white-space:nowrap;"><input type="radio" name="chem-conf-view" id="chem-view-one" checked="checked"/> One at a time</label>
-    <label style="cursor:pointer;display:inline-flex;align-items:center;gap:5px;white-space:nowrap;"><input type="radio" name="chem-conf-view" id="chem-view-super"/> Superpose all</label>
+    <label style="cursor:pointer;display:inline-flex;align-items:center;gap:5px;white-space:nowrap;"><input type="radio" name="chem-conf-view" id="chem-view-one" checked="checked"/> Single</label>
+    <label style="cursor:pointer;display:inline-flex;align-items:center;gap:5px;white-space:nowrap;"><input type="radio" name="chem-conf-view" id="chem-view-super"/> Superpose</label>
     <span id="chem-conf-label" style="margin-left:auto;font-weight:600;color:#333;white-space:nowrap;padding-left:8px;"></span>
   </div>
-  <div id="chem-conf-nav" style="display:flex;align-items:center;gap:8px;width:100%;box-sizing:border-box;">
+  <div id="chem-conf-nav" style="display:flex;align-items:center;gap:8px;width:100%;box-sizing:border-box;margin-top:2px;">
     <button type="button" id="chem-conf-prev" style="flex:0 0 auto;padding:5px 12px;cursor:pointer;font:inherit;">Prev</button>
     <input type="range" id="chem-conf-slider" min="0" max="0" value="0" step="1" style="flex:1 1 auto;min-width:0;width:0;height:22px;cursor:pointer;"/>
     <button type="button" id="chem-conf-next" style="flex:0 0 auto;padding:5px 12px;cursor:pointer;font:inherit;">Next</button>
@@ -395,23 +421,94 @@ def _viewer_controls_multiconf_html() -> str:
 """
 
 
-def _viewer_init_script_multiconf(blocks_json_b64: str, *, initial_superpose: bool = False) -> str:
+def _viewer_init_script_multiconf(
+    blocks_json_b64: str,
+    *,
+    initial_superpose: bool = False,
+    strain_overlay_json_b64: str = "",
+    initial_conf_index: int = 0,
+) -> str:
     """Multi-conformer 3Dmol page: one-at-a-time vs superpose-all (no atom pick panel; mouse = rotate/zoom)."""
     init_sp = "true" if initial_superpose else "false"
+    energy_b64 = (strain_overlay_json_b64 or "").strip()
+    start_idx = max(0, int(initial_conf_index))
     tmpl = r"""  <script>
     function molmanagerInitView() {
       try {
         var initialSuperpose = __INIT_SP__;
+        var startIdx = __START_IDX__;
         const blocks = JSON.parse(atob("__BLOCKSJSONB64__"));
         if (!blocks || blocks.length === 0) {
           document.body.innerHTML = "<pre style='padding:12px'>No conformers to display.</pre>";
           return;
         }
         if (blocks.length < 2) initialSuperpose = false;
+        startIdx = Math.max(0, Math.min(startIdx, blocks.length - 1));
+        var energyInfo = null;
+        try {
+          var _eb = "__ENERGYJSONB64__";
+          if (_eb && _eb.length > 4) energyInfo = JSON.parse(atob(_eb));
+        } catch (_ee) { energyInfo = null; }
         const viewer = $3Dmol.createViewer("v", { backgroundColor: "white" });
-        var curIdx = 0;
+        var curIdx = startIdx;
         var superposed = false;
         var palette = ["#c0392b", "#2980b9", "#27ae60", "#8e44ad", "#f39c12", "#16a085", "#d35400", "#34495e"];
+
+        function fmtKcal(v) {
+          if (typeof v !== "number" || !isFinite(v)) return "—";
+          var s = (Math.round(v * 1000) / 1000).toFixed(3);
+          return s;
+        }
+
+        function updateStrainOverlay(modeIdx) {
+          var el = document.getElementById("chem-strain-overlay");
+          if (!el) return;
+          if (!energyInfo || !energyInfo.energies || !energyInfo.deltas) {
+            el.style.display = "none";
+            return;
+          }
+          el.style.display = "block";
+          var absEl = document.getElementById("chem-strain-abs");
+          var dEl = document.getElementById("chem-strain-delta");
+          var rmsEl = document.getElementById("chem-strain-rmsd");
+          var mEl = document.getElementById("chem-strain-meta");
+          var ff = energyInfo.ff || "";
+          var refIdx = (typeof energyInfo.ref_idx === "number") ? energyInfo.ref_idx : 0;
+          var hasRms = energyInfo.rmsds && energyInfo.rmsds.length;
+          if (superposed) {
+            var eRef = energyInfo.e_ref;
+            var maxDe = energyInfo.strain_max;
+            if (absEl) absEl.textContent = "E_ref = " + fmtKcal(eRef) + " kcal/mol";
+            if (dEl) dEl.textContent = "max ΔE = " + fmtKcal(maxDe) + " kcal/mol";
+            if (rmsEl) {
+              if (hasRms && typeof energyInfo.rmsd_max === "number") {
+                rmsEl.style.display = "block";
+                rmsEl.textContent = "max RMSD = " + fmtKcal(energyInfo.rmsd_max) + " Å";
+              } else {
+                rmsEl.style.display = "none";
+                rmsEl.textContent = "";
+              }
+            }
+            if (mEl) mEl.textContent = (ff ? (ff + " · ") : "") + "ref conf " + (refIdx + 1);
+            return;
+          }
+          var i = Math.max(0, Math.min(modeIdx, energyInfo.energies.length - 1));
+          var eAbs = energyInfo.energies[i];
+          var dE = energyInfo.deltas[i];
+          if (absEl) absEl.textContent = "E = " + fmtKcal(eAbs) + " kcal/mol";
+          if (dEl) dEl.textContent = "ΔE vs ref = " + fmtKcal(dE) + " kcal/mol";
+          if (rmsEl) {
+            if (hasRms) {
+              var ri = Math.max(0, Math.min(i, energyInfo.rmsds.length - 1));
+              rmsEl.style.display = "block";
+              rmsEl.textContent = "RMSD vs ref = " + fmtKcal(energyInfo.rmsds[ri]) + " Å";
+            } else {
+              rmsEl.style.display = "none";
+              rmsEl.textContent = "";
+            }
+          }
+          if (mEl) mEl.textContent = (ff ? (ff + " · ") : "") + "ref conf " + (refIdx + 1);
+        }
 
         function baseRadii() {
           return { stickR: 0.12, sph: 0.22 };
@@ -448,6 +545,7 @@ def _viewer_init_script_multiconf(blocks_json_b64: str, *, initial_superpose: bo
           if (lab) lab.textContent = blocks.length + " superposed";
           var nav = document.getElementById("chem-conf-nav");
           if (nav) nav.style.display = "none";
+          updateStrainOverlay(curIdx);
         }
 
         function loadConf(i) {
@@ -465,6 +563,7 @@ def _viewer_init_script_multiconf(blocks_json_b64: str, *, initial_superpose: bo
           if (sl) sl.value = String(i);
           var nav = document.getElementById("chem-conf-nav");
           if (nav) nav.style.display = "flex";
+          updateStrainOverlay(i);
         }
 
         function updateViewMode() {
@@ -520,20 +619,38 @@ def _viewer_init_script_multiconf(blocks_json_b64: str, *, initial_superpose: bo
           radioSuper.checked = true;
           updateViewMode();
         } else {
-          loadConf(0);
+          loadConf(startIdx);
         }
+        window.molmanagerConfState = function () {
+          return { idx: curIdx, superposed: !!superposed, n: blocks.length };
+        };
       } catch (e) {
         document.body.innerHTML = "<pre style='padding:12px;font-family:monospace'>3Dmol error: " + e + "</pre>";
       }
     }
   </script>"""
-    return tmpl.replace("__BLOCKSJSONB64__", blocks_json_b64).replace("__INIT_SP__", init_sp)
+    return (
+        tmpl.replace("__BLOCKSJSONB64__", blocks_json_b64)
+        .replace("__INIT_SP__", init_sp)
+        .replace("__ENERGYJSONB64__", energy_b64)
+        .replace("__START_IDX__", str(start_idx))
+    )
 
 
 def _assemble_viewer_page_multiconf(
-    blocks_json_b64: str, *, script_src: str, initial_superpose: bool = False
+    blocks_json_b64: str,
+    *,
+    script_src: str,
+    initial_superpose: bool = False,
+    strain_overlay_json_b64: str = "",
+    initial_conf_index: int = 0,
 ) -> str:
-    init = _viewer_init_script_multiconf(blocks_json_b64, initial_superpose=initial_superpose)
+    init = _viewer_init_script_multiconf(
+        blocks_json_b64,
+        initial_superpose=initial_superpose,
+        strain_overlay_json_b64=strain_overlay_json_b64,
+        initial_conf_index=initial_conf_index,
+    )
     conf_bar = _viewer_controls_multiconf_html()
     return f"""<!DOCTYPE html>
 <html lang="en">
@@ -700,6 +817,11 @@ class Molecule3DViewerDialog(QDialog):
         flat: bool = False,
         multi_conf_blocks_json_b64: str | None = None,
         multi_conf_initial_superpose: bool = False,
+        multi_conf_strain_overlay_json_b64: str = "",
+        multi_conf_initial_index: int = 0,
+        export_parent_oid: int | None = None,
+        export_confs_column: str = "confs",
+        strain_overlay: dict | None = None,
     ):
         super().__init__(parent)
         self.setModal(False)
@@ -707,6 +829,18 @@ class Molecule3DViewerDialog(QDialog):
         self.setWindowTitle(window_title)
         self.setAttribute(Qt.WA_DeleteOnClose, True)
         self.resize(920, 720)
+
+        self._multi_conf_blocks_b64 = multi_conf_blocks_json_b64
+        self._export_parent_oid = export_parent_oid
+        self._export_confs_column = (export_confs_column or "confs").strip() or "confs"
+        self._strain_overlay = dict(strain_overlay) if strain_overlay else None
+        if self._strain_overlay is None and multi_conf_strain_overlay_json_b64:
+            try:
+                self._strain_overlay = json.loads(
+                    base64.b64decode(multi_conf_strain_overlay_json_b64.encode("ascii"))
+                )
+            except Exception:
+                self._strain_overlay = None
 
         mol_b64 = _mol_block_b64(mol) if multi_conf_blocks_json_b64 is None else ""
         self._viewer_tmp: QTemporaryDir | None = None
@@ -738,6 +872,8 @@ class Molecule3DViewerDialog(QDialog):
                         _offline_index_html_multiconf(
                             multi_conf_blocks_json_b64,
                             initial_superpose=multi_conf_initial_superpose,
+                            strain_overlay_json_b64=multi_conf_strain_overlay_json_b64,
+                            initial_conf_index=multi_conf_initial_index,
                         ),
                         encoding="utf-8",
                     )
@@ -750,6 +886,8 @@ class Molecule3DViewerDialog(QDialog):
                         _cdn_fallback_html_multiconf(
                             multi_conf_blocks_json_b64,
                             initial_superpose=multi_conf_initial_superpose,
+                            strain_overlay_json_b64=multi_conf_strain_overlay_json_b64,
+                            initial_conf_index=multi_conf_initial_index,
                         ),
                         QUrl("https://3dmol.org/"),
                     )
@@ -773,7 +911,107 @@ class Molecule3DViewerDialog(QDialog):
             )
             root.addWidget(QLabel(msg), 1)
 
+        if multi_conf_blocks_json_b64 is not None:
+            btn_row = QHBoxLayout()
+            self._viewer_status = QLabel("")
+            self._viewer_status.setWordWrap(True)
+            self._viewer_status.setStyleSheet("color: #333;")
+            btn_row.addWidget(self._viewer_status, 1)
+            self._btn_export_table = QPushButton("Export to Table")
+            self._btn_export_table.setToolTip(
+                "Add the current conformer (or all when superposed) to the main table. "
+                "Writes 2D Structure, optional E / ΔE / RMSD, and packed 3D into confs when present."
+            )
+            self._btn_export_table.clicked.connect(self._on_export_to_table)
+            if web is None:
+                self._btn_export_table.setEnabled(False)
+            btn_row.addWidget(self._btn_export_table)
+            root.addLayout(btn_row)
+
         make_window_minimizable(self)
+
+    def _set_viewer_status(self, message: str) -> None:
+        msg = (message or "").strip()
+        status = getattr(self, "_viewer_status", None)
+        if status is not None:
+            status.setText(msg)
+        parent = self.parent()
+        plabel = getattr(parent, "status_label", None) if parent is not None else None
+        if plabel is not None and msg:
+            try:
+                plabel.setText(msg)
+            except Exception:
+                pass
+
+    def _on_export_to_table(self) -> None:
+        if not self._multi_conf_blocks_b64:
+            return
+        web = getattr(self, "_standalone_web", None)
+        if web is None:
+            self._set_viewer_status("Export failed: 3D viewer is not available.")
+            return
+        self._btn_export_table.setEnabled(False)
+        self._set_viewer_status("Exporting to table…")
+
+        def _finish(state) -> None:
+            try:
+                self._export_conformers_to_table(state)
+            finally:
+                try:
+                    self._btn_export_table.setEnabled(True)
+                except Exception:
+                    pass
+
+        try:
+            web.page().runJavaScript(
+                "window.molmanagerConfState ? molmanagerConfState() : null",
+                _finish,
+            )
+        except Exception:
+            self._btn_export_table.setEnabled(True)
+            self._set_viewer_status("Export failed: could not read the current conformer index.")
+
+    def _export_conformers_to_table(self, state) -> None:
+        parent = self.parent()
+        export_fn = getattr(parent, "export_conformer_viewer_to_table", None)
+        if not callable(export_fn):
+            self._set_viewer_status("Export failed: open the viewer from the main MolManager window.")
+            return
+        idx = 0
+        superposed = False
+        n = 0
+        if isinstance(state, dict):
+            try:
+                idx = int(state.get("idx", 0))
+            except Exception:
+                idx = 0
+            superposed = bool(state.get("superposed"))
+            try:
+                n = int(state.get("n", 0))
+            except Exception:
+                n = 0
+        if superposed or n <= 1:
+            indices = None  # all
+        else:
+            indices = [max(0, idx)]
+        try:
+            n_added = int(
+                export_fn(
+                    blocks_json_b64=self._multi_conf_blocks_b64,
+                    conf_indices=indices,
+                    strain_overlay=self._strain_overlay,
+                    parent_oid=self._export_parent_oid,
+                    confs_column=self._export_confs_column,
+                )
+            )
+        except Exception as exc:
+            logger.exception("Export to table failed")
+            self._set_viewer_status(f"Export failed: {exc}")
+            return
+        if n_added <= 0:
+            self._set_viewer_status("No conformers were exported.")
+            return
+        self._set_viewer_status(f"Added {n_added} row(s) to the table.")
 
     def _refit_standalone_viewer(self, web) -> None:
         """After load/resize, zoom so the full structure sits inside the frame."""
@@ -860,6 +1098,10 @@ def open_conformation_viewer_from_blocks_payload(
     *,
     title: str = "View Conformers",
     initial_superpose: bool = False,
+    strain_overlay: dict | None = None,
+    initial_conf_index: int = 0,
+    export_parent_oid: int | None = None,
+    export_confs_column: str = "confs",
 ) -> None:
     """Open the multi-conformer 3Dmol viewer (one-at-a-time and/or superpose) from packed mol blocks."""
     b = (blocks_json_b64 or "").strip()
@@ -879,6 +1121,14 @@ def open_conformation_viewer_from_blocks_payload(
             "No conformers could be read from this cell for the 3D viewer.",
         )
         return
+    strain_b64 = ""
+    if strain_overlay:
+        try:
+            strain_b64 = base64.b64encode(
+                json.dumps(strain_overlay, separators=(",", ":")).encode("utf-8")
+            ).decode("ascii")
+        except Exception:
+            strain_b64 = ""
     dummy = Chem.MolFromSmiles("C")
     win_title = title if title else "View Conformers"
     if n > 1:
@@ -890,6 +1140,11 @@ def open_conformation_viewer_from_blocks_payload(
         flat=False,
         multi_conf_blocks_json_b64=b,
         multi_conf_initial_superpose=initial_superpose,
+        multi_conf_strain_overlay_json_b64=strain_b64,
+        multi_conf_initial_index=int(initial_conf_index),
+        export_parent_oid=export_parent_oid,
+        export_confs_column=export_confs_column,
+        strain_overlay=strain_overlay,
     )
     dlg.show()
 

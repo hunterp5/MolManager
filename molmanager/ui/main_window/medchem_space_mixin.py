@@ -84,7 +84,7 @@ class MedChemSpaceMixin:
                 setattr(self, attr, None)
         docked = getattr(self, "_docked_plot_widget", None)
         if docked is not None and getattr(docked, "_plot_kind", None) == plot_kind:
-            self._plot_panel.setVisible(True)
+            self.show_docked_plot_panel()
             self._sync_dialog_only_selected_scope(docked)
             self.status_label.setText(f"{title}: docked beside the table.")
             return

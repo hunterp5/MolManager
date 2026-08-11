@@ -226,6 +226,7 @@ class SketchWidgetEventsMixin:
                 act_st.toggled.connect(lambda on, h=_hid: self._set_stereo_label_visible(h, on))
                 menu.addAction(act_st)
                 self._add_selection_transform_actions(menu, hit_ids={hit["id"]})
+                self._add_copy_selected_smiles_action(menu, hit_ids={hit["id"]})
                 self._add_group_action_if_applicable(menu)
                 menu.exec_(self.mapToGlobal(pt))
             else:

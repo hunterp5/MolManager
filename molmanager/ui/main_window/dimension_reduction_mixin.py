@@ -68,7 +68,7 @@ class DimensionReductionMixin:
                 setattr(self, attr, None)
         docked = getattr(self, "_docked_plot_widget", None)
         if docked is not None and getattr(docked, "_method", None) == kind:
-            self._plot_panel.setVisible(True)
+            self.show_docked_plot_panel()
             self._sync_dialog_only_selected_scope(docked)
             return
         d = factory()

@@ -24,6 +24,9 @@ from .mol_tools import (
     GenerateConformationsDialog,
     GenerateSingleConformationDialog,
     SuperposeConformersDialog,
+    SuperposeStructuresDialog,
+    StrainEnergyDialog,
+    CalculateRmsdDialog,
 )
 from .mmp import MmpDialog, MmpDialogParams
 from .random_number import RandomNumberDialog, RandomNumberDialogParams
@@ -74,5 +77,8 @@ __all__ = [
     "SketchWidget",
     "SketcherDialog",
     "SuperposeConformersDialog",
+    "SuperposeStructuresDialog",
+    "StrainEnergyDialog",
+    "CalculateRmsdDialog",
     "selection_scope_checked",
 ]

@@ -1,4 +1,4 @@
-"""QSAR tool window (Tools menu)."""
+"""QSAR tool window (Data menu)."""
 
 from __future__ import annotations
 

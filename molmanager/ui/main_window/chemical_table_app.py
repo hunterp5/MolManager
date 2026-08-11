@@ -18,6 +18,7 @@ from PyQt5.QtWidgets import (
     QPushButton,
     QScrollArea,
     QSizePolicy,
+    QSplitter,
     QStackedWidget,
     QToolButton,
     QUndoStack,
@@ -473,6 +474,7 @@ class ChemicalTableApp(
         if sm is not None:
             sm.selectionChanged.connect(self._on_user_table_selection_changed)
         self._table_stack = QStackedWidget()
+        self._table_stack.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         self._loading_page = QWidget()
         load_lyt = QVBoxLayout(self._loading_page)
         load_lyt.addStretch()
@@ -489,6 +491,7 @@ class ChemicalTableApp(
         self._search_panel.setVisible(False)
         self._init_table_search_panel(self._search_panel)
         self._table_area = QWidget(cw)
+        self._table_area.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         table_area_lyt = QVBoxLayout(self._table_area)
         table_area_lyt.setContentsMargins(0, 0, 0, 0)
         table_area_lyt.setSpacing(4)
@@ -496,7 +499,9 @@ class ChemicalTableApp(
         table_area_lyt.addWidget(self._table_stack, 1)
         self._plot_panel = QFrame()
         self._plot_panel.setVisible(False)
-        self._plot_panel.setMinimumWidth(420)
+        from ..dockable_plot import PLOT_PANEL_BASE_MINIMUM_WIDTH
+
+        self._plot_panel.setMinimumWidth(PLOT_PANEL_BASE_MINIMUM_WIDTH)
         plot_panel_lyt = QVBoxLayout(self._plot_panel)
         plot_panel_lyt.setContentsMargins(0, 0, 0, 0)
         plot_panel_lyt.setSpacing(2)
@@ -513,12 +518,24 @@ class ChemicalTableApp(
         btn_close_plot = QPushButton("Close Plot")
         btn_close_plot.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         btn_close_plot.setToolTip(
-            "Hide the plot panel. Reopen it from Data → Plotter while the plot remains docked."
+            "Close the docked plot and free the panel so another plot can be docked."
         )
-        btn_close_plot.clicked.connect(self.close_plot_panel_keep_plot)
+        btn_close_plot.clicked.connect(self.close_docked_plot)
         plot_bottom.addWidget(btn_close_plot)
         plot_panel_lyt.addLayout(plot_bottom)
-        content_h.addWidget(self._table_area, 1)
+        self._plot_panel.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Expanding)
+        self._content_splitter = QSplitter(Qt.Horizontal)
+        self._content_splitter.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        self._content_splitter.setHandleWidth(6)
+        self._content_splitter.addWidget(self._table_area)
+        self._content_splitter.addWidget(self._plot_panel)
+        self._content_splitter.setStretchFactor(0, 1)
+        self._content_splitter.setStretchFactor(1, 0)
+        # Table must stay open; plot may collapse when the panel is hidden.
+        self._content_splitter.setCollapsible(0, False)
+        self._content_splitter.setCollapsible(1, True)
+        self._content_splitter.setSizes([1, 0])
+        content_h.addWidget(self._content_splitter, 1)
         # Wide enough for filter cards and two-column bottom actions (avoids clipping).
         _filter_panel_w = 320
         self.f_panel = QFrame()
@@ -582,9 +599,8 @@ class ChemicalTableApp(
         panel_btns.addWidget(btn_close_panel, 2, 0)
         panel_btns.addWidget(btn_disable_all, 2, 1)
         sb_lyt.addLayout(panel_btns)
-        content_h.addWidget(self._plot_panel)
         content_h.addWidget(self.f_panel)
-        main_v.addLayout(content_h)
+        main_v.addLayout(content_h, 1)
         status_row = QHBoxLayout()
         status_row.setContentsMargins(0, 0, 0, 0)
         status_row.setSpacing(8)
@@ -783,14 +799,32 @@ class ChemicalTableApp(
                 "Embed and minimize one lowest-energy 3D conformer per row into the confs column.",
             ),
             (
-                "Superpose Conformers…",
-                self.open_superpose_conformers,
-                "Align conformer sets for structural comparison.",
+                "Calculate Strain Energy…",
+                self.open_calculate_strain_energy,
+                "Open the 3D viewer with strain energy and RMSD vs a reference overlaid.",
+            ),
+            (
+                "Calculate RMSD…",
+                self.open_calculate_rmsd,
+                "Compute RMSD of each conformer relative to a reference after rigid alignment.",
             ),
         ):
             act = QAction(title, self, triggered=slot)
             act.setToolTip(tip)
             conformations_menu.addAction(act)
+
+        superpose_menu = tools.addMenu("&Superpose")
+        superpose_menu.setToolTipsVisible(True)
+        act_sp_conf = QAction("Conformers…", self, triggered=self.open_superpose_conformers)
+        act_sp_conf.setToolTip(
+            "Align conformer ensembles within each row (packed confs) onto a reference conformer."
+        )
+        superpose_menu.addAction(act_sp_conf)
+        act_sp_struct = QAction("Structures…", self, triggered=self.open_superpose_structures)
+        act_sp_struct.setToolTip(
+            "Align selected table structures onto a reference (MCS / substructure / best-effort overlay)."
+        )
+        superpose_menu.addAction(act_sp_struct)
 
         fp_menu = tools.addMenu("&Fingerprints")
         fp_menu.setToolTipsVisible(True)
@@ -826,12 +860,6 @@ class ChemicalTableApp(
                 "Predict Permeability…",
                 self.open_permeability_predictor,
                 "Predict Caco-2 and MDCK permeability / efflux endpoints (optional Chemprop install).",
-                None,
-            ),
-            (
-                "QSAR…",
-                self.open_qsar_dialog,
-                "Train regression or classification models on activity vs descriptors or fingerprints.",
                 None,
             ),
         ):
@@ -919,12 +947,6 @@ class ChemicalTableApp(
             "Fill a column with random numbers (uniform, integer, or normal) for all or selected rows."
         )
         tools.addAction(act_random)
-        act_sketch = self._bind_hotkey(
-            "tools.sketcher",
-            QAction("&Sketcher…", self, triggered=self.open_sketcher),
-        )
-        act_sketch.setToolTip("Open the structure sketcher to draw or edit molecules.")
-        tools.addAction(act_sketch)
 
         tools.addSeparator()
         filter_menu = tools.addMenu("&Filter")
@@ -965,6 +987,14 @@ class ChemicalTableApp(
         act_search.setToolTip("Open or focus the in-table search panel (Ctrl+F).")
         tools.addAction(act_search)
 
+        tools.addSeparator()
+        act_sketch = self._bind_hotkey(
+            "tools.sketcher",
+            QAction("&Sketcher…", self, triggered=self.open_sketcher),
+        )
+        act_sketch.setToolTip("Open the structure sketcher to draw or edit molecules.")
+        tools.addAction(act_sketch)
+
         data_menu = mb.addMenu("&Data")
         data_menu.addAction(
             self._bind_hotkey(
@@ -972,6 +1002,11 @@ class ChemicalTableApp(
                 QAction("Analyze Table…", self, triggered=self.open_data_analysis),
             )
         )
+        act_qsar = QAction("QSAR…", self, triggered=self.open_qsar_dialog)
+        act_qsar.setToolTip(
+            "Train regression or classification models on activity vs descriptors or fingerprints."
+        )
+        data_menu.addAction(act_qsar)
         data_menu.addSeparator()
         data_menu.addAction(
             QAction("Principal Component Analysis…", self, triggered=self.open_pca_dialog)

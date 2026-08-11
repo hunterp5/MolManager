@@ -286,7 +286,9 @@ radar chart, and the plotter.</li>
 <h2>File menu — bring data in and save results</h2>
 <h3>Open and import</h3>
 <ul>
-<li><b>Open File</b> (<b>Ctrl+O</b>) — load SDF, MOL, SMILES, CSV, TDT, or PDB into the current session.</li>
+<li><b>Open File</b> (<b>Ctrl+O</b>) — load SDF, MOL, SMILES, CSV, TDT, or PDB into the current session.
+When structures include 3D coordinates, the <b>Structure</b> column shows a 2D depiction and the
+3D geometry is stored in a <b>confs</b> column (right-click → <b>View Conformers…</b>).</li>
 <li><b>Import Data</b> — add rows from another file and merge columns with the table you already have.</li>
 </ul>
 <h3>Sessions</h3>
@@ -338,7 +340,7 @@ or <b>Render 2D</b> for that column.</li>
 <h3>Filter panel</h3>
 <p>Open with <b>Tools → Filter → Toggle Panel</b> or <b>Ctrl+Shift+L</b>. Filter cards hide rows that
 do not match. Combine substructure, numeric slider, text, and category filters.</p>
-<p>Most tools and plots use <b>visible (filtered) rows</b> unless a dialog offers “only selected rows”.</p>
+<p>Most tools and plots use <b>visible (filtered) rows</b> unless a dialog offers “Selected Rows Only”.</p>
 """,
     "tools_filter": """
 <h2>Filters and search</h2>
@@ -384,12 +386,22 @@ AND uses <code>&amp;</code>.</li>
 </ul>
 <h3>Calculate Descriptors</h3>
 <p>Choose descriptor categories (drug-likeness, atom counts, fingerprint on-bits, LogD/LogS when available).
-Scope can be all visible rows or <b>only selected rows</b>. New columns appear on the right.</p>
-<h3>Tools → Conformations</h3>
+Scope can be all visible rows or <b>Selected Rows Only</b>. New columns appear on the right.</p>
+<h3>Tools → Conformations / Superpose</h3>
 <ul>
 <li><b>Generate Conformations</b> — ensembles stored in a <b>confs</b> column; optionally append rows or export SDF.</li>
 <li><b>Generate Single Conformation</b> — one minimized geometry per row; same optional table/SDF outputs.</li>
-<li><b>Superpose Conformers</b> — align structures in <b>confs</b> to a reference.</li>
+<li><b>Superpose → Conformers</b> — align conformer ensembles in <b>confs</b> to a reference.</li>
+<li><b>Superpose → Structures</b> — align selected table molecules onto a reference
+(optional substructure / MCS; otherwise best-effort O3A). Stores the ensemble on the
+reference row’s <b>superpose</b> column and opens the 3D viewer.</li>
+<li><b>Calculate Strain Energy</b> — opens the 3D conformer viewer with absolute force-field energy,
+ΔE vs a reference, and RMSD vs the same reference overlaid in the upper-left corner
+(one selected row with packed conformers). Use <b>Export to Table</b> in the viewer to append
+the current conformer (or all when superposed) as new rows with 2D Structure, packed 3D in
+<b>confs</b>, and <b>E_kcal</b> / <b>(delta)E_kcal</b> / <b>RMSD</b> when available.</li>
+<li><b>Calculate RMSD</b> — rigid-alignment RMSD of each conformer vs a reference
+(<b>RMSD_values</b>, <b>RMSD_max</b>, <b>RMSD_mean</b> columns).</li>
 </ul>
 """,
     "fingerprints": """
@@ -424,10 +436,12 @@ limit to selected rows. Results open in a side-by-side browser (structures with 
 region highlighted, activities, transform, and Δactivity). Pair annotations can be written to
 the main table as <b>MMP_Partners</b>, <b>MMP_Transforms</b>, and
 <b>MMP_Delta_&lt;activity&gt;</b> columns.</p>
-<h3>QSAR (Tools → QSAR)</h3>
+<h3>QSAR (Data → QSAR)</h3>
 <p>Train regression or classification models: pick an activity column (Y), numeric descriptors and/or
-fingerprints (X), and a scikit-learn model. Review validation metrics, then predict in-scope rows into
-a new column.</p>
+fingerprints (X), and a scikit-learn model (ridge, lasso, MLR, PLS, KNN, SVR, random forest,
+gradient boosting, and classification counterparts). Each algorithm exposes its tunable
+hyperparameters in the dialog. Review validation metrics, then predict in-scope rows into a
+new column.</p>
 """,
     "tools_ion": """
 <h2>Ionization and permeability</h2>
@@ -462,7 +476,7 @@ seed for reproducibility, and control decimal places.</p>
     "data": """
 <h2>Analyze Table</h2>
 <p><b>Data → Analyze Table</b> summarizes numeric and categorical columns for rows passing your filters
-(optional <b>only selected rows</b>).</p>
+(optional <b>Selected Rows Only</b>).</p>
 <ul>
 <li>Descriptive statistics, percentiles, and distributions.</li>
 <li>Correlation matrices between numeric columns.</li>

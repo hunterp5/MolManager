@@ -251,7 +251,7 @@ class PlotStatisticsPanel(QWidget):
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
-        self.setMinimumWidth(200)
+        self.setMinimumWidth(240)
         root = QVBoxLayout(self)
         root.setContentsMargins(4, 0, 0, 0)
         root.setSpacing(4)
@@ -271,6 +271,10 @@ class PlotStatisticsPanel(QWidget):
 
 class PlotWidget(QWidget):
     """Interactive Plotly plotter for numeric table columns (dialog or main-window panel)."""
+
+    # Color-by + Spectrum + Min/Max need ~640px; Statistics sits beside axes.
+    _AXES_CONTROLS_MIN_WIDTH = 640
+    _STATS_PANEL_MIN_WIDTH = 240
 
     def __init__(self, parent_app=None):
         super().__init__(None)
@@ -314,7 +318,6 @@ class PlotWidget(QWidget):
         self.web = QWebEngineView(self)
         self.web.setMinimumHeight(220)
         self.web.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
-        root.addWidget(self.web, 1)
 
         ctrl_wrap = QWidget(self)
         ctrl_root = QVBoxLayout(ctrl_wrap)
@@ -378,8 +381,8 @@ class PlotWidget(QWidget):
 
         n_sel = len(parent_app._selected_logical_rows()) if parent_app is not None else 0
         self._plot_scope_has_selection = n_sel > 0
-        self.only_selected_cb = QCheckBox("Plot only selected rows")
-        self._only_selected_scope_prefix = "Plot only selected rows"
+        self.only_selected_cb = QCheckBox("Selected Rows Only")
+        self._only_selected_scope_prefix = "Selected Rows Only"
         if self._plot_scope_has_selection:
             self.only_selected_cb.setText(f"{self._only_selected_scope_prefix} ({n_sel} row(s))")
         else:
@@ -397,24 +400,25 @@ class PlotWidget(QWidget):
         self._color_by_label = QLabel("Color by:")
         color_row.addWidget(self._color_by_label)
         self.color_combo = QComboBox()
-        self.color_combo.setMinimumWidth(120)
+        self.color_combo.setMinimumWidth(100)
+        self.color_combo.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         self.color_combo.setToolTip(
             "Color scatter and line points by a table column (numeric or categorical)."
         )
         self.color_combo.currentIndexChanged.connect(self._on_color_column_changed)
-        color_row.addWidget(self.color_combo)
+        color_row.addWidget(self.color_combo, 1)
         self._spectrum_label = QLabel("Spectrum:")
         color_row.addWidget(self._spectrum_label)
         self.colorscale_combo = QComboBox()
-        self.colorscale_combo.setMinimumWidth(100)
+        self.colorscale_combo.setMinimumWidth(90)
+        self.colorscale_combo.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Fixed)
         self.colorscale_combo.addItems(PLOT_COLORSCALE_CHOICES)
         self.colorscale_combo.setToolTip("Continuous colorscale for numeric Color by columns.")
         self.colorscale_combo.currentIndexChanged.connect(self._schedule_plot)
         color_row.addWidget(self.colorscale_combo)
         self.color_range = PlotColorRangeControls()
         self.color_range.connect_changed(self._schedule_plot)
-        color_row.addWidget(self.color_range)
-        color_row.addStretch()
+        color_row.addWidget(self.color_range, 0)
         axes_l.addLayout(color_row)
 
         analysis_row = QHBoxLayout()
@@ -455,13 +459,26 @@ class PlotWidget(QWidget):
 
         bottom_splitter = QSplitter(Qt.Horizontal)
         bottom_splitter.setChildrenCollapsible(False)
+        ctrl_wrap.setMinimumWidth(PlotWidget._AXES_CONTROLS_MIN_WIDTH)
         bottom_splitter.addWidget(ctrl_wrap)
         self._stats_panel = PlotStatisticsPanel(self)
+        self._stats_panel.setMinimumWidth(PlotWidget._STATS_PANEL_MIN_WIDTH)
         bottom_splitter.addWidget(self._stats_panel)
         bottom_splitter.setStretchFactor(0, 1)
         bottom_splitter.setStretchFactor(1, 1)
-        bottom_splitter.setSizes([400, 280])
-        root.addWidget(bottom_splitter)
+        bottom_splitter.setSizes(
+            [PlotWidget._AXES_CONTROLS_MIN_WIDTH, PlotWidget._STATS_PANEL_MIN_WIDTH + 40]
+        )
+
+        self._plot_body_splitter = QSplitter(Qt.Vertical)
+        self._plot_body_splitter.setChildrenCollapsible(False)
+        self._plot_body_splitter.setHandleWidth(6)
+        self._plot_body_splitter.addWidget(self.web)
+        self._plot_body_splitter.addWidget(bottom_splitter)
+        self._plot_body_splitter.setStretchFactor(0, 1)
+        self._plot_body_splitter.setStretchFactor(1, 0)
+        root.addWidget(self._plot_body_splitter, 1)
+        self.setMinimumWidth(self.embedded_minimum_width())
 
         self._bridge = _PlotBridge(self)
         self._web_channel = QWebChannel(self.web.page())
@@ -496,6 +513,18 @@ class PlotWidget(QWidget):
             model.columnsInserted.connect(self._on_table_columns_changed)
             model.columnsRemoved.connect(self._on_table_columns_changed)
             model.headerDataChanged.connect(self._on_table_header_data_changed)
+
+    def embedded_minimum_width(self) -> int:
+        """Width needed so axes + statistics controls do not overlap when docked."""
+        return (
+            self._AXES_CONTROLS_MIN_WIDTH
+            + self._STATS_PANEL_MIN_WIDTH
+            + 6  # bottom splitter handle
+            + 8  # root horizontal margins
+        )
+
+    def embedded_preferred_width(self) -> int:
+        return max(self.embedded_minimum_width(), 840)
 
     def _on_table_rows_changed(self, *_args) -> None:
         """Refresh plot when rows are added or removed."""
@@ -954,7 +983,7 @@ class PlotWidget(QWidget):
         only_sel = n_sel_now > 0 and self.only_selected_cb.isChecked()
         allowed = self.parent_app._selected_oids_set() if only_sel else None
         if only_sel and not allowed:
-            QMessageBox.warning(self, "Plot", "“Plot only selected rows” is checked but nothing is selected.")
+            QMessageBox.warning(self, "Plot", "“Selected Rows Only” is checked but nothing is selected.")
             return [], [], [], [], xname, yname, None
 
         is3d = mode == "3D"
@@ -1022,7 +1051,7 @@ class PlotWidget(QWidget):
         only_sel = n_sel_now > 0 and self.only_selected_cb.isChecked()
         allowed = self.parent_app._selected_oids_set() if only_sel else None
         if only_sel and not allowed:
-            QMessageBox.warning(self, "Plot", "“Plot only selected rows” is checked but nothing is selected.")
+            QMessageBox.warning(self, "Plot", "“Selected Rows Only” is checked but nothing is selected.")
             return [], [], xname
 
         xmin = self._parse_edit_float(self.xmin)

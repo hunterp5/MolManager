@@ -1843,8 +1843,18 @@ class TableUIMixin(TableSearchMixin, FilterPanelMixin):
         elif view_conformers_act is not None and action == view_conformers_act and packed_confs_b64 is not None:
             from ..mol_viewer_3d import open_conformation_viewer_from_blocks_payload
 
+            confs_col = "confs"
+            if 0 <= col < len(self.headers):
+                hdr = self.headers[col]
+                if hdr in ("confs", "superpose"):
+                    confs_col = hdr
             open_conformation_viewer_from_blocks_payload(
-                self, packed_confs_b64, title="View Conformers", initial_superpose=False
+                self,
+                packed_confs_b64,
+                title="View Conformers",
+                initial_superpose=False,
+                export_parent_oid=oid,
+                export_confs_column=confs_col,
             )
         elif view3d_act is not None and action == view3d_act and mol_ctx is not None:
             self.open_molecule_3d(mol_ctx)

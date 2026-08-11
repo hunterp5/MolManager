@@ -19,7 +19,18 @@ _CHEMISTRY_TOOLS_EXPORTS = frozenset(
         "run_conformer_generation",
         "SuperposeConformersWorker",
         "SuperposeParams",
+        "SuperposeStructuresParams",
+        "RmsdParams",
+        "RmsdWorker",
+        "RMSD_HEADERS",
+        "StrainEnergyParams",
+        "StrainEnergyWorker",
+        "STRAIN_ENERGY_HEADERS",
         "run_superpose_conformers",
+        "run_superpose_structures",
+        "align_structure_onto_reference",
+        "run_conformer_rmsd",
+        "run_strain_energy",
     }
 )
 
@@ -93,6 +104,7 @@ __all__ = [
     "ConformerGenerationWorker",
     "SuperposeConformersWorker",
     "SuperposeParams",
+    "SuperposeStructuresParams",
     "CustomCalcWorker",
     "DiverseSubsetSignals",
     "DiverseSubsetWorker",
@@ -144,4 +156,8 @@ __all__ = [
     "pack_confs_cell",
     "run_conformer_generation",
     "run_superpose_conformers",
+    "run_superpose_structures",
+    "align_structure_onto_reference",
+    "run_conformer_rmsd",
+    "run_strain_energy",
 ]

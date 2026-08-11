@@ -824,6 +824,279 @@ def run_superpose_conformers(
     return m, meta
 
 
+@dataclass(frozen=True)
+class SuperposeStructuresParams:
+    """Options for aligning distinct table structures onto a reference molecule."""
+
+    heavy_atoms_only: bool = True
+    reflect: bool = False
+    max_align_iters: int = 50
+    align_pattern: str = ""
+    align_pattern_is_smarts: bool = False
+    use_mcs: bool = True
+
+
+def _single_conformer_mol(mol: Chem.Mol, conf_id: int | None = None) -> Chem.Mol | None:
+    """Return a copy of *mol* that keeps only one conformer."""
+    if mol is None:
+        return None
+    try:
+        m = Chem.Mol(mol)
+    except Exception:
+        return None
+    try:
+        nconf = int(m.GetNumConformers())
+    except Exception:
+        nconf = 0
+    if nconf < 1:
+        return None
+    try:
+        cids = sorted(int(c.GetId()) for c in m.GetConformers())
+    except Exception:
+        cids = list(range(nconf))
+    if not cids:
+        return None
+    keep = int(cids[0] if conf_id is None else conf_id)
+    if keep not in cids:
+        keep = int(cids[0])
+    try:
+        conf = Chem.Conformer(m.GetConformer(keep))
+        m.RemoveAllConformers()
+        m.AddConformer(conf, assignId=True)
+    except Exception:
+        return None
+    return m
+
+
+def _parse_align_query(pattern: str, *, is_smarts: bool) -> Chem.Mol | None:
+    pat = (pattern or "").strip()
+    if not pat:
+        return None
+    try:
+        return Chem.MolFromSmarts(pat) if is_smarts else Chem.MolFromSmiles(pat)
+    except Exception:
+        return None
+
+
+def _atom_map_from_query(
+    probe: Chem.Mol,
+    ref: Chem.Mol,
+    query: Chem.Mol,
+    *,
+    heavy_atoms_only: bool,
+) -> list[tuple[int, int]] | None:
+    try:
+        prb_match = probe.GetSubstructMatch(query)
+        ref_match = ref.GetSubstructMatch(query)
+    except Exception:
+        return None
+    if not prb_match or not ref_match or len(prb_match) != len(ref_match):
+        return None
+    pairs = [(int(p), int(r)) for p, r in zip(prb_match, ref_match)]
+    if heavy_atoms_only:
+        pairs = [
+            (p, r)
+            for p, r in pairs
+            if probe.GetAtomWithIdx(p).GetAtomicNum() != 1 and ref.GetAtomWithIdx(r).GetAtomicNum() != 1
+        ]
+    return pairs if len(pairs) >= 2 else None
+
+
+def _atom_map_from_mcs(
+    probe: Chem.Mol,
+    ref: Chem.Mol,
+    *,
+    heavy_atoms_only: bool,
+    timeout_s: int = 5,
+) -> list[tuple[int, int]] | None:
+    try:
+        from rdkit.Chem import rdFMCS
+    except Exception:
+        return None
+    try:
+        res = rdFMCS.FindMCS(
+            [ref, probe],
+            timeout=int(timeout_s),
+            matchValences=True,
+            ringMatchesRingOnly=True,
+            completeRingsOnly=False,
+        )
+    except Exception:
+        return None
+    if res is None or getattr(res, "canceled", False):
+        return None
+    smarts = getattr(res, "smartsString", "") or ""
+    if not smarts or int(getattr(res, "numAtoms", 0) or 0) < 2:
+        return None
+    q = Chem.MolFromSmarts(smarts)
+    if q is None:
+        return None
+    return _atom_map_from_query(probe, ref, q, heavy_atoms_only=heavy_atoms_only)
+
+
+def _align_probe_to_ref_o3a(
+    probe: Chem.Mol,
+    ref: Chem.Mol,
+    *,
+    reflect: bool,
+) -> tuple[float | None, str | None]:
+    """Best-effort overlay when no atom map is available (Crippen O3A, then MMFF O3A)."""
+    try:
+        py_o3a = rdMolAlign.GetCrippenO3A(probe, ref)
+        if py_o3a is not None:
+            return float(py_o3a.Align()), "crippen_o3a"
+    except Exception:
+        logger.debug("Crippen O3A failed", exc_info=True)
+    try:
+        o3a = rdMolAlign.GetO3A(probe, ref)
+        if o3a is not None:
+            return float(o3a.Align()), "mmff_o3a"
+    except Exception:
+        logger.debug("MMFF O3A failed", exc_info=True)
+    # Last resort: AlignMol without atomMap only works for identical atom counts / order.
+    try:
+        if probe.GetNumAtoms() == ref.GetNumAtoms() and probe.GetNumAtoms() >= 2:
+            am = [(i, i) for i in range(probe.GetNumAtoms())]
+            rms = float(
+                rdMolAlign.AlignMol(
+                    probe,
+                    ref,
+                    atomMap=am,
+                    reflect=bool(reflect),
+                    maxIters=50,
+                )
+            )
+            return rms, "index_map"
+    except Exception:
+        logger.debug("Index-map AlignMol failed", exc_info=True)
+    return None, None
+
+
+def align_structure_onto_reference(
+    probe: Chem.Mol,
+    ref: Chem.Mol,
+    params: SuperposeStructuresParams,
+    cancel_event: threading.Event | None = None,
+) -> tuple[Chem.Mol | None, dict]:
+    """
+    Rigidly align a copy of *probe* onto *ref*.
+
+    Alignment preference: optional substructure pattern → MCS (when enabled) → O3A best overlay.
+    """
+    meta: dict = {"ok": False, "op": "superpose_structures"}
+    if cancel_event is not None and cancel_event.is_set():
+        meta["err"] = "cancelled"
+        return None, meta
+    prb = _single_conformer_mol(probe)
+    reference = _single_conformer_mol(ref)
+    if prb is None or reference is None:
+        meta["err"] = "need_3d_conformers"
+        return None, meta
+    max_it = max(10, int(params.max_align_iters))
+    method = ""
+    atom_map: list[tuple[int, int]] | None = None
+    pat = (params.align_pattern or "").strip()
+    if pat:
+        q = _parse_align_query(pat, is_smarts=bool(params.align_pattern_is_smarts))
+        if q is None:
+            meta["err"] = "invalid_align_pattern"
+            return None, meta
+        atom_map = _atom_map_from_query(
+            prb, reference, q, heavy_atoms_only=bool(params.heavy_atoms_only)
+        )
+        if atom_map:
+            method = "pattern"
+        else:
+            meta["pattern_miss"] = True
+    if atom_map is None and params.use_mcs:
+        atom_map = _atom_map_from_mcs(
+            prb, reference, heavy_atoms_only=bool(params.heavy_atoms_only)
+        )
+        if atom_map:
+            method = "mcs"
+    rms: float | None = None
+    if atom_map is not None:
+        try:
+            rms = float(
+                rdMolAlign.AlignMol(
+                    prb,
+                    reference,
+                    atomMap=atom_map,
+                    reflect=bool(params.reflect),
+                    maxIters=max_it,
+                )
+            )
+        except Exception as e:
+            logger.exception("structure AlignMol failed")
+            meta["err"] = str(e)[:200]
+            return None, meta
+    else:
+        rms, o3a_method = _align_probe_to_ref_o3a(prb, reference, reflect=bool(params.reflect))
+        if rms is None or o3a_method is None:
+            meta["err"] = "no_common_substructure_and_o3a_failed"
+            return None, meta
+        method = o3a_method
+        atom_map = []
+    meta["ok"] = True
+    meta["method"] = method
+    meta["rms"] = round(float(rms), 6)
+    meta["n_align_atoms"] = len(atom_map) if atom_map else 0
+    meta["heavy"] = bool(params.heavy_atoms_only)
+    meta["reflect"] = bool(params.reflect)
+    meta["max_align_iters"] = max_it
+    if pat:
+        meta["align_smarts"] = bool(params.align_pattern_is_smarts)
+        meta["align_pattern"] = pat[:120]
+    return prb, meta
+
+
+def run_superpose_structures(
+    ref_mol: Chem.Mol,
+    probes: list[tuple[int, Chem.Mol]],
+    params: SuperposeStructuresParams,
+    *,
+    ref_oid: int | None = None,
+    cancel_event: threading.Event | None = None,
+) -> list[tuple[int, Chem.Mol | None, dict]]:
+    """
+    Align each probe onto *ref_mol*.
+
+    Returns one ``(oid, aligned_mol_or_None, meta)`` per probe. The reference row
+    (*ref_oid*, when set) is returned as a single-conformer copy without realigning.
+    """
+    out: list[tuple[int, Chem.Mol | None, dict]] = []
+    ref_single = _single_conformer_mol(ref_mol)
+    ref_id = None if ref_oid is None else int(ref_oid)
+    for oid, probe in probes:
+        if cancel_event is not None and cancel_event.is_set():
+            out.append((int(oid), None, {"ok": False, "err": "cancelled", "op": "superpose_structures"}))
+            continue
+        if ref_id is not None and int(oid) == ref_id:
+            m = _single_conformer_mol(ref_single or ref_mol)
+            out.append(
+                (
+                    int(oid),
+                    m,
+                    {
+                        "ok": True,
+                        "op": "superpose_structures",
+                        "method": "reference",
+                        "rms": 0.0,
+                        "n_align_atoms": 0,
+                    },
+                )
+            )
+            continue
+        aligned, meta = align_structure_onto_reference(
+            probe,
+            ref_mol if ref_single is None else ref_single,
+            params,
+            cancel_event=cancel_event,
+        )
+        out.append((int(oid), aligned, meta))
+    return out
+
+
 def _superpose_row_task(task: tuple) -> tuple[int, Chem.Mol | None, str]:
     oid, cell, params = task[0], task[1], task[2]
     cancel_event = task[3] if len(task) > 3 else None
@@ -958,6 +1231,527 @@ class SuperposeConformersWorker(QRunnable):
                 self.signals.superpose_finished.emit(results)
             except Exception:
                 logger.warning("superpose_finished emit failed", exc_info=True)
+
+
+@dataclass(frozen=True)
+class RmsdParams:
+    """Options for :func:`run_conformer_rmsd` / :class:`RmsdWorker`."""
+
+    reference_conformer_index: int = 0
+    heavy_atoms_only: bool = True
+    reflect: bool = False
+    max_align_iters: int = 50
+    align_pattern: str = ""
+    align_pattern_is_smarts: bool = False
+    source_column: str = "confs"
+
+
+RMSD_HEADERS = ("RMSD_values", "RMSD_max", "RMSD_mean")
+
+
+def run_conformer_rmsd(
+    mol: Chem.Mol,
+    params: RmsdParams,
+    cancel_event: threading.Event | None = None,
+) -> tuple[dict[str, str] | None, dict]:
+    """
+    Rigid-align each conformer to a reference and report RMSD (Å).
+
+    Works on a copy of *mol* so input coordinates are unchanged. Reference RMSD is 0.
+    """
+    meta: dict = {"ok": False, "op": "rmsd"}
+    if cancel_event is not None and cancel_event.is_set():
+        meta["err"] = "cancelled"
+        return None, meta
+    try:
+        m = Chem.Mol(mol)
+    except Exception:
+        meta["err"] = "bad_mol"
+        return None, meta
+    try:
+        nconf = int(m.GetNumConformers())
+    except Exception:
+        nconf = 0
+    if nconf < 1:
+        meta["err"] = "no_conformers"
+        return None, meta
+    try:
+        cids = sorted(int(c.GetId()) for c in m.GetConformers())
+    except Exception:
+        cids = list(range(nconf))
+    if not cids:
+        meta["err"] = "no_conformer_ids"
+        return None, meta
+    ref_idx = int(params.reference_conformer_index)
+    if ref_idx < 0:
+        ref_idx = 0
+    ref_clamped = False
+    if ref_idx >= len(cids):
+        ref_idx = len(cids) - 1
+        ref_clamped = True
+    ref_cid = int(cids[ref_idx])
+    sp = SuperposeParams(
+        reference_conformer_index=ref_idx,
+        heavy_atoms_only=bool(params.heavy_atoms_only),
+        reflect=bool(params.reflect),
+        max_align_iters=int(params.max_align_iters),
+        align_pattern=(params.align_pattern or "").strip(),
+        align_pattern_is_smarts=bool(params.align_pattern_is_smarts),
+    )
+    atom_map, map_err = _superpose_atom_map(m, sp)
+    if map_err or not atom_map:
+        meta["err"] = map_err or "no_atoms_for_alignment"
+        return None, meta
+    max_it = max(10, int(params.max_align_iters))
+    rms_vals: list[float] = []
+    try:
+        for cid in cids:
+            if cancel_event is not None and cancel_event.is_set():
+                meta["err"] = "cancelled"
+                return None, meta
+            ic = int(cid)
+            if ic == ref_cid:
+                rms_vals.append(0.0)
+                continue
+            rms = float(
+                rdMolAlign.AlignMol(
+                    m,
+                    m,
+                    prbCid=ic,
+                    refCid=ref_cid,
+                    atomMap=atom_map,
+                    reflect=bool(params.reflect),
+                    maxIters=max_it,
+                )
+            )
+            rms_vals.append(rms)
+    except Exception as e:
+        logger.exception("run_conformer_rmsd failed")
+        meta["err"] = str(e)[:200]
+        return None, meta
+    mean_rms = sum(rms_vals) / max(len(rms_vals), 1)
+    max_rms = max(rms_vals) if rms_vals else 0.0
+    meta["ok"] = True
+    meta["ref_idx"] = ref_idx
+    meta["ref_cid"] = ref_cid
+    meta["ref_clamped"] = ref_clamped
+    meta["n_conf"] = len(cids)
+    meta["rms_mean"] = round(mean_rms, 6)
+    meta["rms_max"] = round(max_rms, 6)
+    meta["heavy"] = bool(params.heavy_atoms_only)
+    meta["n_align_atoms"] = len(atom_map)
+    row = {
+        "RMSD_values": ";".join(f"{v:.4f}" for v in rms_vals),
+        "RMSD_max": f"{max_rms:.4f}",
+        "RMSD_mean": f"{mean_rms:.4f}",
+    }
+    return row, meta
+
+
+def _rmsd_row_task(task: tuple) -> tuple[int, dict[str, str]]:
+    oid, cell, params = task[0], task[1], task[2]
+    cancel_event = task[3] if len(task) > 3 else None
+    na = {h: "N/A" for h in RMSD_HEADERS}
+    try:
+        if cancel_event is not None and cancel_event.is_set():
+            return oid, na
+        mol = mol_from_packed_confs_cell(cell or "", min_conformers=1)
+        if mol is None:
+            return oid, na
+        row, meta = run_conformer_rmsd(mol, params, cancel_event=cancel_event)
+        if row is None or not meta.get("ok"):
+            return oid, na
+        return oid, {h: str(row.get(h, "N/A")) for h in RMSD_HEADERS}
+    except Exception:
+        logger.exception("RmsdWorker failed for oid=%s", oid)
+        return oid, na
+
+
+class RmsdWorker(QRunnable):
+    """Score packed conformer cells; emit RMSD columns via ``calculated``."""
+
+    def __init__(
+        self,
+        data: list[tuple[int, str]],
+        params: RmsdParams,
+        signals: WorkerSignals,
+        cancel_event: threading.Event | None = None,
+        progress_state=None,
+        output_headers: list[str] | None = None,
+    ):
+        super().__init__()
+        self.data = data
+        self.params = params
+        self.signals = signals
+        self.cancel_event = cancel_event
+        self.progress_state = progress_state
+        if output_headers and len(output_headers) == len(RMSD_HEADERS):
+            self.output_headers = list(output_headers)
+        else:
+            self.output_headers = list(RMSD_HEADERS)
+
+    def run(self):
+        nrows = len(self.data)
+        tot = max(nrows, 1)
+        tasks = [(oid, cell, self.params) for oid, cell in self.data]
+        cfg = load_config()
+        if cfg.conformer_threads is not None:
+            max_workers = cfg.conformer_threads
+        else:
+            max_workers = min(4, max(1, (os.cpu_count() or 4) // 2))
+        use_parallel = nrows >= 6 and max_workers > 1
+        cancel_ev = self.cancel_event
+        results: list = []
+        cancelled = False
+        done_count = 0
+        prog_state = [0, 0.0]
+        headers = list(self.output_headers)
+        rename = dict(zip(RMSD_HEADERS, headers))
+        try:
+            if use_parallel:
+                _emit_tool_progress_throttled(
+                    self.signals,
+                    "Calculate RMSD…",
+                    0,
+                    tot,
+                    prog_state,
+                    progress_state=self.progress_state,
+                )
+                ex = ThreadPoolExecutor(max_workers=max_workers)
+                shutdown_cancel = False
+                try:
+                    row_tasks = [(*t, cancel_ev) for t in tasks]
+                    pending = {ex.submit(_rmsd_row_task, rt) for rt in row_tasks}
+                    while pending:
+                        if cancel_ev is not None and cancel_ev.is_set():
+                            shutdown_cancel = True
+                            cancelled = True
+                            for f in list(pending):
+                                if f.done() and not f.cancelled():
+                                    try:
+                                        results.append(f.result())
+                                        done_count += 1
+                                    except Exception:
+                                        logger.exception("RMSD row task failed")
+                                else:
+                                    f.cancel()
+                            break
+                        completed, pending = wait(
+                            pending, timeout=0.08, return_when=FIRST_COMPLETED
+                        )
+                        for f in completed:
+                            if f.cancelled():
+                                continue
+                            try:
+                                results.append(f.result())
+                                done_count += 1
+                            except Exception:
+                                logger.exception("RMSD row task failed")
+                            _emit_tool_progress_throttled(
+                                self.signals,
+                                "Calculate RMSD…",
+                                done_count,
+                                tot,
+                                prog_state,
+                                progress_state=self.progress_state,
+                            )
+                finally:
+                    try:
+                        ex.shutdown(wait=not shutdown_cancel, cancel_futures=shutdown_cancel)
+                    except TypeError:
+                        ex.shutdown(wait=not shutdown_cancel)
+                _emit_tool_progress_throttled(
+                    self.signals,
+                    "Calculate RMSD…",
+                    min(done_count, tot),
+                    tot,
+                    prog_state,
+                    progress_state=self.progress_state,
+                )
+            else:
+                for done, t in enumerate(tasks, start=1):
+                    if cancel_ev is not None and cancel_ev.is_set():
+                        cancelled = True
+                        break
+                    results.append(_rmsd_row_task((*t, cancel_ev)))
+                    done_count = done
+                    _emit_tool_progress_throttled(
+                        self.signals,
+                        "Calculate RMSD…",
+                        done,
+                        tot,
+                        prog_state,
+                        progress_state=self.progress_state,
+                    )
+        except Exception:
+            logger.exception("RmsdWorker failed")
+        finally:
+            emit_partial_results_if_cancelled(
+                self.signals, "Calculate RMSD", done_count, tot, cancelled
+            )
+            mapped: list[tuple[int, dict[str, str]]] = []
+            for oid, row in results:
+                mapped.append((int(oid), {rename.get(k, k): v for k, v in row.items()}))
+            try:
+                self.signals.calculated.emit(mapped, headers)
+            except Exception:
+                logger.warning("RMSD calculated emit failed", exc_info=True)
+
+
+@dataclass(frozen=True)
+class StrainEnergyParams:
+    """Options for :func:`run_strain_energy` / :class:`StrainEnergyWorker`."""
+
+    reference_conformer_index: int = 0
+    force_field: str = "MMFF"
+    source_column: str = "confs"
+
+
+STRAIN_ENERGY_HEADERS = ("Strain_energies", "Strain_max", "E_ref")
+
+
+def _single_point_conformer_energies(
+    mol: Chem.Mol, force_field: str
+) -> tuple[list[float], str] | None:
+    """
+    Single-point MMFF/UFF energies (kcal/mol) for each conformer — no minimization.
+
+    Adds hydrogens with coordinates when needed for the force field.
+    """
+    try:
+        m = Chem.AddHs(Chem.Mol(mol), addCoords=True)
+    except Exception:
+        return None
+    try:
+        cids = sorted(int(c.GetId()) for c in m.GetConformers())
+    except Exception:
+        cids = list(range(int(m.GetNumConformers())))
+    if not cids:
+        return None
+    ff_choice = (force_field or "MMFF").strip().upper()
+    energies: list[float] = []
+    if ff_choice == "MMFF":
+        mp = AllChem.MMFFGetMoleculeProperties(m)
+        if mp is not None:
+            for cid in cids:
+                ff = AllChem.MMFFGetMoleculeForceField(m, mp, confId=int(cid))
+                if ff is None:
+                    return None
+                energies.append(float(ff.CalcEnergy()))
+            return energies, "MMFF"
+    for cid in cids:
+        ff = AllChem.UFFGetMoleculeForceField(m, confId=int(cid))
+        if ff is None:
+            return None
+        energies.append(float(ff.CalcEnergy()))
+    return energies, "UFF"
+
+
+def run_strain_energy(
+    mol: Chem.Mol,
+    params: StrainEnergyParams,
+    cancel_event: threading.Event | None = None,
+) -> tuple[dict[str, str] | None, dict]:
+    """
+    Compute strain energy of each conformer relative to a reference conformer.
+
+    Strain_i = E_i − E_ref (kcal/mol) from a single-point force-field evaluation
+    (coordinates are not re-minimized).
+    """
+    meta: dict = {"ok": False, "op": "strain"}
+    if cancel_event is not None and cancel_event.is_set():
+        meta["err"] = "cancelled"
+        return None, meta
+    if mol is None or mol.GetNumAtoms() == 0:
+        meta["err"] = "empty_molecule"
+        return None, meta
+    try:
+        nconf = int(mol.GetNumConformers())
+    except Exception:
+        nconf = 0
+    if nconf < 1:
+        meta["err"] = "no_conformers"
+        return None, meta
+
+    opt = _single_point_conformer_energies(mol, params.force_field)
+    if opt is None:
+        meta["err"] = "energy_failed"
+        return None, meta
+    energies, ff = opt
+    meta["ff"] = ff
+    meta["n_conf"] = len(energies)
+    ref_idx = int(params.reference_conformer_index)
+    if ref_idx < 0:
+        ref_idx = 0
+    ref_clamped = False
+    if ref_idx >= len(energies):
+        ref_idx = len(energies) - 1
+        ref_clamped = True
+    e_ref = float(energies[ref_idx])
+    strains = [float(e) - e_ref for e in energies]
+    meta["ok"] = True
+    meta["ref_idx"] = ref_idx
+    meta["ref_clamped"] = ref_clamped
+    meta["e_ref_kcal"] = round(e_ref, 4)
+    meta["strain_max_kcal"] = round(max(strains), 4) if strains else 0.0
+    meta["energies"] = [round(float(e), 4) for e in energies]
+    meta["strains"] = [round(float(s), 4) for s in strains]
+    row = {
+        "Strain_energies": ";".join(f"{s:.4f}" for s in strains),
+        "Strain_max": f"{max(strains):.4f}" if strains else "0.0000",
+        "E_ref": f"{e_ref:.4f}",
+    }
+    return row, meta
+
+
+def _strain_energy_row_task(task: tuple) -> tuple[int, dict[str, str]]:
+    oid, cell, params = task[0], task[1], task[2]
+    cancel_event = task[3] if len(task) > 3 else None
+    na = {h: "N/A" for h in STRAIN_ENERGY_HEADERS}
+    try:
+        if cancel_event is not None and cancel_event.is_set():
+            return oid, na
+        mol = mol_from_packed_confs_cell(cell or "", min_conformers=1)
+        if mol is None:
+            return oid, na
+        row, meta = run_strain_energy(mol, params, cancel_event=cancel_event)
+        if row is None or not meta.get("ok"):
+            return oid, na
+        return oid, {h: str(row.get(h, "N/A")) for h in STRAIN_ENERGY_HEADERS}
+    except Exception:
+        logger.exception("StrainEnergyWorker failed for oid=%s", oid)
+        return oid, na
+
+
+class StrainEnergyWorker(QRunnable):
+    """Score packed conformer cells; emit descriptor-style columns via ``calculated``."""
+
+    def __init__(
+        self,
+        data: list[tuple[int, str]],
+        params: StrainEnergyParams,
+        signals: WorkerSignals,
+        cancel_event: threading.Event | None = None,
+        progress_state=None,
+        output_headers: list[str] | None = None,
+    ):
+        super().__init__()
+        self.data = data
+        self.params = params
+        self.signals = signals
+        self.cancel_event = cancel_event
+        self.progress_state = progress_state
+        if output_headers and len(output_headers) == len(STRAIN_ENERGY_HEADERS):
+            self.output_headers = list(output_headers)
+        else:
+            self.output_headers = list(STRAIN_ENERGY_HEADERS)
+
+    def run(self):
+        nrows = len(self.data)
+        tot = max(nrows, 1)
+        tasks = [(oid, cell, self.params) for oid, cell in self.data]
+        cfg = load_config()
+        if cfg.conformer_threads is not None:
+            max_workers = cfg.conformer_threads
+        else:
+            max_workers = min(4, max(1, (os.cpu_count() or 4) // 2))
+        use_parallel = nrows >= 6 and max_workers > 1
+        cancel_ev = self.cancel_event
+        results: list = []
+        cancelled = False
+        done_count = 0
+        prog_state = [0, 0.0]
+        headers = list(self.output_headers)
+        rename = dict(zip(STRAIN_ENERGY_HEADERS, headers))
+        try:
+            if use_parallel:
+                _emit_tool_progress_throttled(
+                    self.signals,
+                    "Calculate strain energy…",
+                    0,
+                    tot,
+                    prog_state,
+                    progress_state=self.progress_state,
+                )
+                ex = ThreadPoolExecutor(max_workers=max_workers)
+                shutdown_cancel = False
+                try:
+                    row_tasks = [(*t, cancel_ev) for t in tasks]
+                    pending = {ex.submit(_strain_energy_row_task, rt) for rt in row_tasks}
+                    while pending:
+                        if cancel_ev is not None and cancel_ev.is_set():
+                            shutdown_cancel = True
+                            cancelled = True
+                            for f in list(pending):
+                                if f.done() and not f.cancelled():
+                                    try:
+                                        results.append(f.result())
+                                        done_count += 1
+                                    except Exception:
+                                        logger.exception("Strain energy row task failed")
+                                else:
+                                    f.cancel()
+                            break
+                        completed, pending = wait(
+                            pending, timeout=0.08, return_when=FIRST_COMPLETED
+                        )
+                        for f in completed:
+                            if f.cancelled():
+                                continue
+                            try:
+                                results.append(f.result())
+                                done_count += 1
+                            except Exception:
+                                logger.exception("Strain energy row task failed")
+                            _emit_tool_progress_throttled(
+                                self.signals,
+                                "Calculate strain energy…",
+                                done_count,
+                                tot,
+                                prog_state,
+                                progress_state=self.progress_state,
+                            )
+                finally:
+                    try:
+                        ex.shutdown(wait=not shutdown_cancel, cancel_futures=shutdown_cancel)
+                    except TypeError:
+                        ex.shutdown(wait=not shutdown_cancel)
+                _emit_tool_progress_throttled(
+                    self.signals,
+                    "Calculate strain energy…",
+                    min(done_count, tot),
+                    tot,
+                    prog_state,
+                    progress_state=self.progress_state,
+                )
+            else:
+                for done, t in enumerate(tasks, start=1):
+                    if cancel_ev is not None and cancel_ev.is_set():
+                        cancelled = True
+                        break
+                    results.append(_strain_energy_row_task((*t, cancel_ev)))
+                    done_count = done
+                    _emit_tool_progress_throttled(
+                        self.signals,
+                        "Calculate strain energy…",
+                        done,
+                        tot,
+                        prog_state,
+                        progress_state=self.progress_state,
+                    )
+        except Exception:
+            logger.exception("StrainEnergyWorker failed")
+        finally:
+            emit_partial_results_if_cancelled(
+                self.signals, "Calculate strain energy", done_count, tot, cancelled
+            )
+            mapped: list[tuple[int, dict[str, str]]] = []
+            for oid, row in results:
+                mapped.append((int(oid), {rename.get(k, k): v for k, v in row.items()}))
+            try:
+                self.signals.calculated.emit(mapped, headers)
+            except Exception:
+                logger.warning("strain energy calculated emit failed", exc_info=True)
 
 
 class CalcWorker(QRunnable):

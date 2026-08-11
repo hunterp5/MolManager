@@ -1258,8 +1258,11 @@ class SketchWidget(SketchWidgetEventsMixin, SketchWidgetPaintMixin, SketchWidget
                 self.nodes.append(n)
             mx_id = max((n["id"] for n in self.nodes), default=0)
             self.next_id = max(self.next_id, mx_id + 1)
-            for bb in payload["bonds"]:
-                self.bonds.append(_bond_make(*_bond_unpack(bb)))
+            if payload.get("prev_bonds") is not None:
+                self.bonds = [_bond_make(*_bond_unpack(b)) for b in payload["prev_bonds"]]
+            else:
+                for bb in payload["bonds"]:
+                    self.bonds.append(_bond_make(*_bond_unpack(bb)))
             self._redo.append(("del_hs_redo", payload))
             self._after_sketch_edit()
             return
@@ -1345,10 +1348,13 @@ class SketchWidget(SketchWidgetEventsMixin, SketchWidgetPaintMixin, SketchWidget
         if op == "del_hs_redo":
             payload = data
             nids = {n["id"] for n in payload["nodes"]}
-            for bb in payload["bonds"]:
-                bt = _bond_make(*_bond_unpack(bb))
-                self.bonds = [b for b in self.bonds if b != bt]
             self.nodes = [n for n in self.nodes if n["id"] not in nids]
+            if payload.get("after_bonds") is not None:
+                self.bonds = [_bond_make(*_bond_unpack(b)) for b in payload["after_bonds"]]
+            else:
+                for bb in payload["bonds"]:
+                    bt = _bond_make(*_bond_unpack(bb))
+                    self.bonds = [b for b in self.bonds if b != bt]
             self._undo.append(("del_hs_local", payload))
             self._after_sketch_edit()
             return
@@ -1655,6 +1661,14 @@ class SketchWidget(SketchWidgetEventsMixin, SketchWidgetPaintMixin, SketchWidget
         QApplication.clipboard().setText(blob)
         return True
 
+    def copy_selected_as_smiles_to_clipboard(self) -> bool:
+        """Copy SMILES/SMARTS of the current selection to the system clipboard."""
+        smi = self.to_smiles_selected()
+        if not smi:
+            return False
+        QApplication.clipboard().setText(smi)
+        return True
+
     def _paste_fragment_payload(self, frag: dict[str, Any], anchor: QPoint) -> None:
         old_to_new: dict[int, int] = {}
         new_ids: list[int] = []
@@ -1909,6 +1923,32 @@ class SketchWidget(SketchWidgetEventsMixin, SketchWidgetPaintMixin, SketchWidget
             act = QAction("Group selection for export", self)
             act.triggered.connect(self._run_group_selection_menu)
             menu.addAction(act)
+
+    def _add_copy_selected_smiles_action(
+        self, menu: QMenu, *, hit_ids: set[int] | None = None
+    ) -> None:
+        """Add Copy Selected as SMILES when the selection includes *hit_ids* (if given)."""
+        ids = self._atoms_for_selection_move()
+        if not ids:
+            return
+        if hit_ids is not None and not (ids & hit_ids):
+            return
+        menu.addSeparator()
+        act = QAction("Copy Selected as SMILES", self)
+        act.setToolTip("Copy the SMILES (or SMARTS) of the current selection to the clipboard.")
+        act.triggered.connect(self._menu_copy_selected_smiles)
+        menu.addAction(act)
+
+    def _menu_copy_selected_smiles(self) -> None:
+        if self.copy_selected_as_smiles_to_clipboard():
+            return
+        dlg = self._sketcher_dialog_if()
+        parent_w = dlg if dlg is not None else self
+        QMessageBox.warning(
+            parent_w,
+            "Copy Selected as SMILES",
+            "Could not copy — no valid SMILES/SMARTS for the selection.",
+        )
 
     def _selection_transform_atom_ids(self) -> set[int]:
         """Atoms moved by selection transforms (explicit selection + selected-bond endpoints)."""

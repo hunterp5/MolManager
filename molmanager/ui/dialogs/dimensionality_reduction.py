@@ -101,8 +101,8 @@ class DimensionReductionPanel(QWidget):
         src_ly.addLayout(struct_row)
 
         scope_row = QHBoxLayout()
-        self.only_selected_cb = QCheckBox("Only Selected Rows")
-        self._only_selected_scope_prefix = "Only Selected Rows"
+        self.only_selected_cb = QCheckBox("Selected Rows Only")
+        self._only_selected_scope_prefix = "Selected Rows Only"
         if self._have_selection:
             self.only_selected_cb.setText(f"{self._only_selected_scope_prefix} ({n_sel} row(s))")
         else:
@@ -192,6 +192,14 @@ class DimensionReductionPanel(QWidget):
         self._reload_columns()
         self._on_fp_selection_changed()
         self._update_spectrum_controls()
+        self.setMinimumWidth(self.embedded_minimum_width())
+
+    def embedded_minimum_width(self) -> int:
+        """Width needed so feature/color controls and the plot stay usable when docked."""
+        return 780
+
+    def embedded_preferred_width(self) -> int:
+        return max(self.embedded_minimum_width(), 900)
 
     def create_floating_dialog(self, parent_app: ChemicalTableApp) -> QDialog:
         """Re-open this panel in a floating window after undocking from the main table."""
@@ -370,7 +378,7 @@ class DimensionReductionPanel(QWidget):
             QMessageBox.warning(
                 self,
                 self._window_title,
-                "\u201cOnly Selected Rows\u201d is checked but nothing is selected.",
+                "\u201cSelected Rows Only\u201d is checked but nothing is selected.",
             )
             return
         try:

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from PyQt5.QtCore import Qt
 from PyQt5.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -12,6 +13,7 @@ from PyQt5.QtWidgets import (
     QFormLayout,
     QGroupBox,
     QHBoxLayout,
+    QLabel,
     QLineEdit,
     QMessageBox,
     QPlainTextEdit,
@@ -34,7 +36,13 @@ from ..strings import (
     TOOL_SINGLE_CONFORMATION,
 )
 from ...fragment_decomposition import detect_fragment_column_prefixes
-from ...workers import ConformerGenParams, SuperposeParams
+from ...workers import (
+    ConformerGenParams,
+    RmsdParams,
+    StrainEnergyParams,
+    SuperposeParams,
+    SuperposeStructuresParams,
+)
 from .scope import selection_scope_checked
 
 
@@ -59,13 +67,13 @@ class ConformerOutputOptionsPanel(QWidget):
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(4)
 
-        self.add_to_table_cb = QCheckBox("Add Conformations to Table")
+        self.add_to_table_cb = QCheckBox("Add to table")
         self.add_to_table_cb.setToolTip(
             "Append each generated conformer as a new table row (Parent OID and Conformer columns)."
         )
         layout.addWidget(self.add_to_table_cb)
 
-        self.save_to_file_cb = QCheckBox("Save Conformations to File")
+        self.save_to_file_cb = QCheckBox("Save to SDF")
         self.save_to_file_cb.setToolTip("Write all generated conformers to an SDF file.")
         self.save_to_file_cb.toggled.connect(self._sync_save_path_enabled)
         layout.addWidget(self.save_to_file_cb)
@@ -196,8 +204,8 @@ class DisconnectFragmentsDialog(QDialog):
         self.radio_update_target.toggled.connect(self._sync_output_fields)
         self.radio_new_columns.toggled.connect(self._sync_output_fields)
 
-        self.only_selected_cb = QCheckBox("Only selected rows")
-        self._only_selected_scope_prefix = "Only selected rows"
+        self.only_selected_cb = QCheckBox("Selected Rows Only")
+        self._only_selected_scope_prefix = "Selected Rows Only"
         if self._have_selection:
             self.only_selected_cb.setText(f"{self._only_selected_scope_prefix} ({selected_row_count} row(s))")
         else:
@@ -289,8 +297,8 @@ class FastPrepareDialog(QDialog):
         self.radio_update_target.toggled.connect(self._sync_output_fields)
         self.radio_new_columns.toggled.connect(self._sync_output_fields)
 
-        self.only_selected_cb = QCheckBox("Only selected rows")
-        self._only_selected_scope_prefix = "Only selected rows"
+        self.only_selected_cb = QCheckBox("Selected Rows Only")
+        self._only_selected_scope_prefix = "Selected Rows Only"
         if self._have_selection:
             self.only_selected_cb.setText(f"{self._only_selected_scope_prefix} ({selected_row_count} row(s))")
         else:
@@ -352,8 +360,8 @@ class NeutralizeDialog(QDialog):
         self.src_combo.addItems(source_labels)
         f.addRow("Target column:", self.src_combo)
         root.addLayout(f)
-        self.only_selected_cb = QCheckBox("Only selected rows")
-        self._only_selected_scope_prefix = "Only selected rows"
+        self.only_selected_cb = QCheckBox("Selected Rows Only")
+        self._only_selected_scope_prefix = "Selected Rows Only"
         if self._have_selection:
             self.only_selected_cb.setText(f"{self._only_selected_scope_prefix} ({selected_row_count} row(s))")
         else:
@@ -392,8 +400,8 @@ class AddExplicitHydrogensDialog(QDialog):
         self.src_combo.addItems(source_labels)
         f.addRow("Target column:", self.src_combo)
         root.addLayout(f)
-        self.only_selected_cb = QCheckBox("Only selected rows")
-        self._only_selected_scope_prefix = "Only selected rows"
+        self.only_selected_cb = QCheckBox("Selected Rows Only")
+        self._only_selected_scope_prefix = "Selected Rows Only"
         if self._have_selection:
             self.only_selected_cb.setText(f"{self._only_selected_scope_prefix} ({selected_row_count} row(s))")
         else:
@@ -432,8 +440,8 @@ class RemoveExplicitHydrogensDialog(QDialog):
         self.src_combo.addItems(source_labels)
         f.addRow("Target column:", self.src_combo)
         root.addLayout(f)
-        self.only_selected_cb = QCheckBox("Only selected rows")
-        self._only_selected_scope_prefix = "Only selected rows"
+        self.only_selected_cb = QCheckBox("Selected Rows Only")
+        self._only_selected_scope_prefix = "Selected Rows Only"
         if self._have_selection:
             self.only_selected_cb.setText(f"{self._only_selected_scope_prefix} ({selected_row_count} row(s))")
         else:
@@ -463,32 +471,38 @@ class GenerateSingleConformationDialog(QDialog):
     def __init__(self, selected_row_count: int = 0, parent=None):
         super().__init__(parent)
         self.setWindowTitle(TOOL_SINGLE_CONFORMATION)
-        self.resize(460, 320)
+        self.setMinimumWidth(420)
+        self.resize(460, 0)
         self._have_selection = selected_row_count > 0
         root = QVBoxLayout(self)
+        root.setContentsMargins(10, 10, 10, 8)
+        root.setSpacing(8)
         form = QFormLayout()
+        form.setSpacing(6)
         self.ff_combo = QComboBox()
         self.ff_combo.addItems(["MMFF", "UFF"])
         self.ff_combo.setToolTip("MMFF94 when parameters exist; otherwise falls back to UFF automatically.")
-        form.addRow("Minimize with:", self.ff_combo)
+        form.addRow("Force field:", self.ff_combo)
 
         self.seed_sb = QSpinBox()
         self.seed_sb.setRange(0, 2_147_483_647)
         self.seed_sb.setValue(0xC0FFEE)
         self.seed_sb.setToolTip("Random seed passed to the ETKDG embedder.")
-        form.addRow("Random seed:", self.seed_sb)
+        form.addRow("Seed:", self.seed_sb)
 
         self.max_iters_sb = QSpinBox()
         self.max_iters_sb.setRange(20, 2000)
         self.max_iters_sb.setValue(200)
         self.max_iters_sb.setToolTip("Maximum minimizer iterations for the conformer.")
-        form.addRow("Max minimizer iterations:", self.max_iters_sb)
+        form.addRow("Max iterations:", self.max_iters_sb)
         root.addLayout(form)
 
-        self.only_selected_cb = QCheckBox("Only selected rows")
-        self._only_selected_scope_prefix = "Only selected rows"
+        self.only_selected_cb = QCheckBox("Selected Rows Only")
+        self._only_selected_scope_prefix = "Selected Rows Only"
         if self._have_selection:
-            self.only_selected_cb.setText(f"{self._only_selected_scope_prefix} ({selected_row_count} row(s))")
+            self.only_selected_cb.setText(
+                f"{self._only_selected_scope_prefix} ({selected_row_count} row(s))"
+            )
         else:
             self.only_selected_cb.setEnabled(False)
         root.addWidget(self.only_selected_cb)
@@ -527,15 +541,19 @@ class GenerateConformationsDialog(QDialog):
     def __init__(self, selected_row_count: int = 0, parent=None):
         super().__init__(parent)
         self.setWindowTitle("Generate Conformations")
-        self.resize(480, 420)
+        self.setMinimumWidth(420)
+        self.resize(460, 0)
         self._have_selection = selected_row_count > 0
         root = QVBoxLayout(self)
+        root.setContentsMargins(10, 10, 10, 8)
+        root.setSpacing(8)
         form = QFormLayout()
+        form.setSpacing(6)
         self.num_confs_sb = QSpinBox()
         self.num_confs_sb.setRange(1, 500)
         self.num_confs_sb.setValue(25)
         self.num_confs_sb.setToolTip("Number of conformers to embed before minimization and pruning.")
-        form.addRow("Conformers to generate:", self.num_confs_sb)
+        form.addRow("Conformers:", self.num_confs_sb)
 
         self.energy_win_sb = QDoubleSpinBox()
         self.energy_win_sb.setRange(0.0, 200.0)
@@ -548,18 +566,18 @@ class GenerateConformationsDialog(QDialog):
             "Keep only conformers within this energy above the lowest-energy conformer. "
             "Set to 0 to skip energy pruning."
         )
-        form.addRow("Energy window (Î”E):", self.energy_win_sb)
+        form.addRow("Energy window:", self.energy_win_sb)
 
         self.ff_combo = QComboBox()
         self.ff_combo.addItems(["MMFF", "UFF"])
         self.ff_combo.setToolTip("MMFF94 when parameters exist; otherwise falls back to UFF automatically.")
-        form.addRow("Minimize with:", self.ff_combo)
+        form.addRow("Force field:", self.ff_combo)
 
         self.seed_sb = QSpinBox()
         self.seed_sb.setRange(0, 2_147_483_647)
         self.seed_sb.setValue(0xC0FFEE)
         self.seed_sb.setToolTip("Random seed passed to the ETKDG embedder.")
-        form.addRow("Random seed:", self.seed_sb)
+        form.addRow("Seed:", self.seed_sb)
 
         self.prune_rms_sb = QDoubleSpinBox()
         self.prune_rms_sb.setRange(-1.0, 3.0)
@@ -567,21 +585,23 @@ class GenerateConformationsDialog(QDialog):
         self.prune_rms_sb.setSingleStep(0.05)
         self.prune_rms_sb.setValue(-1.0)
         self.prune_rms_sb.setSpecialValueText("default (ETKDG)")
-        self.prune_rms_sb.setToolTip("ETKDG pruneRmsThresh during embed; âˆ’1 uses the parameter object default.")
-        form.addRow("Embed RMS prune:", self.prune_rms_sb)
+        self.prune_rms_sb.setToolTip("ETKDG pruneRmsThresh during embed; −1 uses the parameter object default.")
+        form.addRow("RMS prune:", self.prune_rms_sb)
 
         self.max_iters_sb = QSpinBox()
         self.max_iters_sb.setRange(20, 2000)
         self.max_iters_sb.setValue(200)
         self.max_iters_sb.setToolTip("Maximum minimizer iterations per conformer.")
-        form.addRow("Max minimizer iterations:", self.max_iters_sb)
+        form.addRow("Max iterations:", self.max_iters_sb)
 
         root.addLayout(form)
 
-        self.only_selected_cb = QCheckBox("Only selected rows")
-        self._only_selected_scope_prefix = "Only selected rows"
+        self.only_selected_cb = QCheckBox("Selected Rows Only")
+        self._only_selected_scope_prefix = "Selected Rows Only"
         if self._have_selection:
-            self.only_selected_cb.setText(f"{self._only_selected_scope_prefix} ({selected_row_count} row(s))")
+            self.only_selected_cb.setText(
+                f"{self._only_selected_scope_prefix} ({selected_row_count} row(s))"
+            )
         else:
             self.only_selected_cb.setEnabled(False)
         root.addWidget(self.only_selected_cb)
@@ -623,11 +643,15 @@ class SuperposeConformersDialog(QDialog):
     def __init__(self, selected_row_count: int = 0, parent=None):
         super().__init__(parent)
         self.setWindowTitle("Superpose Conformers")
-        self.resize(520, 500)
+        self.setMinimumWidth(420)
+        self.resize(460, 0)
         self._have_selection = selected_row_count > 0
         root = QVBoxLayout(self)
+        root.setContentsMargins(10, 10, 10, 8)
+        root.setSpacing(8)
 
         form = QFormLayout()
+        form.setSpacing(6)
         self.ref_sb = QSpinBox()
         self.ref_sb.setRange(0, 499)
         self.ref_sb.setValue(0)
@@ -635,16 +659,16 @@ class SuperposeConformersDialog(QDialog):
             "0-based index into the conformer list for each row (sorted by RDKit conformer id). "
             "If a row has fewer conformers than this index, the last conformer is used as reference."
         )
-        form.addRow("Reference conformer index:", self.ref_sb)
+        form.addRow("Reference index:", self.ref_sb)
 
-        self.heavy_cb = QCheckBox("Use heavy atoms only (exclude hydrogen)")
+        self.heavy_cb = QCheckBox("Heavy atoms only")
         self.heavy_cb.setChecked(True)
         self.heavy_cb.setToolTip(
             "Alignment minimizes RMS over non-hydrogen atoms only (recommended for noisy H positions)."
         )
         form.addRow(self.heavy_cb)
 
-        self.reflect_cb = QCheckBox("Allow reflection (mirror image)")
+        self.reflect_cb = QCheckBox("Allow reflection")
         self.reflect_cb.setChecked(False)
         self.reflect_cb.setToolTip(
             "If checked, the alignment may invert chirality-related rigid transforms; leave off for typical conformers."
@@ -654,34 +678,37 @@ class SuperposeConformersDialog(QDialog):
         self.max_align_sb = QSpinBox()
         self.max_align_sb.setRange(10, 500)
         self.max_align_sb.setValue(50)
-        self.max_align_sb.setToolTip("Maximum iterations passed to the RDKit alignment optimizer per conformer pair.")
-        form.addRow("Max alignment iterations:", self.max_align_sb)
+        self.max_align_sb.setToolTip(
+            "Maximum iterations passed to the RDKit alignment optimizer per conformer pair."
+        )
+        form.addRow("Max iterations:", self.max_align_sb)
 
         self.align_pat_edit = QLineEdit()
-        self.align_pat_edit.setPlaceholderText("optional, e.g. CC or c1ccccc1 or [#6]-[#6]")
+        self.align_pat_edit.setPlaceholderText("optional SMILES/SMARTS")
         self.align_pat_edit.setToolTip(
             "If set, rigid alignment uses only atoms that match this query on each conformer "
             "(same graph as the row molecule). Leave empty to align on all heavy atoms or all atoms."
         )
-        form.addRow("Align on substructure (SMILES/SMARTS):", self.align_pat_edit)
-
-        self.align_smarts_cb = QCheckBox("Pattern is SMARTS (unchecked = SMILES)")
+        self.align_smarts_cb = QCheckBox("SMARTS")
         self.align_smarts_cb.setChecked(False)
-        self.align_smarts_cb.setToolTip("Parse the field above with MolFromSmarts instead of MolFromSmiles.")
-        form.addRow(self.align_smarts_cb)
-
+        self.align_smarts_cb.setToolTip("Parse the pattern as SMARTS instead of SMILES.")
+        pat_row = QHBoxLayout()
+        pat_row.setContentsMargins(0, 0, 0, 0)
+        pat_row.setSpacing(6)
+        pat_row.addWidget(self.align_pat_edit, 1)
+        pat_row.addWidget(self.align_smarts_cb)
+        form.addRow("Align on:", pat_row)
         root.addLayout(form)
 
-        scope_box = QGroupBox("Scope")
-        scope_lyt = QVBoxLayout(scope_box)
-        self.only_selected_cb = QCheckBox("Only selected rows")
-        self._only_selected_scope_prefix = "Only selected rows"
+        self.only_selected_cb = QCheckBox("Selected Rows Only")
+        self._only_selected_scope_prefix = "Selected Rows Only"
         if self._have_selection:
-            self.only_selected_cb.setText(f"{self._only_selected_scope_prefix} ({selected_row_count} row(s))")
+            self.only_selected_cb.setText(
+                f"{self._only_selected_scope_prefix} ({selected_row_count} row(s))"
+            )
         else:
             self.only_selected_cb.setEnabled(False)
-        scope_lyt.addWidget(self.only_selected_cb)
-        root.addWidget(scope_box)
+        root.addWidget(self.only_selected_cb)
 
         box = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
         box.accepted.connect(self.accept)
@@ -700,6 +727,310 @@ class SuperposeConformersDialog(QDialog):
             max_align_iters=int(self.max_align_sb.value()),
             align_pattern=(self.align_pat_edit.text() or "").strip(),
             align_pattern_is_smarts=bool(self.align_smarts_cb.isChecked()),
+        )
+
+
+class SuperposeStructuresDialog(QDialog):
+    """Align selected table structures onto a reference (MCS / pattern / best-effort O3A)."""
+
+    def __init__(
+        self,
+        selected_row_count: int = 0,
+        *,
+        source_columns: list[str] | None = None,
+        parent=None,
+    ):
+        super().__init__(parent)
+        self.setWindowTitle("Superpose Structures")
+        self.setMinimumWidth(440)
+        self.resize(480, 0)
+        self._have_selection = selected_row_count > 0
+        sources = [c for c in (source_columns or ["Structure"]) if c]
+        if not sources:
+            sources = ["Structure"]
+
+        root = QVBoxLayout(self)
+        root.setContentsMargins(10, 10, 10, 8)
+        root.setSpacing(8)
+
+        form = QFormLayout()
+        form.setSpacing(6)
+
+        self.src_combo = QComboBox()
+        self.src_combo.addItems(sources)
+        self.src_combo.setToolTip(
+            "Where to read 3D coordinates. Prefer confs when present; Structure uses the "
+            "in-memory molecule (embeds a 3D conformer if needed)."
+        )
+        form.addRow("Source:", self.src_combo)
+
+        self.heavy_cb = QCheckBox("Heavy atoms only")
+        self.heavy_cb.setChecked(True)
+        self.heavy_cb.setToolTip(
+            "When aligning on a substructure or MCS, use non-hydrogen atoms only."
+        )
+        form.addRow(self.heavy_cb)
+
+        self.reflect_cb = QCheckBox("Allow reflection")
+        self.reflect_cb.setChecked(False)
+        self.reflect_cb.setToolTip(
+            "If checked, rigid AlignMol may use a reflected pose; leave off to preserve chirality."
+        )
+        form.addRow(self.reflect_cb)
+
+        self.max_align_sb = QSpinBox()
+        self.max_align_sb.setRange(10, 500)
+        self.max_align_sb.setValue(50)
+        self.max_align_sb.setToolTip("Maximum iterations for RDKit AlignMol when an atom map is used.")
+        form.addRow("Max iterations:", self.max_align_sb)
+
+        self.align_pat_edit = QLineEdit()
+        self.align_pat_edit.setPlaceholderText("optional SMILES/SMARTS")
+        self.align_pat_edit.setToolTip(
+            "If set, align on this common substructure when it matches both the reference and "
+            "the probe. If it does not match, MCS / best-effort overlay is used instead."
+        )
+        self.align_smarts_cb = QCheckBox("SMARTS")
+        self.align_smarts_cb.setChecked(False)
+        self.align_smarts_cb.setToolTip("Parse the pattern as SMARTS instead of SMILES.")
+        pat_row = QHBoxLayout()
+        pat_row.setContentsMargins(0, 0, 0, 0)
+        pat_row.setSpacing(6)
+        pat_row.addWidget(self.align_pat_edit, 1)
+        pat_row.addWidget(self.align_smarts_cb)
+        form.addRow("Align on:", pat_row)
+
+        self.mcs_cb = QCheckBox("Use MCS when no pattern match")
+        self.mcs_cb.setChecked(True)
+        self.mcs_cb.setToolTip(
+            "Find a maximum common substructure between each probe and the reference. "
+            "If that also fails, overlay with Crippen / MMFF O3A (best effort)."
+        )
+        form.addRow(self.mcs_cb)
+        root.addLayout(form)
+
+        tip = QLabel(
+            "Reference = first row in scope (table order). The aligned ensemble is stored on the "
+            "reference row’s <b>superpose</b> column (View Conformers / strain / RMSD) and opened "
+            "in the 3D viewer."
+        )
+        tip.setWordWrap(True)
+        tip.setTextFormat(Qt.RichText)
+        root.addWidget(tip)
+
+        self.only_selected_cb = QCheckBox("Selected Rows Only")
+        self._only_selected_scope_prefix = "Selected Rows Only"
+        if self._have_selection:
+            self.only_selected_cb.setChecked(True)
+            self.only_selected_cb.setText(
+                f"{self._only_selected_scope_prefix} ({selected_row_count} row(s))"
+            )
+        else:
+            self.only_selected_cb.setEnabled(False)
+        root.addWidget(self.only_selected_cb)
+
+        box = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        box.accepted.connect(self.accept)
+        box.rejected.connect(self.reject)
+        root.addWidget(box)
+        make_window_minimizable(self)
+
+    def only_selected_rows(self) -> bool:
+        return selection_scope_checked(self)
+
+    def source_column(self) -> str:
+        return str(self.src_combo.currentText() or "Structure")
+
+    def params(self) -> SuperposeStructuresParams:
+        return SuperposeStructuresParams(
+            heavy_atoms_only=bool(self.heavy_cb.isChecked()),
+            reflect=bool(self.reflect_cb.isChecked()),
+            max_align_iters=int(self.max_align_sb.value()),
+            align_pattern=(self.align_pat_edit.text() or "").strip(),
+            align_pattern_is_smarts=bool(self.align_smarts_cb.isChecked()),
+            use_mcs=bool(self.mcs_cb.isChecked()),
+        )
+
+
+class StrainEnergyDialog(QDialog):
+    """Compute per-conformer strain (ΔE) relative to a reference conformer."""
+
+    def __init__(
+        self,
+        selected_row_count: int = 0,
+        *,
+        source_columns: list[str] | None = None,
+        parent=None,
+    ):
+        super().__init__(parent)
+        self.setWindowTitle("Calculate Strain Energy")
+        self.setMinimumWidth(420)
+        self.resize(460, 0)
+        self._have_selection = selected_row_count > 0
+        sources = [c for c in (source_columns or ["confs"]) if c]
+        if not sources:
+            sources = ["confs"]
+
+        root = QVBoxLayout(self)
+        root.setContentsMargins(10, 10, 10, 8)
+        root.setSpacing(8)
+
+        form = QFormLayout()
+        form.setSpacing(6)
+
+        self.src_combo = QComboBox()
+        self.src_combo.addItems(sources)
+        self.src_combo.setToolTip(
+            "Packed multi-conformer column to score (from Generate Conformations or Superpose)."
+        )
+        form.addRow("Conformer source:", self.src_combo)
+
+        self.ref_sb = QSpinBox()
+        self.ref_sb.setRange(0, 499)
+        self.ref_sb.setValue(0)
+        self.ref_sb.setToolTip(
+            "0-based reference conformer index (sorted by RDKit conformer id). "
+            "The 3D viewer shows absolute energy and ΔE = E_i − E_ref (kcal/mol). "
+            "If a row has fewer conformers, the last index is used."
+        )
+        form.addRow("Reference index:", self.ref_sb)
+
+        self.ff_combo = QComboBox()
+        self.ff_combo.addItems(["MMFF", "UFF"])
+        self.ff_combo.setToolTip(
+            "Force field for single-point energies (no re-minimization). "
+            "MMFF falls back to UFF when parameters are unavailable."
+        )
+        form.addRow("Force field:", self.ff_combo)
+        root.addLayout(form)
+
+        self.only_selected_cb = QCheckBox("Selected Rows Only")
+        self._only_selected_scope_prefix = "Selected Rows Only"
+        if self._have_selection:
+            self.only_selected_cb.setText(
+                f"{self._only_selected_scope_prefix} ({selected_row_count} row(s))"
+            )
+            self.only_selected_cb.setChecked(True)
+        else:
+            self.only_selected_cb.setEnabled(False)
+        self.only_selected_cb.setToolTip(
+            "Calculate Strain Energy opens the 3D viewer for a single row — select one molecule."
+        )
+        root.addWidget(self.only_selected_cb)
+
+        box = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        box.accepted.connect(self.accept)
+        box.rejected.connect(self.reject)
+        root.addWidget(box)
+        make_window_minimizable(self)
+
+    def only_selected_rows(self) -> bool:
+        return selection_scope_checked(self)
+
+    def params(self) -> StrainEnergyParams:
+        return StrainEnergyParams(
+            reference_conformer_index=int(self.ref_sb.value()),
+            force_field=str(self.ff_combo.currentText()),
+            source_column=str(self.src_combo.currentText() or "confs"),
+        )
+
+
+class CalculateRmsdDialog(QDialog):
+    """Compute per-conformer RMSD relative to a reference conformer."""
+
+    def __init__(
+        self,
+        selected_row_count: int = 0,
+        *,
+        source_columns: list[str] | None = None,
+        parent=None,
+    ):
+        super().__init__(parent)
+        self.setWindowTitle("Calculate RMSD")
+        self.setMinimumWidth(420)
+        self.resize(460, 0)
+        self._have_selection = selected_row_count > 0
+        sources = [c for c in (source_columns or ["confs"]) if c]
+        if not sources:
+            sources = ["confs"]
+
+        root = QVBoxLayout(self)
+        root.setContentsMargins(10, 10, 10, 8)
+        root.setSpacing(8)
+
+        form = QFormLayout()
+        form.setSpacing(6)
+
+        self.src_combo = QComboBox()
+        self.src_combo.addItems(sources)
+        self.src_combo.setToolTip(
+            "Packed multi-conformer column to score (from Generate Conformations or Superpose)."
+        )
+        form.addRow("Conformer source:", self.src_combo)
+
+        self.ref_sb = QSpinBox()
+        self.ref_sb.setRange(0, 499)
+        self.ref_sb.setValue(0)
+        self.ref_sb.setToolTip(
+            "0-based reference conformer index (sorted by RDKit conformer id). "
+            "RMSD for each conformer is measured after rigid alignment to this reference. "
+            "If a row has fewer conformers, the last index is used."
+        )
+        form.addRow("Reference index:", self.ref_sb)
+
+        self.heavy_cb = QCheckBox("Heavy atoms only")
+        self.heavy_cb.setChecked(True)
+        self.heavy_cb.setToolTip("Compute RMSD over non-hydrogen atoms only.")
+        form.addRow(self.heavy_cb)
+
+        self.reflect_cb = QCheckBox("Allow reflection")
+        self.reflect_cb.setChecked(False)
+        self.reflect_cb.setToolTip("Allow mirrored rigid transforms during alignment.")
+        form.addRow(self.reflect_cb)
+
+        self.align_pat_edit = QLineEdit()
+        self.align_pat_edit.setPlaceholderText("optional SMILES/SMARTS")
+        self.align_pat_edit.setToolTip(
+            "If set, RMSD uses only atoms matching this query. Leave empty for all (heavy) atoms."
+        )
+        self.align_smarts_cb = QCheckBox("SMARTS")
+        self.align_smarts_cb.setChecked(False)
+        self.align_smarts_cb.setToolTip("Parse the pattern as SMARTS instead of SMILES.")
+        pat_row = QHBoxLayout()
+        pat_row.setContentsMargins(0, 0, 0, 0)
+        pat_row.setSpacing(6)
+        pat_row.addWidget(self.align_pat_edit, 1)
+        pat_row.addWidget(self.align_smarts_cb)
+        form.addRow("Align on:", pat_row)
+        root.addLayout(form)
+
+        self.only_selected_cb = QCheckBox("Selected Rows Only")
+        self._only_selected_scope_prefix = "Selected Rows Only"
+        if self._have_selection:
+            self.only_selected_cb.setText(
+                f"{self._only_selected_scope_prefix} ({selected_row_count} row(s))"
+            )
+        else:
+            self.only_selected_cb.setEnabled(False)
+        root.addWidget(self.only_selected_cb)
+
+        box = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        box.accepted.connect(self.accept)
+        box.rejected.connect(self.reject)
+        root.addWidget(box)
+        make_window_minimizable(self)
+
+    def only_selected_rows(self) -> bool:
+        return selection_scope_checked(self)
+
+    def params(self) -> RmsdParams:
+        return RmsdParams(
+            reference_conformer_index=int(self.ref_sb.value()),
+            heavy_atoms_only=bool(self.heavy_cb.isChecked()),
+            reflect=bool(self.reflect_cb.isChecked()),
+            align_pattern=(self.align_pat_edit.text() or "").strip(),
+            align_pattern_is_smarts=bool(self.align_smarts_cb.isChecked()),
+            source_column=str(self.src_combo.currentText() or "confs"),
         )
 
 
@@ -750,8 +1081,8 @@ class FragmentDecompositionDialog(QDialog):
         form.addRow("Column name prefix:", self.prefix_edit)
         root.addLayout(form)
 
-        self.only_selected_cb = QCheckBox("Only selected rows")
-        self._only_selected_scope_prefix = "Only selected rows"
+        self.only_selected_cb = QCheckBox("Selected Rows Only")
+        self._only_selected_scope_prefix = "Selected Rows Only"
         if self._have_selection:
             self.only_selected_cb.setText(f"{self._only_selected_scope_prefix} ({selected_row_count} row(s))")
         else:
@@ -869,8 +1200,8 @@ class FragmentRecompositionDialog(QDialog):
         filters_lyt.addWidget(self.output_filters_edit)
         root.addWidget(filters_box)
 
-        self.only_selected_cb = QCheckBox("Only selected rows")
-        self._only_selected_scope_prefix = "Only selected rows"
+        self.only_selected_cb = QCheckBox("Selected Rows Only")
+        self._only_selected_scope_prefix = "Selected Rows Only"
         if self._have_selection:
             self.only_selected_cb.setText(f"{self._only_selected_scope_prefix} ({selected_row_count} row(s))")
         else:
@@ -968,8 +1299,8 @@ class CoreBasedDecompositionDialog(QDialog):
 
         root.addLayout(form)
 
-        self.only_selected_cb = QCheckBox("Only selected rows")
-        self._only_selected_scope_prefix = "Only selected rows"
+        self.only_selected_cb = QCheckBox("Selected Rows Only")
+        self._only_selected_scope_prefix = "Selected Rows Only"
         if self._have_selection:
             self.only_selected_cb.setText(f"{self._only_selected_scope_prefix} ({selected_row_count} row(s))")
         else:

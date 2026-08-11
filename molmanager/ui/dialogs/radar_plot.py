@@ -93,8 +93,8 @@ class RadarPlotPanel(QWidget):
         self.refresh_btn.clicked.connect(self.plot)
         scope.addWidget(self.refresh_btn)
         scope.addStretch(1)
-        self.only_selected_cb = QCheckBox("Only selected rows")
-        self._only_selected_scope_prefix = "Only selected rows"
+        self.only_selected_cb = QCheckBox("Selected Rows Only")
+        self._only_selected_scope_prefix = "Selected Rows Only"
         if self._have_selection:
             self.only_selected_cb.setText(f"{self._only_selected_scope_prefix} ({n_sel} row(s))")
         else:

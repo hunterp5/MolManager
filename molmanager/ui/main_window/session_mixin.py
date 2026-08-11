@@ -191,6 +191,7 @@ class SessionMixin:
             "structure_field_override": getattr(self, "_structure_field_override", None),
             "filter_panel_visible": bool(self.f_panel.isVisible()),
             "plot_panel_visible": bool(getattr(self, "_plot_panel", None) and self._plot_panel.isVisible()),
+            "plot_panel_width": (self._plot_panel_splitter_sizes() or [0, 0])[1],
             "filters": filters_out,
             "column_logical_order": logical_order,
             "sort_column": sort_col,
@@ -375,7 +376,25 @@ class SessionMixin:
                 c.restore_filter_flags(bool(spec.get("enabled", True)), bool(spec.get("inverted", False)))
         self.f_panel.setVisible(bool(doc.get("filter_panel_visible", False)))
         if getattr(self, "_plot_panel", None) is not None and getattr(self, "_docked_plot_widget", None) is not None:
-            self._plot_panel.setVisible(bool(doc.get("plot_panel_visible", False)))
+            if bool(doc.get("plot_panel_visible", False)):
+                self.show_docked_plot_panel()
+            else:
+                self.hide_docked_plot_panel()
+            saved_w = doc.get("plot_panel_width")
+            if isinstance(saved_w, (int, float)):
+                ensure = getattr(self, "_ensure_plot_panel_width", None)
+                content_min = 420
+                widths = getattr(self, "_docked_plot_content_widths", None)
+                if callable(widths):
+                    content_min, _pref = widths()
+                if saved_w >= content_min and callable(ensure):
+                    from PyQt5.QtCore import QTimer
+
+                    QTimer.singleShot(0, lambda: ensure(int(saved_w)))
+                elif callable(ensure):
+                    from PyQt5.QtCore import QTimer
+
+                    QTimer.singleShot(0, ensure)
         co = doc.get("column_logical_order")
         if isinstance(co, list):
             self._restore_column_visual_order([int(x) for x in co])

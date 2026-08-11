@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import logging
 
-from PyQt5.QtCore import Qt
+from PyQt5.QtCore import Qt, QTimer
 from PyQt5.QtWidgets import (
     QDialog,
     QMessageBox,
@@ -16,6 +16,71 @@ from PyQt5.QtWidgets import (
 logger = logging.getLogger(__name__)
 
 class PlotToolsMixin:
+    def _plot_panel_splitter_sizes(self) -> list[int] | None:
+        splitter = getattr(self, "_content_splitter", None)
+        if splitter is None:
+            return None
+        try:
+            sizes = [int(s) for s in splitter.sizes()]
+        except RuntimeError:
+            return None
+        if len(sizes) < 2:
+            return None
+        return sizes
+
+    def _docked_plot_content_widths(self) -> tuple[int, int]:
+        """Return ``(minimum_width, preferred_width)`` for the docked plot content."""
+        from ..dockable_plot import (
+            PLOT_PANEL_BASE_MINIMUM_WIDTH,
+            PLOT_PANEL_DEFAULT_WIDTH,
+            plot_embedded_minimum_width,
+            plot_embedded_preferred_width,
+        )
+
+        widget = getattr(self, "_docked_plot_widget", None)
+        if widget is None:
+            return PLOT_PANEL_BASE_MINIMUM_WIDTH, PLOT_PANEL_DEFAULT_WIDTH
+        return plot_embedded_minimum_width(widget), plot_embedded_preferred_width(widget)
+
+    def _apply_plot_panel_minimum_width(self) -> int:
+        """Sync the plot panel floor to the docked content; return the effective minimum."""
+        from ..dockable_plot import PLOT_PANEL_BASE_MINIMUM_WIDTH
+
+        panel = getattr(self, "_plot_panel", None)
+        if panel is None:
+            return PLOT_PANEL_BASE_MINIMUM_WIDTH
+        min_w, _pref = self._docked_plot_content_widths()
+        if getattr(self, "_docked_plot_widget", None) is None:
+            min_w = PLOT_PANEL_BASE_MINIMUM_WIDTH
+        try:
+            panel.setMinimumWidth(min_w)
+        except RuntimeError:
+            pass
+        return min_w
+
+    def _ensure_plot_panel_width(self, preferred: int | None = None) -> None:
+        """Give the docked plot a usable width when shown (e.g. after hide or first dock)."""
+        splitter = getattr(self, "_content_splitter", None)
+        panel = getattr(self, "_plot_panel", None)
+        if splitter is None or panel is None:
+            return
+        sizes = self._plot_panel_splitter_sizes()
+        if sizes is None:
+            return
+        table_w, plot_w = sizes[0], sizes[1]
+        min_w = self._apply_plot_panel_minimum_width()
+        _content_min, content_pref = self._docked_plot_content_widths()
+        if preferred is not None:
+            want = max(min_w, int(preferred))
+        else:
+            want = max(min_w, content_pref)
+        if plot_w >= want:
+            return
+        total = max(table_w + plot_w, want + 200)
+        new_plot = min(want, max(min_w, total - 200))
+        new_table = max(200, total - new_plot)
+        splitter.setSizes([new_table, new_plot])
+
     def _sync_dialog_only_selected_scope(self, dialog: QDialog) -> None:
         """Refresh a tool dialog's scope checkbox label/count from the current table selection."""
         cb = getattr(dialog, "only_selected_cb", None)
@@ -28,7 +93,7 @@ class PlotToolsMixin:
                 return
         except Exception:
             pass
-        prefix = getattr(dialog, "_only_selected_scope_prefix", "Only selected rows")
+        prefix = getattr(dialog, "_only_selected_scope_prefix", "Selected Rows Only")
         n = len(self._selected_logical_rows())
         try:
             if n > 0:
@@ -231,7 +296,7 @@ class PlotToolsMixin:
                     w.setParent(None)
         lay.addWidget(plot_widget, 1)
         self._docked_plot_widget = plot_widget
-        self._plot_panel.setVisible(True)
+        self.show_docked_plot_panel()
         prior_teardown = getattr(plot_widget, "_scope_sync_disconnect", None)
         if callable(prior_teardown):
             prior_teardown()
@@ -241,17 +306,52 @@ class PlotToolsMixin:
         self.status_label.setText("Plot: docked to the right of the table.")
         return True
 
+    def show_docked_plot_panel(self) -> None:
+        """Show the docked plot panel and ensure it has a usable width."""
+        self._plot_panel.setVisible(True)
+        QTimer.singleShot(0, self._ensure_plot_panel_width)
+
+    def hide_docked_plot_panel(self) -> None:
+        """Hide the docked plot panel and give its width back to the table."""
+        self._plot_panel.setVisible(False)
+        if getattr(self, "_docked_plot_widget", None) is None:
+            self._apply_plot_panel_minimum_width()
+        splitter = getattr(self, "_content_splitter", None)
+        if splitter is None:
+            return
+        try:
+            sizes = [int(s) for s in splitter.sizes()]
+        except RuntimeError:
+            return
+        total = sum(sizes) if sizes else 0
+        if total <= 0:
+            total = max(splitter.width(), 1)
+        splitter.setSizes([total, 0])
+
     def _on_docked_plot_destroyed(self, *_args) -> None:
         self._docked_plot_widget = None
         try:
-            self._plot_panel.setVisible(False)
+            self.hide_docked_plot_panel()
         except Exception:
             pass
 
     def close_plot_panel_keep_plot(self) -> None:
         """Hide the docked plot panel; the plot widget and its state are preserved."""
-        self._plot_panel.setVisible(False)
+        self.hide_docked_plot_panel()
         self.status_label.setText("Plot panel hidden.")
+
+    def close_docked_plot(self) -> None:
+        """Close and undock the main-window plot so another plot can be docked."""
+        plot_widget = getattr(self, "_docked_plot_widget", None)
+        if plot_widget is not None:
+            self._release_plot_widget_from_panel_host(plot_widget)
+            try:
+                plot_widget.setParent(None)
+                plot_widget.deleteLater()
+            except RuntimeError:
+                pass
+        self.hide_docked_plot_panel()
+        self.status_label.setText("Plot closed.")
 
     def _release_plot_widget_from_panel_host(self, plot_widget) -> None:
         host = self._plot_panel_host
@@ -266,6 +366,7 @@ class PlotToolsMixin:
         if callable(teardown):
             teardown()
         self._docked_plot_widget = None
+        self._apply_plot_panel_minimum_width()
 
     def undock_plot_to_window(self) -> bool:
         """Move the docked plot from the main window into a floating window."""
@@ -278,7 +379,7 @@ class PlotToolsMixin:
         factory = getattr(plot_widget, "create_floating_dialog", None)
         if callable(factory):
             self._release_plot_widget_from_panel_host(plot_widget)
-            self._plot_panel.setVisible(False)
+            self.hide_docked_plot_panel()
             dlg = factory(self)
             self._prepare_tool_dialog(dlg)
             dlg.show()
@@ -292,7 +393,7 @@ class PlotToolsMixin:
             return False
 
         self._release_plot_widget_from_panel_host(plot_widget)
-        self._plot_panel.setVisible(False)
+        self.hide_docked_plot_panel()
 
         dlg = PlotDialog(self, plot_widget=plot_widget)
         self._register_plot_dialog(dlg)
@@ -311,8 +412,10 @@ class PlotToolsMixin:
             return
         try:
             visible = self._plot_panel.isVisible()
-            self._plot_panel.setVisible(not visible)
-            if not visible:
+            if visible:
+                self.hide_docked_plot_panel()
+            else:
+                self.show_docked_plot_panel()
                 self._sync_dialog_only_selected_scope(w)
         except RuntimeError:
             self._docked_plot_widget = None

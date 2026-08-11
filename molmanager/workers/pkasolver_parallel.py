@@ -101,6 +101,87 @@ def _mp_compute_microstates(task: tuple[str, bytes]) -> tuple[str, list | None]:
         return key, None
 
 
+def predict_microstates_for_sketch(
+    mol: Chem.Mol,
+    *,
+    cancel_event: threading.Event | None = None,
+    timeout_s: float = 180.0,
+) -> list | None:
+    """
+    Predict microstates for one sketcher molecule without blocking the Qt GUI on the GIL.
+
+    Uses the session microstate cache when possible. Otherwise runs pkasolver in a
+    short-lived child process (no in-process fallback — failures return ``None``).
+    """
+    import time
+
+    from molmanager.microstate_cache import lookup as cache_lookup
+    from molmanager.microstate_cache import store as cache_store
+
+    key = structure_key(mol)
+    hit, cached = cache_lookup(key)
+    if hit:
+        return cached
+
+    try:
+        blob = mol.ToBinary()
+    except Exception:
+        return None
+    if not blob:
+        return None
+
+    cfg = load_config()
+    # Prefer a child process whenever possible so pkasolver/PyTorch cannot freeze Qt via the GIL.
+    # ``MOLMANAGER_PKA_PROCESS_WORKERS<=0`` forces in-process (tests / constrained environments).
+    configured = cfg.pka_process_workers
+    if configured is not None and int(configured) <= 0:
+        from molmanager.pkasolver_descriptor_support import microstates_for_mol
+
+        return microstates_for_mol(mol)
+
+    ex = register_process_pool(ProcessPoolExecutor(max_workers=1))
+    states: list | None = None
+    timed_out = False
+    try:
+        fut = ex.submit(_mp_compute_microstates, (key, blob))
+        deadline = time.monotonic() + max(5.0, float(timeout_s))
+        while True:
+            if should_terminate_process_pool(cancel_event):
+                fut.cancel()
+                states = None
+                break
+            if time.monotonic() >= deadline:
+                logger.warning("pkasolver sketch microstates timed out after %.0fs", timeout_s)
+                fut.cancel()
+                timed_out = True
+                states = None
+                break
+            completed, _pending = wait({fut}, timeout=0.25, return_when=FIRST_COMPLETED)
+            if not completed:
+                continue
+            if fut.cancelled():
+                states = None
+                break
+            try:
+                _k, states = fut.result()
+            except BrokenExecutor:
+                logger.warning("pkasolver sketch process pool broke during prediction")
+                timed_out = True
+                states = None
+            except Exception:
+                logger.debug("pkasolver sketch microstates failed", exc_info=True)
+                states = None
+            break
+    finally:
+        shutdown_process_pool_executor(
+            ex,
+            kill_workers=should_terminate_process_pool(cancel_event) or timed_out,
+        )
+
+    cache_store(key, states)
+    return states
+
+
 def build_microstates_cache_by_key(
     mols: list[Chem.Mol],
     *,

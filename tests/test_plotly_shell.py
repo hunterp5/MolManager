@@ -18,3 +18,5 @@ def test_interactive_plot_shell_includes_bridge_handlers():
     assert "heatmapCellClicked" in html
     assert "radarTraceClicked" in html
     assert "molmanager_selection_traces" in html
+    assert "Plotly.Plots.resize" in html
+    assert "addEventListener('resize'" in html

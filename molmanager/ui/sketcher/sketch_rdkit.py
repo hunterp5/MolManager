@@ -40,7 +40,7 @@ from .iupac_orient import (
     apply_iupac_orientation_to_conformer,
     resolve_layout_overlaps_on_conformer,
 )
-from .iupac_rings import large_ring_offsets_y_up, rotate_offsets_to_inward_heteroatoms
+from .iupac_rings import exterior_ring_substituent_direction, large_ring_offsets_y_up, rotate_offsets_to_inward_heteroatoms
 from .wildcards import _is_wildcard_node
 
 
@@ -979,8 +979,8 @@ class SketchWidgetRdkitMixin:
 
     def _depict_add_hs_mol_fixed_heavy(self, mh: Chem.Mol, na_heavy: int, idmap: dict[int, int]) -> bool:
         """
-        Re-run 2D depiction with heavy-atom coordinates pinned to the sketch so added hydrogens
-        get standard bond angles and avoid overlapping the heavy-atom labels.
+        Pin heavy-atom coordinates to the sketch and place new hydrogens at IUPAC angles
+        (GR-4.1 / GR-4.2.1), avoiding RDKit's generic Compute2DCoords for H layout.
         """
         if na_heavy <= 0 or mh.GetNumAtoms() <= na_heavy:
             return False
@@ -989,22 +989,164 @@ class SketchWidgetRdkitMixin:
         try:
             conf0 = mh.GetConformer(0)
         except Exception:
-            return False
-        coord_map: dict[int, Point2D] = {}
+            try:
+                mh.RemoveAllConformers()
+            except Exception:
+                pass
+            conf0 = Conformer(mh.GetNumAtoms())
+            mh.AddConformer(conf0, assignId=True)
+            conf0 = mh.GetConformer(0)
+
+        # Pin heavy atoms to current sketch positions (chemistry Y-up).
         for rd in range(na_heavy):
             sk_id = inv.get(rd)
             node = next((n for n in self.nodes if n["id"] == sk_id), None) if sk_id is not None else None
             if node is None:
-                p = conf0.GetAtomPosition(rd)
-                coord_map[rd] = Point2D(float(p.x), float(p.y))
                 continue
             pos = node["pos"]
-            coord_map[rd] = Point2D(float(pos.x()) / sc, float(-pos.y()) / sc)
+            conf0.SetAtomPosition(
+                rd,
+                Point3D(float(pos.x()) / sc, float(-pos.y()) / sc, 0.0),
+            )
+
+        from collections import defaultdict
+
+        h_by_parent: dict[int, list[int]] = defaultdict(list)
+        for idx in range(na_heavy, mh.GetNumAtoms()):
+            atom = mh.GetAtomWithIdx(idx)
+            if atom.GetAtomicNum() != 1:
+                continue
+            nbrs = [n.GetIdx() for n in atom.GetNeighbors()]
+            if len(nbrs) == 1 and nbrs[0] < na_heavy:
+                h_by_parent[int(nbrs[0])].append(idx)
+
+        bond_len_rd = float(SKETCH_MEDIAN_BOND_PX) / float(sc)
+        for parent_rd, h_indices in h_by_parent.items():
+            sk_id = inv.get(parent_rd)
+            if sk_id is None:
+                continue
+            dirs = self._iupac_hydrogen_unit_dirs_screen(int(sk_id), len(h_indices))
+            p = conf0.GetAtomPosition(parent_rd)
+            for hidx, (ux, uy) in zip(h_indices, dirs):
+                # Screen Y-down → chemistry Y-up for the conformer.
+                conf0.SetAtomPosition(
+                    hidx,
+                    Point3D(
+                        float(p.x) + float(ux) * bond_len_rd,
+                        float(p.y) + float(-uy) * bond_len_rd,
+                        0.0,
+                    ),
+                )
+        return True
+
+    def _neighbor_angles_screen(self, atom_id: int) -> list[float]:
+        """Bond angles at *atom_id* in screen coordinates (Y-down)."""
+        base = next((n for n in self.nodes if n["id"] == atom_id), None)
+        if base is None:
+            return []
+        bx, by = float(base["pos"].x()), float(base["pos"].y())
+        angles: list[float] = []
+        for bond in self.bonds:
+            a, b, _o, _s = _bond_unpack(bond)
+            nid = b if a == atom_id else a if b == atom_id else None
+            if nid is None:
+                continue
+            nnode = next((n for n in self.nodes if n["id"] == nid), None)
+            if nnode is None:
+                continue
+            angles.append(math.atan2(float(nnode["pos"].y()) - by, float(nnode["pos"].x()) - bx))
+        return angles
+
+    def _iupac_hydrogen_unit_dirs_screen(self, atom_id: int, count: int) -> list[tuple[float, float]]:
+        """Successive IUPAC unit vectors for *count* new hydrogens on *atom_id* (screen Y-down)."""
+        if count <= 0:
+            return []
+        working = self._neighbor_angles_screen(atom_id)
+        if not working:
+            return [
+                (math.cos(2.0 * math.pi * i / count), math.sin(2.0 * math.pi * i / count))
+                for i in range(count)
+            ]
+
+        ring_atoms = self._ring_atom_ids() if hasattr(self, "_ring_atom_ids") else set()
+        if (
+            count == 1
+            and atom_id in ring_atoms
+            and len(working) == 2
+        ):
+            ring_nbrs = 0
+            for bond in self.bonds:
+                a, b, _o, _s = _bond_unpack(bond)
+                other = b if a == atom_id else a if b == atom_id else None
+                if other is not None and other in ring_atoms:
+                    ring_nbrs += 1
+            if ring_nbrs >= 2:
+                vec = exterior_ring_substituent_direction(working)
+                if vec is not None:
+                    return [vec]
+
+        if len(working) == 1:
+            # Terminal atom: equal angular spacing that includes the existing bond (CH3 → 90° gaps).
+            base = working[0]
+            step = 2.0 * math.pi / float(count + 1)
+            return [
+                (math.cos(base + (i + 1) * step), math.sin(base + (i + 1) * step))
+                for i in range(count)
+            ]
+
+        # Several neighbors: fan new H evenly through the largest free exterior gap (GR-4.1).
+        angles_s = sorted(working)
+        max_gap = -1.0
+        gap_start = 0.0
+        for i in range(len(angles_s)):
+            a1 = angles_s[i]
+            a2 = angles_s[(i + 1) % len(angles_s)] if i + 1 < len(angles_s) else angles_s[0] + 2.0 * math.pi
+            gap = a2 - a1 if a2 >= a1 else a2 + 2.0 * math.pi - a1
+            if gap > max_gap:
+                max_gap = gap
+                gap_start = a1
+        dirs: list[tuple[float, float]] = []
+        for i in range(count):
+            frac = (i + 1) / float(count + 1)
+            ang = gap_start + frac * max_gap
+            dirs.append((math.cos(ang), math.sin(ang)))
+        return dirs
+
+    def _capture_chiral_tags_by_sketch_id(self) -> dict[int, Any]:
+        """Map sketch node id → RDKit tetrahedral chiral tag for current stereo."""
+        if not self.nodes:
+            return {}
+        ids = {n["id"] for n in self.nodes}
+        out = self._mol_from_node_ids(ids, return_idmap=True)
+        if out is None:
+            return {}
+        mol, sk2rd = out
+        tags_rd = self._capture_tetrahedral_chiral_tags(mol)
+        if not tags_rd:
+            return {}
+        rd2sk = {int(rd): int(sk) for sk, rd in sk2rd.items()}
+        return {rd2sk[rd]: ct for rd, ct in tags_rd.items() if rd in rd2sk}
+
+    def _rewedge_from_chiral_tags_by_sketch_id(self, tags_by_sk: dict[int, Any]) -> None:
+        """Restore absolute stereo onto the current (typically heavy-only) sketch."""
+        if not tags_by_sk or not self.nodes:
+            return
+        ids = {n["id"] for n in self.nodes}
+        out = self._mol_from_node_ids(ids, return_idmap=True)
+        if out is None:
+            return
+        mol, sk2rd = out
+        tags_rd = {int(sk2rd[sk]): ct for sk, ct in tags_by_sk.items() if sk in sk2rd}
+        if not tags_rd:
+            return
+        rd2sk = {int(rd): int(sk) for sk, rd in sk2rd.items()}
         try:
-            rdDepictor.Compute2DCoords(mh, coordMap=coord_map)
-            return True
+            self._rewedge_sketch_from_mol(mol, rd2sk, tags_rd)
         except Exception:
-            return False
+            pass
+        self.bonds = sanitize_sketch_stereo_bonds(
+            self.bonds, chiral_center_ids=getattr(self, "_chiral_center_ids", set()) or set()
+        )
 
     def sketch_has_explicit_hydrogens(self) -> bool:
         """True when the sketch contains at least one H/D/T atom node."""
@@ -1022,10 +1164,42 @@ class SketchWidgetRdkitMixin:
                 return True
         return False
 
+    def _sketch_atom_already_shows_hydrogen(self, nid: int) -> bool:
+        """True when the atom already has explicit H/D/T or a condensed OH/NH-style label."""
+        node = next((n for n in self.nodes if n["id"] == nid), None)
+        if node is None:
+            return False
+        if self.atom_has_explicit_hydrogen_neighbors(nid):
+            return True
+        condensed = getattr(self, "_node_condensed_label", None)
+        if callable(condensed) and condensed(node):
+            return True
+        return False
+
+    def _rdkit_indices_eligible_for_add_hs(self, idmap: dict[int, int]) -> list[int]:
+        """
+        RDKit atom indices that may receive ``AddHs``.
+
+        Skips atoms that already display hydrogens (explicit H neighbors or condensed
+        heteroatom labels such as OH / NH / NH2 / SH).
+        """
+        out: list[int] = []
+        for n in self.nodes:
+            el = str(n.get("element") or "")
+            if el in ("H", "D", "T") or _is_wildcard_node(n):
+                continue
+            sk = int(n["id"])
+            if self._sketch_atom_already_shows_hydrogen(sk):
+                continue
+            rd = idmap.get(sk)
+            if rd is not None:
+                out.append(int(rd))
+        return out
+
     def add_explicit_hydrogens_from_implicit(self) -> tuple[bool, str]:
         """
-        Replace the sketch with the same connectivity plus explicit H atoms (RDKit ``AddHs``),
-        keeping heavy-atom 2D positions from the current drawing when possible.
+        Add explicit H for implicit hydrogens on atoms that do not already show H
+        (leaves condensed OH/NH groups and existing explicit H unchanged).
         Returns ``(True, "")`` on success, or ``(False, reason)``.
         """
         if not self.nodes:
@@ -1044,15 +1218,43 @@ class SketchWidgetRdkitMixin:
                 m0.UpdatePropertyCache(strict=False)
             except Exception:
                 pass
+        only_on = self._rdkit_indices_eligible_for_add_hs(idmap)
+        if not only_on:
+            return (
+                False,
+                "No atoms need explicit hydrogens; condensed groups (e.g. OH, NH) and "
+                "atoms that already have H are left unchanged.",
+            )
         na_before = m0.GetNumAtoms()
         try:
-            mh = Chem.AddHs(Chem.Mol(m0), addCoords=True)
+            mh = Chem.AddHs(Chem.Mol(m0), onlyOnAtoms=only_on, addCoords=True)
+        except TypeError:
+            # Older RDKit without onlyOnAtoms: add all, then strip H from protected atoms.
+            try:
+                mh = Chem.AddHs(Chem.Mol(m0), addCoords=True)
+            except Exception as e:
+                return False, f"RDKit could not add hydrogens ({e})."
+            protect = set(range(na_before)) - set(only_on)
+            if protect:
+                remove = []
+                for atom in mh.GetAtoms():
+                    if atom.GetAtomicNum() != 1:
+                        continue
+                    for nb in atom.GetNeighbors():
+                        if nb.GetIdx() in protect:
+                            remove.append(atom.GetIdx())
+                            break
+                if remove:
+                    rw = Chem.RWMol(mh)
+                    for i in sorted(remove, reverse=True):
+                        rw.RemoveAtom(i)
+                    mh = rw.GetMol()
         except Exception as e:
             return False, f"RDKit could not add hydrogens ({e})."
         if mh.GetNumAtoms() <= na_before:
             return (
                 False,
-                "There are no implicit hydrogens to add; valences may already be fully explicit.",
+                "There are no implicit hydrogens to add on eligible atoms.",
             )
         if not self._depict_add_hs_mol_fixed_heavy(mh, na_before, idmap):
             pass
@@ -1063,15 +1265,28 @@ class SketchWidgetRdkitMixin:
         return True, ""
 
     def remove_explicit_hydrogens_from_sketch(self) -> tuple[bool, str]:
-        """Remove all explicit H/D/T atoms and their bonds from the sketch."""
+        """Remove all explicit H/D/T atoms and their bonds; restore stereo on heavy ligands."""
         h_nodes = [n for n in self.nodes if n.get("element") in ("H", "D", "T")]
         if not h_nodes:
             return False, "There are no explicit hydrogens to remove."
+        # Capture absolute stereo while C–H wedges still encode configuration.
+        stereo_by_sk = self._capture_chiral_tags_by_sketch_id()
         h_ids = {n["id"] for n in h_nodes}
+        prev_bonds = [_bond_make(*_bond_unpack(b)) for b in self.bonds]
         removed_bonds = [b for b in self.bonds if _bond_unpack(b)[0] in h_ids or _bond_unpack(b)[1] in h_ids]
         self.bonds = [b for b in self.bonds if _bond_unpack(b)[0] not in h_ids and _bond_unpack(b)[1] not in h_ids]
         self.nodes = [n for n in self.nodes if n["id"] not in h_ids]
-        self._push_undo("del_hs_local", {"nodes": h_nodes, "bonds": removed_bonds})
+        self._rewedge_from_chiral_tags_by_sketch_id(stereo_by_sk)
+        after_bonds = [_bond_make(*_bond_unpack(b)) for b in self.bonds]
+        self._push_undo(
+            "del_hs_local",
+            {
+                "nodes": h_nodes,
+                "bonds": removed_bonds,
+                "prev_bonds": prev_bonds,
+                "after_bonds": after_bonds,
+            },
+        )
         self._after_sketch_edit(notify=True, notify_if_valence_failed=True)
         return True, ""
 
@@ -1083,8 +1298,10 @@ class SketchWidgetRdkitMixin:
 
     def add_explicit_hydrogens_on_atom(self, nid: int) -> tuple[bool, str]:
         """
-        Add RDKit ``AddHs`` hydrogens that are bonded only to the given heavy atom, using the
-        expanded molecule's conformer to place new H nodes relative to that atom's sketch position.
+        Add RDKit ``AddHs`` hydrogens bonded only to the given heavy atom, placed at
+        IUPAC bond angles (GR-4.1 / GR-4.2.1).
+
+        Atoms that already show hydrogens (explicit H or condensed OH/NH labels) are left alone.
         """
         if self.sketch_has_wildcards():
             return False, "Remove wildcard atoms first."
@@ -1093,6 +1310,11 @@ class SketchWidgetRdkitMixin:
             return False, "Atom not found."
         if _is_wildcard_node(node):
             return False, "Not supported for wildcard atoms."
+        if self._sketch_atom_already_shows_hydrogen(nid):
+            return (
+                False,
+                "This atom already has hydrogens (explicit H or a condensed label such as OH/NH).",
+            )
         ids = {n["id"] for n in self.nodes}
         out = self._mol_from_node_ids(ids, return_idmap=True)
         if out is None:
@@ -1108,14 +1330,14 @@ class SketchWidgetRdkitMixin:
                 pass
         na0 = m0.GetNumAtoms()
         try:
-            mh = Chem.AddHs(Chem.Mol(m0), addCoords=True)
+            mh = Chem.AddHs(Chem.Mol(m0), onlyOnAtoms=[int(hi)], addCoords=True)
+        except TypeError:
+            try:
+                mh = Chem.AddHs(Chem.Mol(m0), addCoords=True)
+            except Exception as e:
+                return False, f"RDKit could not add hydrogens ({e})."
         except Exception as e:
             return False, f"RDKit could not add hydrogens ({e})."
-        self._depict_add_hs_mol_fixed_heavy(mh, na0, idmap)
-        conf = mh.GetConformer(0)
-        hm = conf.GetAtomPosition(hi)
-        hpos = node["pos"]
-        sc = _SKETCH_COORD_SCALE
         new_h_rd: list[int] = []
         for idx in range(na0, mh.GetNumAtoms()):
             a = mh.GetAtomWithIdx(idx)
@@ -1126,25 +1348,36 @@ class SketchWidgetRdkitMixin:
                 new_h_rd.append(idx)
         if not new_h_rd:
             return False, "There are no implicit hydrogens to add on this atom."
+
+        med = float(getattr(self, "_median_bond_length_px", None) or SKETCH_MEDIAN_BOND_PX)
+        dirs = self._iupac_hydrogen_unit_dirs_screen(nid, len(new_h_rd))
+        hpos = node["pos"]
         new_nodes: list[dict[str, Any]] = []
         new_bonds: list[tuple[int, int, int, int]] = []
-        for hidx in new_h_rd:
-            ap = conf.GetAtomPosition(hidx)
-            dx = (ap.x - hm.x) * sc
-            dy = -(ap.y - hm.y) * sc
+        for _hidx, (ux, uy) in zip(new_h_rd, dirs):
             hid = self.next_id
             self.next_id += 1
-            nh = {"id": hid, "pos": QPoint(int(round(hpos.x() + dx)), int(round(hpos.y() + dy))), "element": "H"}
+            nh = {
+                "id": hid,
+                "pos": QPoint(
+                    int(round(hpos.x() + ux * med)),
+                    int(round(hpos.y() + uy * med)),
+                ),
+                "element": "H",
+            }
             new_nodes.append(nh)
             new_bonds.append(_bond_make(nid, hid, 1, 0))
         self.nodes.extend(new_nodes)
         self.bonds.extend(new_bonds)
+        # Keep absolute stereo; WedgeMolBonds may move wedges onto new H (ST display).
+        stereo_by_sk = self._capture_chiral_tags_by_sketch_id()
+        self._rewedge_from_chiral_tags_by_sketch_id(stereo_by_sk)
         self._push_undo("add_hs_local", {"nodes": new_nodes, "bonds": new_bonds})
         self._after_sketch_edit(notify=True, notify_if_valence_failed=True)
         return True, ""
 
     def remove_explicit_hydrogens_on_atom(self, nid: int) -> tuple[bool, str]:
-        """Remove explicit H/D/T atoms bonded only to the given atom."""
+        """Remove explicit H/D/T atoms bonded only to the given atom; restore stereo."""
         node = next((n for n in self.nodes if n["id"] == nid), None)
         if node is None:
             return False, "Atom not found."
@@ -1159,7 +1392,9 @@ class SketchWidgetRdkitMixin:
                 h_ids.add(other)
         if not h_ids:
             return False, "There are no explicit hydrogens on this atom to remove."
+        stereo_by_sk = self._capture_chiral_tags_by_sketch_id()
         h_nodes = [n for n in self.nodes if n["id"] in h_ids]
+        prev_bonds = [_bond_make(*_bond_unpack(b)) for b in self.bonds]
         removed_bonds = [
             b for b in self.bonds if _bond_unpack(b)[0] in h_ids or _bond_unpack(b)[1] in h_ids
         ]
@@ -1167,10 +1402,19 @@ class SketchWidgetRdkitMixin:
             b for b in self.bonds if _bond_unpack(b)[0] not in h_ids and _bond_unpack(b)[1] not in h_ids
         ]
         self.nodes = [n for n in self.nodes if n["id"] not in h_ids]
-        self._push_undo("del_hs_local", {"nodes": h_nodes, "bonds": removed_bonds})
+        self._rewedge_from_chiral_tags_by_sketch_id(stereo_by_sk)
+        after_bonds = [_bond_make(*_bond_unpack(b)) for b in self.bonds]
+        self._push_undo(
+            "del_hs_local",
+            {
+                "nodes": h_nodes,
+                "bonds": removed_bonds,
+                "prev_bonds": prev_bonds,
+                "after_bonds": after_bonds,
+            },
+        )
         self._after_sketch_edit(notify=True, notify_if_valence_failed=True)
         return True, ""
-
     def toggle_explicit_hydrogens_on_atom(self, nid: int) -> tuple[bool, str]:
         """Add or remove explicit hydrogens on a single atom."""
         if self.atom_has_explicit_hydrogen_neighbors(nid):
@@ -1249,6 +1493,26 @@ class SketchWidgetRdkitMixin:
         if not self.nodes:
             return ""
         parts = self.fragment_smiles_parts()
+        return ".".join(parts) if parts else ""
+
+    def to_smiles_selected(self) -> str:
+        """
+        SMILES/SMARTS for the current atom/bond selection only ('.'-joined if disconnected).
+
+        Uses selected atoms plus endpoints of selected bonds; bonds leaving the selection
+        are omitted. Wildcards export as SMARTS, matching ``to_smiles``.
+        """
+        ids = self._atoms_for_selection_move()
+        if not ids:
+            return ""
+        parts: list[str] = []
+        for comp in self.connected_components():
+            sub = comp & ids
+            if not sub:
+                continue
+            smi = self._component_to_smiles(sub)
+            if smi:
+                parts.append(smi)
         return ".".join(parts) if parts else ""
 
     def to_smarts(self) -> str:

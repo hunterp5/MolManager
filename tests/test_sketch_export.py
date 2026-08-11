@@ -151,6 +151,131 @@ def test_toggle_explicit_hydrogens(qapp):  # noqa: ARG001
     assert not w.sketch_has_explicit_hydrogens()
 
 
+def _sketch_cip_labels(w: SketchWidget) -> dict[int, str]:
+    ids = {n["id"] for n in w.nodes}
+    out = w._mol_from_node_ids(ids, return_idmap=True)
+    assert out is not None
+    mol, sk2rd = out
+    cip = w._assign_tetrahedral_cip(mol)
+    rd2sk = {rd: sk for sk, rd in sk2rd.items()}
+    return {
+        rd2sk[rd]: label
+        for rd, label in cip.items()
+        if rd in rd2sk and label in ("R", "S")
+    }
+
+
+def test_add_remove_hydrogens_preserves_tetrahedral_stereo(qapp) -> None:  # noqa: ARG001
+    """Add→remove explicit H must not drop CIP / wedges (rewedge after remove)."""
+    from molmanager.ui.sketcher.bonds import BOND_STEREO_HASH, BOND_STEREO_WEDGE, _bond_unpack
+
+    mol = Chem.MolFromSmiles("C[C@H](O)N")
+    w = SketchWidget()
+    w.resize(600, 400)
+    assert w.load_from_rdkit_mol(mol)
+    before = _sketch_cip_labels(w)
+    assert before, "expected at least one R/S center before H toggle"
+    assert any(_bond_unpack(b)[3] in (BOND_STEREO_WEDGE, BOND_STEREO_HASH) for b in w.bonds)
+
+    ok, err = w.add_explicit_hydrogens_from_implicit()
+    assert ok, err
+    assert w.sketch_has_explicit_hydrogens()
+    mid = _sketch_cip_labels(w)
+    assert mid, "stereo must survive adding explicit hydrogens"
+
+    ok, err = w.remove_explicit_hydrogens_from_sketch()
+    assert ok, err
+    assert not w.sketch_has_explicit_hydrogens()
+    after = _sketch_cip_labels(w)
+    assert after, "stereo must survive removing explicit hydrogens"
+    assert set(after.values()) == set(before.values())
+    assert any(_bond_unpack(b)[3] in (BOND_STEREO_WEDGE, BOND_STEREO_HASH) for b in w.bonds)
+
+
+def test_explicit_hydrogens_use_iupac_bond_angles(qapp) -> None:  # noqa: ARG001
+    """Terminal methyl H should sit near tetrahedral (~109.5°) gaps, not stacked."""
+    w = SketchWidget()
+    # C–C horizontal; add H on the right carbon.
+    c0, c1 = 0, 1
+    w.nodes = [
+        {"id": c0, "pos": QPoint(100, 100), "element": "C"},
+        {"id": c1, "pos": QPoint(160, 100), "element": "C"},
+    ]
+    w.bonds = [_bond_make(c0, c1, 1, 0)]
+    w.next_id = 2
+    ok, err = w.add_explicit_hydrogens_on_atom(c1)
+    assert ok, err
+    h_nodes = [n for n in w.nodes if n.get("element") == "H"]
+    assert len(h_nodes) == 3
+    parent = next(n for n in w.nodes if n["id"] == c1)
+    px, py = float(parent["pos"].x()), float(parent["pos"].y())
+    angles = sorted(
+        math.atan2(float(n["pos"].y()) - py, float(n["pos"].x()) - px) for n in h_nodes
+    )
+    # Include the existing C–C neighbor angle when measuring gaps among all four ligands.
+    all_ang = sorted(
+        angles
+        + [
+            math.atan2(
+                float(next(n for n in w.nodes if n["id"] == c0)["pos"].y()) - py,
+                float(next(n for n in w.nodes if n["id"] == c0)["pos"].x()) - px,
+            )
+        ]
+    )
+    gaps = []
+    for i in range(len(all_ang)):
+        a1 = all_ang[i]
+        a2 = all_ang[(i + 1) % len(all_ang)] if i + 1 < len(all_ang) else all_ang[0] + 2 * math.pi
+        gaps.append(a2 - a1 if a2 >= a1 else a2 + 2 * math.pi - a1)
+    # Tetrahedral / equal-fan gaps for CH3 with one heavy neighbor (~90° with 4 ligands).
+    assert all(math.degrees(g) > 60.0 for g in gaps), gaps
+    assert max(math.degrees(g) for g in gaps) < 150.0, gaps
+    # Hydrogens must not stack on top of each other.
+    for i, a in enumerate(h_nodes):
+        for b in h_nodes[i + 1 :]:
+            dist = math.hypot(
+                float(a["pos"].x()) - float(b["pos"].x()),
+                float(a["pos"].y()) - float(b["pos"].y()),
+            )
+            assert dist > 20.0, dist
+
+
+def test_add_explicit_hydrogens_skips_condensed_oh_nh(qapp) -> None:  # noqa: ARG001
+    """OH/NH condensed groups must not be expanded when adding implicit→explicit H."""
+    w = SketchWidget()
+    w.resize(600, 400)
+    # C–O (alcohol) and C–N (amine)
+    c, o, n = 0, 1, 2
+    w.nodes = [
+        {"id": c, "pos": QPoint(120, 120), "element": "C"},
+        {"id": o, "pos": QPoint(180, 120), "element": "O"},
+        {"id": n, "pos": QPoint(120, 60), "element": "N"},
+    ]
+    w.bonds = [_bond_make(c, o, 1, 0), _bond_make(c, n, 1, 0)]
+    w.next_id = 3
+    assert w._node_condensed_label(w.nodes[1]) == "OH"
+    assert w._node_condensed_label(w.nodes[2]) in ("NH2", "NH")
+
+    ok, err = w.add_explicit_hydrogens_on_atom(o)
+    assert not ok
+    assert "already" in err.lower() or "OH" in err or "NH" in err
+
+    ok, err = w.add_explicit_hydrogens_from_implicit()
+    assert ok, err
+    # Explicit H only on carbon — not on O or N.
+    o_has_h = w.atom_has_explicit_hydrogen_neighbors(o)
+    n_has_h = w.atom_has_explicit_hydrogen_neighbors(n)
+    c_has_h = w.atom_has_explicit_hydrogen_neighbors(c)
+    assert not o_has_h
+    assert not n_has_h
+    assert c_has_h
+    # Condensed labels should still resolve for O/N after the edit.
+    o_node = next(x for x in w.nodes if x["id"] == o)
+    n_node = next(x for x in w.nodes if x["id"] == n)
+    assert w._node_condensed_label(o_node) == "OH"
+    assert w._node_condensed_label(n_node) in ("NH2", "NH")
+
+
 def test_load_preserves_aromatic_kekule_doubles_with_stereo_h(qapp) -> None:  # noqa: ARG001
     """Sanitize after stereo-H must not leave aromatic rings as all singles."""
     from molmanager.ui.sketcher.bonds import _bond_unpack
@@ -161,3 +286,24 @@ def test_load_preserves_aromatic_kekule_doubles_with_stereo_h(qapp) -> None:  # 
     assert w.load_from_rdkit_mol(mol)
     orders = [_bond_unpack(b)[2] for b in w.bonds]
     assert orders.count(2) >= 3, f"expected Kekulé doubles in phenyl, got {orders}"
+
+
+def test_to_smiles_selected_exports_subset(qapp) -> None:  # noqa: ARG001
+    """Selection SMILES uses only selected atoms (and bonds between them)."""
+    w = SketchWidget()
+    ids = []
+    for i, el in enumerate(("C", "C", "O")):
+        nid = w.next_id
+        w.next_id += 1
+        w.nodes.append({"id": nid, "pos": QPoint(i * 40, 0), "element": el})
+        ids.append(nid)
+    w.bonds.append(_bond_make(ids[0], ids[1], 1, 0))
+    w.bonds.append(_bond_make(ids[1], ids[2], 1, 0))
+    assert w.to_smiles_selected() == ""
+    w.selected_nodes = [ids[1], ids[2]]
+    sel = w.to_smiles_selected()
+    assert sel
+    m = Chem.MolFromSmiles(sel)
+    assert m is not None
+    assert m.GetNumAtoms() == 2
+    assert {a.GetSymbol() for a in m.GetAtoms()} == {"C", "O"}

@@ -12,6 +12,11 @@ TaskKind = Literal["regression", "classification"]
 
 REGRESSION_MODELS: dict[str, str] = {
     "ridge": "Ridge regression",
+    "lasso": "Lasso regression",
+    "mlr": "Multiple linear regression (MLR)",
+    "pls": "PLS regression",
+    "knn": "k-nearest neighbors (KNN)",
+    "svr": "Support vector regression (SVR)",
     "random_forest": "Random forest",
     "gradient_boosting": "Gradient boosting",
 }
@@ -19,8 +24,257 @@ CLASSIFICATION_MODELS: dict[str, str] = {
     "logistic": "Logistic regression",
     "random_forest": "Random forest",
     "gradient_boosting": "Gradient boosting",
-    "svm": "Linear SVM",
+    "svm": "Support vector machine (SVM)",
 }
+
+# Tunable hyperparameters shown in the QSAR dialog (per algorithm key).
+# Each spec: key, label, kind (float|int|choice|bool), default, and optional bounds/choices.
+MODEL_PARAM_SPECS: dict[str, list[dict[str, Any]]] = {
+    "ridge": [
+        {
+            "key": "alpha",
+            "label": "Alpha (L2)",
+            "kind": "float",
+            "default": 1.0,
+            "min": 1e-6,
+            "max": 1e6,
+            "decimals": 6,
+            "tooltip": "L2 regularization strength (larger = stronger shrinkage).",
+        },
+    ],
+    "lasso": [
+        {
+            "key": "alpha",
+            "label": "Alpha (L1)",
+            "kind": "float",
+            "default": 0.1,
+            "min": 1e-6,
+            "max": 100.0,
+            "decimals": 6,
+            "tooltip": "L1 regularization strength (larger = sparser coefficients).",
+        },
+        {
+            "key": "max_iter",
+            "label": "Max iterations",
+            "kind": "int",
+            "default": 5000,
+            "min": 100,
+            "max": 100000,
+        },
+    ],
+    "mlr": [
+        {
+            "key": "fit_intercept",
+            "label": "Fit intercept",
+            "kind": "bool",
+            "default": True,
+            "tooltip": "Whether to calculate the intercept for this model.",
+        },
+    ],
+    "pls": [
+        {
+            "key": "n_components",
+            "label": "Components",
+            "kind": "int",
+            "default": 2,
+            "min": 1,
+            "max": 50,
+            "tooltip": "Latent components (capped at training samples/features during fit).",
+        },
+    ],
+    "knn": [
+        {
+            "key": "n_neighbors",
+            "label": "Neighbors (k)",
+            "kind": "int",
+            "default": 5,
+            "min": 1,
+            "max": 200,
+            "tooltip": "Number of neighbors (capped below training-set size during fit).",
+        },
+        {
+            "key": "weights",
+            "label": "Weights",
+            "kind": "choice",
+            "default": "distance",
+            "choices": [("uniform", "Uniform"), ("distance", "Distance")],
+        },
+        {
+            "key": "p",
+            "label": "Minkowski p",
+            "kind": "int",
+            "default": 2,
+            "min": 1,
+            "max": 5,
+            "tooltip": "Distance metric power (1 = Manhattan, 2 = Euclidean).",
+        },
+    ],
+    "svr": [
+        {
+            "key": "kernel",
+            "label": "Kernel",
+            "kind": "choice",
+            "default": "rbf",
+            "choices": [
+                ("rbf", "RBF"),
+                ("linear", "Linear"),
+                ("poly", "Polynomial"),
+                ("sigmoid", "Sigmoid"),
+            ],
+        },
+        {
+            "key": "C",
+            "label": "C",
+            "kind": "float",
+            "default": 1.0,
+            "min": 1e-4,
+            "max": 1e4,
+            "decimals": 4,
+            "tooltip": "Regularization parameter (larger = less regularization).",
+        },
+        {
+            "key": "epsilon",
+            "label": "Epsilon",
+            "kind": "float",
+            "default": 0.1,
+            "min": 0.0,
+            "max": 10.0,
+            "decimals": 4,
+            "tooltip": "Epsilon-tube width within which no penalty is associated.",
+        },
+        {
+            "key": "gamma",
+            "label": "Gamma",
+            "kind": "choice",
+            "default": "scale",
+            "choices": [("scale", "scale"), ("auto", "auto")],
+            "tooltip": "Kernel coefficient for RBF / poly / sigmoid.",
+        },
+    ],
+    "random_forest": [
+        {
+            "key": "n_estimators",
+            "label": "Trees",
+            "kind": "int",
+            "default": 200,
+            "min": 10,
+            "max": 2000,
+        },
+        {
+            "key": "max_depth",
+            "label": "Max depth (0 = none)",
+            "kind": "int",
+            "default": 0,
+            "min": 0,
+            "max": 100,
+            "tooltip": "Maximum tree depth; 0 means unlimited.",
+        },
+        {
+            "key": "min_samples_leaf",
+            "label": "Min samples / leaf",
+            "kind": "int",
+            "default": 1,
+            "min": 1,
+            "max": 100,
+        },
+    ],
+    "gradient_boosting": [
+        {
+            "key": "n_estimators",
+            "label": "Estimators",
+            "kind": "int",
+            "default": 100,
+            "min": 10,
+            "max": 2000,
+        },
+        {
+            "key": "learning_rate",
+            "label": "Learning rate",
+            "kind": "float",
+            "default": 0.1,
+            "min": 0.001,
+            "max": 1.0,
+            "decimals": 4,
+        },
+        {
+            "key": "max_depth",
+            "label": "Max depth",
+            "kind": "int",
+            "default": 3,
+            "min": 1,
+            "max": 20,
+        },
+    ],
+    "logistic": [
+        {
+            "key": "C",
+            "label": "C (inverse regularization)",
+            "kind": "float",
+            "default": 1.0,
+            "min": 1e-4,
+            "max": 1e4,
+            "decimals": 4,
+        },
+        {
+            "key": "penalty",
+            "label": "Penalty",
+            "kind": "choice",
+            "default": "l2",
+            "choices": [("l2", "L2"), ("l1", "L1"), ("none", "None")],
+        },
+        {
+            "key": "max_iter",
+            "label": "Max iterations",
+            "kind": "int",
+            "default": 3000,
+            "min": 100,
+            "max": 50000,
+        },
+    ],
+    "svm": [
+        {
+            "key": "kernel",
+            "label": "Kernel",
+            "kind": "choice",
+            "default": "linear",
+            "choices": [
+                ("linear", "Linear"),
+                ("rbf", "RBF"),
+                ("poly", "Polynomial"),
+                ("sigmoid", "Sigmoid"),
+            ],
+        },
+        {
+            "key": "C",
+            "label": "C",
+            "kind": "float",
+            "default": 1.0,
+            "min": 1e-4,
+            "max": 1e4,
+            "decimals": 4,
+        },
+        {
+            "key": "gamma",
+            "label": "Gamma",
+            "kind": "choice",
+            "default": "scale",
+            "choices": [("scale", "scale"), ("auto", "auto")],
+        },
+    ],
+}
+
+
+def default_model_params(model_key: str) -> dict[str, Any]:
+    """Default hyperparameter values for *model_key*."""
+    out: dict[str, Any] = {}
+    for spec in MODEL_PARAM_SPECS.get(str(model_key), []):
+        out[str(spec["key"])] = spec["default"]
+    return out
+
+
+def param_specs_for_model(model_key: str) -> list[dict[str, Any]]:
+    """Return UI parameter specs for *model_key* (may be empty)."""
+    return list(MODEL_PARAM_SPECS.get(str(model_key), []))
 
 
 @dataclass(frozen=True)
@@ -109,37 +363,133 @@ def _prepare_labels(y: np.ndarray, task: TaskKind) -> tuple[np.ndarray, tuple[An
     return y_cls, labels
 
 
-def _make_model(task: TaskKind, model_key: str) -> Any:
+def _merge_model_params(model_key: str, params: dict[str, Any] | None) -> dict[str, Any]:
+    """Defaults for *model_key*, overridden by any keys present in *params*."""
+    merged = default_model_params(model_key)
+    if not params:
+        return merged
+    known = set(merged) | {str(s["key"]) for s in MODEL_PARAM_SPECS.get(str(model_key), [])}
+    for key, value in params.items():
+        if str(key) in known:
+            merged[str(key)] = value
+    return merged
+
+
+def _rf_max_depth(params: dict[str, Any]) -> int | None:
+    depth = int(params.get("max_depth", 0) or 0)
+    return None if depth <= 0 else depth
+
+
+def _make_model(
+    task: TaskKind,
+    model_key: str,
+    params: dict[str, Any] | None = None,
+) -> Any:
+    p = _merge_model_params(model_key, params)
     if task == "regression":
         if model_key == "ridge":
             from sklearn.linear_model import Ridge
 
-            return Ridge(alpha=1.0)
+            return Ridge(alpha=float(p["alpha"]))
+        if model_key == "lasso":
+            from sklearn.linear_model import Lasso
+
+            return Lasso(
+                alpha=float(p["alpha"]),
+                max_iter=int(p["max_iter"]),
+                random_state=42,
+            )
+        if model_key == "mlr":
+            from sklearn.linear_model import LinearRegression
+
+            return LinearRegression(fit_intercept=bool(p.get("fit_intercept", True)))
+        if model_key == "pls":
+            from sklearn.cross_decomposition import PLSRegression
+
+            # n_components is capped at fit time by n_samples / n_features.
+            return PLSRegression(n_components=int(p["n_components"]), scale=False)
+        if model_key == "knn":
+            from sklearn.neighbors import KNeighborsRegressor
+
+            return KNeighborsRegressor(
+                n_neighbors=int(p["n_neighbors"]),
+                weights=str(p.get("weights") or "distance"),
+                p=int(p.get("p", 2)),
+            )
+        if model_key == "svr":
+            from sklearn.svm import SVR
+
+            return SVR(
+                kernel=str(p.get("kernel") or "rbf"),
+                C=float(p["C"]),
+                epsilon=float(p["epsilon"]),
+                gamma=str(p.get("gamma") or "scale"),
+            )
         if model_key == "random_forest":
             from sklearn.ensemble import RandomForestRegressor
 
-            return RandomForestRegressor(n_estimators=200, random_state=42, n_jobs=-1)
+            return RandomForestRegressor(
+                n_estimators=int(p["n_estimators"]),
+                max_depth=_rf_max_depth(p),
+                min_samples_leaf=int(p.get("min_samples_leaf", 1)),
+                random_state=42,
+                n_jobs=-1,
+            )
         if model_key == "gradient_boosting":
             from sklearn.ensemble import GradientBoostingRegressor
 
-            return GradientBoostingRegressor(random_state=42)
+            return GradientBoostingRegressor(
+                n_estimators=int(p["n_estimators"]),
+                learning_rate=float(p["learning_rate"]),
+                max_depth=int(p["max_depth"]),
+                random_state=42,
+            )
         raise ValueError(f"Unknown regression model: {model_key}")
     if model_key == "logistic":
         from sklearn.linear_model import LogisticRegression
 
-        return LogisticRegression(max_iter=3000, random_state=42)
+        penalty = str(p.get("penalty") or "l2")
+        kwargs: dict[str, Any] = {
+            "C": float(p["C"]),
+            "max_iter": int(p["max_iter"]),
+            "random_state": 42,
+        }
+        if penalty == "none":
+            kwargs["penalty"] = None
+        elif penalty == "l1":
+            kwargs["penalty"] = "l1"
+            kwargs["solver"] = "saga"
+        else:
+            kwargs["penalty"] = "l2"
+        return LogisticRegression(**kwargs)
     if model_key == "random_forest":
         from sklearn.ensemble import RandomForestClassifier
 
-        return RandomForestClassifier(n_estimators=200, random_state=42, n_jobs=-1)
+        return RandomForestClassifier(
+            n_estimators=int(p["n_estimators"]),
+            max_depth=_rf_max_depth(p),
+            min_samples_leaf=int(p.get("min_samples_leaf", 1)),
+            random_state=42,
+            n_jobs=-1,
+        )
     if model_key == "gradient_boosting":
         from sklearn.ensemble import GradientBoostingClassifier
 
-        return GradientBoostingClassifier(random_state=42)
+        return GradientBoostingClassifier(
+            n_estimators=int(p["n_estimators"]),
+            learning_rate=float(p["learning_rate"]),
+            max_depth=int(p["max_depth"]),
+            random_state=42,
+        )
     if model_key == "svm":
         from sklearn.svm import SVC
 
-        return SVC(kernel="linear", random_state=42)
+        return SVC(
+            kernel=str(p.get("kernel") or "linear"),
+            C=float(p["C"]),
+            gamma=str(p.get("gamma") or "scale"),
+            random_state=42,
+        )
     raise ValueError(f"Unknown classification model: {model_key}")
 
 
@@ -188,14 +538,52 @@ def _top_feature_lines(
     *,
     n: int = 12,
 ) -> str:
-    imp = getattr(model, "feature_importances_", None)
-    if imp is None or feature_names is None or len(feature_names) != len(imp):
+    if feature_names is None:
         return ""
-    order = np.argsort(imp)[::-1][:n]
+    scores: np.ndarray | None = None
+    imp = getattr(model, "feature_importances_", None)
+    if imp is not None and len(feature_names) == len(imp):
+        scores = np.asarray(imp, dtype=float)
+    else:
+        coef = getattr(model, "coef_", None)
+        if coef is not None:
+            arr = np.asarray(coef, dtype=float)
+            if arr.ndim == 2:
+                # Linear models: (1, n_features) or PLS: (n_features, n_targets)
+                if arr.shape[0] == 1:
+                    arr = arr.ravel()
+                elif arr.shape[1] == 1:
+                    arr = arr.ravel()
+                elif arr.shape[0] == len(feature_names):
+                    arr = np.sum(np.abs(arr), axis=1)
+                elif arr.shape[1] == len(feature_names):
+                    arr = np.sum(np.abs(arr), axis=0)
+                else:
+                    arr = np.abs(arr).ravel()
+            else:
+                arr = arr.ravel()
+            if len(feature_names) == len(arr):
+                scores = np.abs(arr)
+    if scores is None:
+        return ""
+    order = np.argsort(scores)[::-1][:n]
     lines = []
     for i in order:
-        lines.append(f"  {feature_names[i]}: {float(imp[i]):.4f}")
+        lines.append(f"  {feature_names[i]}: {float(scores[i]):.4f}")
     return "\n".join(lines) if lines else ""
+
+
+def _prepare_model_for_x(model: Any, X: np.ndarray) -> Any:
+    """Adjust model hyperparameters that depend on matrix shape (e.g. PLS components)."""
+    name = type(model).__name__
+    if name == "PLSRegression":
+        max_c = max(1, min(int(X.shape[0]) - 1, int(X.shape[1])))
+        want = int(getattr(model, "n_components", 2) or 2)
+        model.set_params(n_components=max(1, min(want, max_c)))
+    if name == "KNeighborsRegressor":
+        n_neighbors = int(getattr(model, "n_neighbors", 5) or 5)
+        model.set_params(n_neighbors=max(1, min(n_neighbors, max(1, int(X.shape[0]) - 1))))
+    return model
 
 
 def fit_qsar_model(
@@ -211,6 +599,7 @@ def fit_qsar_model(
     train_fraction: float,
     cv_folds: int,
     standardize: bool,
+    model_params: dict[str, Any] | None = None,
 ) -> QSARFitResult:
     """
     Fit a QSAR model on rows with known activity; return metrics and a prediction bundle.
@@ -238,7 +627,6 @@ def fit_qsar_model(
     if task == "classification" and class_labels is not None and len(class_labels) < 2:
         raise ValueError("Classification needs at least two distinct activity classes.")
 
-    model = _make_model(task, model_key)
     Xs, scaler = _scale_fit(X, standardize_numeric=standardize_numeric, n_numeric=n_numeric)
 
     test_size = max(0.1, min(0.4, 1.0 - float(train_fraction)))
@@ -257,12 +645,17 @@ def fit_qsar_model(
             f"Details: {exc}"
         ) from exc
 
+    resolved_params = _merge_model_params(model_key, model_params)
+    model = _prepare_model_for_x(_make_model(task, model_key, resolved_params), X_train)
     model.fit(X_train, y_train)
-    y_hat = model.predict(X_test)
+    y_hat = np.asarray(model.predict(X_test)).ravel()
 
     lines: list[str] = [feat_summary, ""]
     lines.append(f"Task: {task}")
     lines.append(f"Model: {_model_label(task, model_key)}")
+    if resolved_params:
+        param_bits = ", ".join(f"{k}={v}" for k, v in resolved_params.items())
+        lines.append(f"Parameters: {param_bits}")
     lines.append(f"Training rows: {len(y)}  |  Features: {X.shape[1]}")
     lines.append(f"Hold-out fraction: {test_size:.0%}  ({len(y_test)} test rows)")
     lines.append("")
@@ -286,7 +679,12 @@ def fit_qsar_model(
     folds = max(2, min(int(cv_folds), len(y_train)))
     if len(y_train) >= folds + 1:
         try:
-            cv_scores = cross_val_score(model, X_train, y_train, cv=folds, scoring=scoring, n_jobs=-1)
+            cv_model = _prepare_model_for_x(
+                _make_model(task, model_key, resolved_params), X_train
+            )
+            cv_scores = cross_val_score(
+                cv_model, X_train, y_train, cv=folds, scoring=scoring, n_jobs=-1
+            )
             lines.append("")
             lines.append(f"{folds}-fold CV on training set ({scoring}):")
             lines.append(f"  mean = {float(np.mean(cv_scores)):.4f}  std = {float(np.std(cv_scores)):.4f}")
@@ -296,7 +694,7 @@ def fit_qsar_model(
 
     top_feat_eval = _top_feature_lines(model, feat_names)
 
-    deploy = _make_model(task, model_key)
+    deploy = _prepare_model_for_x(_make_model(task, model_key, resolved_params), Xs)
     deploy.fit(Xs, y)
     top_feat = _top_feature_lines(deploy, feat_names) or top_feat_eval
     if top_feat:
@@ -364,7 +762,7 @@ def predict_qsar_rows(
     pred_oids = built.oids
 
     Xs = _scale_apply(X, bundle.scaler, n_numeric=bundle.n_numeric_features)
-    raw = bundle.model.predict(Xs)
+    raw = np.asarray(bundle.model.predict(Xs)).ravel()
     results: list[tuple[int, dict[str, str]]] = []
     if bundle.task == "classification" and bundle.class_labels is not None:
         for oid, pred_i in zip(pred_oids, raw):

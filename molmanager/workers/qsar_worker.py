@@ -52,6 +52,7 @@ class QSARTrainWorker(QRunnable):
                 train_fraction=float(self.params.get("train_fraction", 0.8)),
                 cv_folds=int(self.params.get("cv_folds", 5)),
                 standardize=bool(self.params.get("standardize", True)),
+                model_params=self.params.get("model_params"),
             )
             if self.cancel_event is not None and self.cancel_event.is_set():
                 _emit_qsar_cancelled(self.signals)

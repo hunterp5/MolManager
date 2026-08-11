@@ -412,7 +412,7 @@ class SelectionBrowserDialog(QDialog):
         mode = QItemSelectionModel.Deselect if already else QItemSelectionModel.Select
         sm.select(sel, mode | QItemSelectionModel.Rows)
 
-        # If browsing only selected rows, selection changes affect scope.
+        # If browsing Selected Rows Only, selection changes affect scope.
         if self._cb_only_selected.isChecked():
             try:
                 oid = int(app._table_model.row_oid(r))

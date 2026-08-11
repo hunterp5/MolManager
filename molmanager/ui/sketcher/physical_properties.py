@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+import logging
+import threading
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 from PyQt5.QtCore import QObject, QRunnable, Qt, QTimer, pyqtSignal
+from PyQt5.QtGui import QCloseEvent
 from PyQt5.QtWidgets import (
     QDialog,
     QFormLayout,
@@ -16,23 +19,26 @@ from rdkit import Chem
 from rdkit.Chem import Crippen, Descriptors, QED
 
 from molmanager.medchem_descriptors import (
-    _approx_pka_most_basic,
     ab_mps_score,
     cns_mpo_score,
     lipinski_violations,
-    logd74_value,
     ro5_pass,
 )
 from molmanager.pkasolver_descriptor_support import (
     hydrate_microstates,
     logd74_from_microstates,
-    microstates_for_mol,
 )
 from molmanager.ui.qt_widget_utils import make_window_minimizable
 from molmanager.ui.threadpool_access import start_runnable_on_app_pool
+from molmanager.workers.pkasolver_parallel import predict_microstates_for_sketch
 
 if TYPE_CHECKING:
     from .dialog import SketcherDialog
+
+logger = logging.getLogger(__name__)
+
+_IONIZATION_ERROR_TEXT = "Error"
+_PKA_CALC_FAILED = "pKa calculation failed"
 
 
 @dataclass(frozen=True)
@@ -57,9 +63,9 @@ def _sanitize_copy(mol: Chem.Mol) -> Chem.Mol | None:
     try:
         out = Chem.Mol(mol)
         Chem.SanitizeMol(out)
-        return out
     except Exception:
         return None
+    return out
 
 
 def compute_rdkit_physical_properties(mol: Chem.Mol | None) -> SketchPhysicalProperties:
@@ -82,35 +88,41 @@ def compute_rdkit_physical_properties(mol: Chem.Mol | None) -> SketchPhysicalPro
         return SketchPhysicalProperties(error=str(exc) or "invalid")
 
 
-def compute_ionization_properties(mol: Chem.Mol) -> dict[str, Any]:
+def compute_ionization_properties(
+    mol: Chem.Mol,
+    *,
+    cancel_event: threading.Event | None = None,
+    states: list | None = None,
+) -> dict[str, Any]:
     """
-    Return LogD / pKa / AB-MPS / CNS MPO using one microstate lookup when possible.
+    Return LogD / pKa / AB-MPS / CNS MPO from pkasolver microstates.
+
+    Raises ``ValueError`` when pKa cannot be calculated (callers should show
+    ``Error`` for pKa and pKa-dependent descriptors).
 
     Keys: ``logd``, ``pka_values``, ``pka_approx``, ``ab_mps``, ``cns_mpo``.
     """
     safe = _sanitize_copy(mol)
     if safe is None:
         raise ValueError("invalid molecule")
+    if states is None:
+        states = predict_microstates_for_sketch(safe, cancel_event=cancel_event)
+    if cancel_event is not None and cancel_event.is_set():
+        raise ValueError("cancelled")
+    if not states:
+        raise ValueError(_PKA_CALC_FAILED)
     clogp = float(Crippen.MolLogP(safe))
-    states = microstates_for_mol(safe)
-    if states:
-        hydrated = hydrate_microstates(states)
-        pkas = tuple(sorted(float(s.pka) for s in hydrated))
-        logd = float(logd74_from_microstates(states, clogp))
-        approx = False
-        state_arg: list | None = states
-    else:
-        # Empty list skips a second microstates call inside logd74 / score helpers.
-        state_arg = []
-        logd = float(logd74_value(safe, state_arg))
-        pkas = (float(_approx_pka_most_basic(safe)),)
-        approx = True
+    hydrated = hydrate_microstates(states)
+    pkas = tuple(sorted(float(s.pka) for s in hydrated))
+    if not pkas:
+        raise ValueError(_PKA_CALC_FAILED)
+    logd = float(logd74_from_microstates(states, clogp))
     return {
         "logd": logd,
         "pka_values": pkas,
-        "pka_approx": approx,
-        "ab_mps": float(ab_mps_score(safe, state_arg)),
-        "cns_mpo": float(cns_mpo_score(safe, state_arg)),
+        "pka_approx": False,
+        "ab_mps": float(ab_mps_score(safe, states)),
+        "cns_mpo": float(cns_mpo_score(safe, states)),
     }
 
 
@@ -135,7 +147,7 @@ def compute_sketch_physical_properties(
             qed=base.qed,
             ro5_pass=base.ro5_pass,
             ro5_violations=base.ro5_violations,
-            error=str(exc) or "invalid",
+            error=str(exc) or _PKA_CALC_FAILED,
         )
     return SketchPhysicalProperties(
         mw=base.mw,
@@ -175,17 +187,36 @@ class _IonizationSignals(QObject):
 
 
 class _IonizationWorker(QRunnable):
-    def __init__(self, mol: Chem.Mol, generation: int, signals: _IonizationSignals):
+    def __init__(
+        self,
+        mol: Chem.Mol,
+        generation: int,
+        signals: _IonizationSignals,
+        cancel_event: threading.Event,
+    ):
         super().__init__()
+        self.setAutoDelete(True)
         self._mol = mol
         self._generation = generation
         self._signals = signals
+        self._cancel_event = cancel_event
 
     def run(self) -> None:
         try:
-            result = compute_ionization_properties(self._mol)
+            if self._cancel_event.is_set():
+                self._signals.failed.emit(self._generation, "cancelled")
+                return
+            result = compute_ionization_properties(
+                self._mol, cancel_event=self._cancel_event
+            )
         except Exception as exc:
-            self._signals.failed.emit(self._generation, str(exc) or "failed")
+            msg = str(exc) or _PKA_CALC_FAILED
+            if msg != "cancelled":
+                logger.debug("sketcher ionization failed: %s", msg)
+            self._signals.failed.emit(self._generation, msg)
+            return
+        if self._cancel_event.is_set():
+            self._signals.failed.emit(self._generation, "cancelled")
             return
         self._signals.finished.emit(self._generation, result)
 
@@ -203,6 +234,11 @@ class SketchPhysicalPropertiesDialog(QDialog):
         self.setMinimumWidth(320)
 
         self._generation = 0
+        self._active_generation = 0
+        self._ion_busy = False
+        self._pending_mol: Chem.Mol | None = None
+        self._pending_generation = 0
+        self._cancel_event = threading.Event()
         self._ion_signals = _IonizationSignals(self)
         self._ion_signals.finished.connect(self._on_ionization_finished)
         self._ion_signals.failed.connect(self._on_ionization_failed)
@@ -259,10 +295,17 @@ class SketchPhysicalPropertiesDialog(QDialog):
         """Debounce sketch edits before recomputing."""
         self._timer.start()
 
+    def closeEvent(self, event: QCloseEvent) -> None:  # noqa: N802
+        self._timer.stop()
+        self._cancel_event.set()
+        self._pending_mol = None
+        super().closeEvent(event)
+
     def _clear_all(self) -> None:
         self._val_mw.setText("—")
         self._val_tpsa.setText("—")
         self._val_logp.setText("—")
+        self._clear_ionization_tooltips()
         self._val_logd.setText("—")
         self._val_pka.setText("—")
         self._val_ab_mps.setText("—")
@@ -271,9 +314,28 @@ class SketchPhysicalPropertiesDialog(QDialog):
         self._val_ro5_pass.setText("—")
         self._val_ro5_viol.setText("—")
 
+    def _clear_ionization_tooltips(self) -> None:
+        for lab in (self._val_logd, self._val_pka, self._val_ab_mps, self._val_cns_mpo):
+            lab.setToolTip("")
+
+    def _set_ionization_pending(self) -> None:
+        self._clear_ionization_tooltips()
+        self._val_logd.setText("…")
+        self._val_pka.setText("…")
+        self._val_ab_mps.setText("…")
+        self._val_cns_mpo.setText("…")
+
+    def _set_ionization_error(self, msg: str) -> None:
+        tip = msg if msg and msg != "cancelled" else _PKA_CALC_FAILED
+        for lab in (self._val_logd, self._val_pka, self._val_ab_mps, self._val_cns_mpo):
+            lab.setText(_IONIZATION_ERROR_TEXT)
+            lab.setToolTip(tip)
+
     def _refresh_now(self) -> None:
         self._generation += 1
         gen = self._generation
+        # Cancel any in-flight process-pool job; coalesced pending work uses the new gen.
+        self._cancel_event.set()
         mol = None
         try:
             mol = self._sketcher._sketch_mol_for_3d()
@@ -282,6 +344,7 @@ class SketchPhysicalPropertiesDialog(QDialog):
 
         fast = compute_rdkit_physical_properties(mol)
         if fast.error or mol is None:
+            self._pending_mol = None
             self._clear_all()
             return
 
@@ -293,42 +356,76 @@ class SketchPhysicalPropertiesDialog(QDialog):
         self._val_ro5_viol.setText(
             "—" if fast.ro5_violations is None else str(int(fast.ro5_violations))
         )
-        self._val_logd.setText("…")
-        self._val_pka.setText("…")
-        self._val_ab_mps.setText("…")
-        self._val_cns_mpo.setText("…")
+        self._set_ionization_pending()
 
         try:
             mol_copy = Chem.Mol(mol)
         except Exception:
-            self._val_logd.setText("—")
-            self._val_pka.setText("—")
-            self._val_ab_mps.setText("—")
-            self._val_cns_mpo.setText("—")
+            self._set_ionization_error("invalid molecule")
             return
 
-        worker = _IonizationWorker(mol_copy, gen, self._ion_signals)
+        self._start_or_coalesce_ionization(mol_copy, gen)
+
+    def _start_or_coalesce_ionization(self, mol: Chem.Mol, generation: int) -> None:
+        if self._ion_busy:
+            self._pending_mol = mol
+            self._pending_generation = generation
+            return
+        self._ion_busy = True
+        self._active_generation = generation
+        self._cancel_event = threading.Event()
+        worker = _IonizationWorker(mol, generation, self._ion_signals, self._cancel_event)
         start_runnable_on_app_pool(getattr(self._sketcher, "parent_app", None), worker)
 
-    def _on_ionization_finished(self, generation: int, result: object) -> None:
-        if generation != self._generation:
+    def _drain_pending_ionization(self) -> None:
+        pending = self._pending_mol
+        gen = self._pending_generation
+        self._pending_mol = None
+        if pending is None:
             return
-        if not isinstance(result, dict):
-            self._on_ionization_failed(generation, "bad result")
+        if gen != self._generation:
             return
-        self._val_logd.setText(_fmt_num(float(result["logd"]), 2))
-        pkas = result.get("pka_values") or ()
-        pka_tuple = tuple(pkas) if isinstance(pkas, (list, tuple)) else ()
-        self._val_pka.setText(
-            _fmt_pka(pka_tuple, approx=bool(result.get("pka_approx")), pending=False)
-        )
-        self._val_ab_mps.setText(_fmt_num(float(result["ab_mps"]), 2))
-        self._val_cns_mpo.setText(_fmt_num(float(result["cns_mpo"]), 2))
+        self._start_or_coalesce_ionization(pending, gen)
 
-    def _on_ionization_failed(self, generation: int, _msg: str) -> None:
+    def _release_ionization_busy(self, generation: int) -> None:
+        if generation == self._active_generation:
+            self._ion_busy = False
+
+    def _on_ionization_finished(self, generation: int, result: object) -> None:
+        self._release_ionization_busy(generation)
+        try:
+            if generation != self._generation:
+                self._drain_pending_ionization()
+                return
+            if not isinstance(result, dict):
+                self._on_ionization_failed(generation, "bad result")
+                return
+            self._clear_ionization_tooltips()
+            self._val_logd.setText(_fmt_num(float(result["logd"]), 2))
+            pkas = result.get("pka_values") or ()
+            pka_tuple = tuple(pkas) if isinstance(pkas, (list, tuple)) else ()
+            if not pka_tuple:
+                self._set_ionization_error(_PKA_CALC_FAILED)
+                self._drain_pending_ionization()
+                return
+            self._val_pka.setText(
+                _fmt_pka(pka_tuple, approx=bool(result.get("pka_approx")), pending=False)
+            )
+            self._val_ab_mps.setText(_fmt_num(float(result["ab_mps"]), 2))
+            self._val_cns_mpo.setText(_fmt_num(float(result["cns_mpo"]), 2))
+            self._drain_pending_ionization()
+        except Exception:
+            logger.exception("applying sketcher ionization results failed")
+            self._set_ionization_error(_PKA_CALC_FAILED)
+            self._drain_pending_ionization()
+
+    def _on_ionization_failed(self, generation: int, msg: str) -> None:
+        self._release_ionization_busy(generation)
         if generation != self._generation:
+            self._drain_pending_ionization()
             return
-        self._val_logd.setText("—")
-        self._val_pka.setText("—")
-        self._val_ab_mps.setText("—")
-        self._val_cns_mpo.setText("—")
+        if msg == "cancelled":
+            self._drain_pending_ionization()
+            return
+        self._set_ionization_error(msg or _PKA_CALC_FAILED)
+        self._drain_pending_ionization()

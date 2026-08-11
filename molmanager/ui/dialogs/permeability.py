@@ -54,8 +54,8 @@ class PermeabilityPredictorDialog(QDialog):
         src_row.addWidget(self.src_combo, 1)
         root.addLayout(src_row)
 
-        self.only_selected_cb = QCheckBox("Only selected rows")
-        self._only_selected_scope_prefix = "Only selected rows"
+        self.only_selected_cb = QCheckBox("Selected Rows Only")
+        self._only_selected_scope_prefix = "Selected Rows Only"
         if self._have_selection:
             self.only_selected_cb.setText(f"{self._only_selected_scope_prefix} ({n_sel} row(s))")
         else:
@@ -102,7 +102,7 @@ class PermeabilityPredictorDialog(QDialog):
             QMessageBox.warning(
                 self,
                 "Predict Permeability",
-                "\u201cOnly selected rows\u201d is checked but nothing is selected.",
+                "\u201cSelected Rows Only\u201d is checked but nothing is selected.",
             )
             return
         src = self.src_combo.currentText()

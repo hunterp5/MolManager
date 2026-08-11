@@ -39,19 +39,34 @@ def test_compute_rdkit_physical_properties_empty() -> None:
     assert props.error == "empty"
 
 
-def test_compute_ionization_heuristic(monkeypatch) -> None:
+def test_compute_ionization_failure_when_no_microstates(monkeypatch) -> None:
     monkeypatch.setattr(
-        "molmanager.ui.sketcher.physical_properties.microstates_for_mol",
-        lambda _mol: None,
+        "molmanager.ui.sketcher.physical_properties.predict_microstates_for_sketch",
+        lambda _mol, cancel_event=None: None,
     )
     mol = Chem.MolFromSmiles("CCN")
     props = compute_sketch_physical_properties(mol, with_ionization=True)
-    assert props.error is None
-    assert props.logd is not None
-    assert props.pka_values is not None and len(props.pka_values) == 1
-    assert props.pka_approx is True
-    assert props.ab_mps is not None
-    assert props.cns_mpo is not None
+    assert props.mw is not None
+    assert props.error == "pKa calculation failed"
+    assert props.logd is None
+    assert props.pka_values is None
+    assert props.ab_mps is None
+    assert props.cns_mpo is None
+
+
+def test_compute_ionization_properties_raises_without_microstates(monkeypatch) -> None:
+    from molmanager.ui.sketcher.physical_properties import compute_ionization_properties
+
+    monkeypatch.setattr(
+        "molmanager.ui.sketcher.physical_properties.predict_microstates_for_sketch",
+        lambda _mol, cancel_event=None: None,
+    )
+    mol = Chem.MolFromSmiles("CCO")
+    try:
+        compute_ionization_properties(mol)
+        assert False, "expected ValueError"
+    except ValueError as exc:
+        assert "pKa" in str(exc)
 
 
 def test_normalize_toolbar_element_symbols() -> None:

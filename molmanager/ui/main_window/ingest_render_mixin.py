@@ -15,6 +15,7 @@ from PyQt5.QtWidgets import (
 
 
 from ...config import load_config
+from ...confs_codec import demote_v1_cell_to_sidecar, mol_has_3d_coordinates, pack_confs_cell
 from ...ingest_text import is_ingest_cell_batch
 from ...display_constants import STRUCTURE_ROW_DEFAULT_HEIGHT
 from ...structure_render_store import StructureRenderStore
@@ -35,6 +36,8 @@ from ..compound_table_model import (
     STRUCTURE_DEPICT_WIDTH,
 )
 
+from rdkit import Chem
+
 logger = logging.getLogger(__name__)
 
 class IngestRenderMixin:
@@ -46,7 +49,7 @@ class IngestRenderMixin:
             QMessageBox.warning(
                 self,
                 title,
-                "\u201cOnly selected rows\u201d is checked but nothing is selected.",
+                "\u201cSelected Rows Only\u201d is checked but nothing is selected.",
             )
             return True
         return False
@@ -174,8 +177,46 @@ class IngestRenderMixin:
             m = self._apply_structure_field_override(m)
             oid = self.next_oid
             self.next_oid += 1
-            self.mols[oid] = m
-            new_rows.append((oid, self._row_cells_from_mol(m)))
+            new_rows.append((oid, self._ingest_store_mol(oid, m)))
+
+    def _ingest_store_mol(self, oid: int, mol: Chem.Mol) -> dict[str, str]:
+        """
+        Store *mol* for row *oid*.
+
+        When the molecule carries 3D coordinates, pack them into ``confs`` (for View
+        Conformers) and keep a 2D depiction in ``self.mols`` for the Structure column.
+        """
+        if mol is not None and mol_has_3d_coordinates(mol):
+            from ..mol_viewer_3d import prepare_mol_2d
+
+            self._ensure_columns(["confs"])
+            try:
+                n_conf = int(mol.GetNumConformers())
+            except Exception:
+                n_conf = 0
+            packed = pack_confs_cell(
+                {
+                    "ok": True,
+                    "op": "ingest",
+                    "n_kept": n_conf,
+                    "n_packed": n_conf,
+                },
+                mol,
+            )
+            light, b64 = demote_v1_cell_to_sidecar(packed, "confs")
+            sc = getattr(self, "_confs_blocks_sidecar", None)
+            if sc is None:
+                self._confs_blocks_sidecar = {}
+                sc = self._confs_blocks_sidecar
+            if b64 is not None:
+                sc[(int(oid), "confs")] = b64
+            depict = prepare_mol_2d(mol)
+            self.mols[oid] = depict if depict is not None else mol
+            cells = self._row_cells_from_mol(mol)
+            cells["confs"] = light
+            return cells
+        self.mols[oid] = mol
+        return self._row_cells_from_mol(mol)
 
     def on_file_loaded(self, mols_list, headers, is_first, is_last):
         # Append batch to pending queue and schedule incremental processing

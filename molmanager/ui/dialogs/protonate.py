@@ -51,8 +51,8 @@ class ProtonateDialog(QDialog):
         self.output_col.setPlaceholderText("New column name")
         form.addRow("Output column:", self.output_col)
 
-        self.only_selected_cb = QCheckBox("Only selected rows")
-        self._only_selected_scope_prefix = "Only selected rows"
+        self.only_selected_cb = QCheckBox("Selected Rows Only")
+        self._only_selected_scope_prefix = "Selected Rows Only"
         if self._have_selection:
             self.only_selected_cb.setText(f"{self._only_selected_scope_prefix} ({selected_row_count} row(s))")
         else:

@@ -325,6 +325,12 @@ class SketcherDialog(QDialog):
         copy_act.triggered.connect(self._copy_smiles)
         copy_act.setShortcut(QKeySequence("Ctrl+Shift+C"))
         tools.addAction(copy_act)
+        copy_sel_act = QAction("Copy Selected as SMILES", self)
+        copy_sel_act.setToolTip(
+            "Copy SMILES (or SMARTS) for the currently selected atoms/bonds only."
+        )
+        copy_sel_act.triggered.connect(self._copy_selected_smiles)
+        tools.addAction(copy_sel_act)
         copy_smarts_act = QAction("Copy SMARTS", self)
         copy_smarts_act.triggered.connect(self._copy_smarts)
         tools.addAction(copy_smarts_act)
@@ -1634,6 +1640,22 @@ class SketcherDialog(QDialog):
                 "Copy",
                 "Could not copy — no valid SMILES/SMARTS for the sketch.",
             )
+
+    def _copy_selected_smiles(self) -> None:
+        if not self.canvas._atoms_for_selection_move():
+            QMessageBox.information(
+                self,
+                "Copy Selected as SMILES",
+                "Select one or more atoms (or bonds) first.",
+            )
+            return
+        if self.canvas.copy_selected_as_smiles_to_clipboard():
+            return
+        QMessageBox.warning(
+            self,
+            "Copy Selected as SMILES",
+            "Could not copy — no valid SMILES/SMARTS for the selection.",
+        )
 
     def _copy_smarts(self) -> None:
         smt = self.canvas.to_smarts().strip()

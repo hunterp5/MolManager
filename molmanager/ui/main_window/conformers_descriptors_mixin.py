@@ -6,6 +6,7 @@ import logging
 
 from PyQt5.QtCore import Qt
 from PyQt5.QtWidgets import (
+    QApplication,
     QDialog,
     QMessageBox,
 )
@@ -15,6 +16,7 @@ from rdkit import Chem
 from ...conformer_output import iter_single_conformer_mols, write_conformer_results_to_sdf
 from ...confs_codec import (
     demote_v1_cell_to_sidecar,
+    pack_confs_cell,
     rehydrate_v1_confs_cell,
     unpack_confs_blocks_json_b64,
 )
@@ -266,6 +268,160 @@ class ConformersDescriptorsMixin:
         self._sync_global_bounds_for_headers(sorted(field_names), refresh_filters=False)
         return len(batch_rows)
 
+    def export_conformer_viewer_to_table(
+        self,
+        *,
+        blocks_json_b64: str,
+        conf_indices: list[int] | None = None,
+        strain_overlay: dict | None = None,
+        parent_oid: int | None = None,
+        confs_column: str = "confs",
+    ) -> int:
+        """
+        Append viewer conformer(s) as table rows.
+
+        Structure gets a 2D depiction; 3D coordinates are packed into *confs_column*
+        (created if missing) so View Conformers works again. When *strain_overlay*
+        is present, also writes ``E_kcal``, ``(delta)E_kcal``, and ``RMSD``.
+        """
+        import base64
+        import json
+
+        from ..mol_viewer_3d import prepare_mol_2d
+
+        raw = (blocks_json_b64 or "").strip()
+        if not raw:
+            return 0
+        try:
+            blocks = json.loads(base64.b64decode(raw.encode("ascii")))
+        except Exception:
+            return 0
+        if not isinstance(blocks, list) or not blocks:
+            return 0
+
+        n_blocks = len(blocks)
+        if conf_indices is None:
+            indices = list(range(n_blocks))
+        else:
+            indices = [i for i in conf_indices if isinstance(i, int) and 0 <= i < n_blocks]
+        if not indices:
+            return 0
+
+        confs_col = (confs_column or "confs").strip() or "confs"
+        overlay = strain_overlay if isinstance(strain_overlay, dict) else None
+        energies = (overlay or {}).get("energies") if overlay else None
+        deltas = (overlay or {}).get("deltas") if overlay else None
+        rmsds = (overlay or {}).get("rmsds") if overlay else None
+        has_e = isinstance(energies, list) and len(energies) == n_blocks
+        has_de = isinstance(deltas, list) and len(deltas) == n_blocks
+        has_rms = isinstance(rmsds, list) and len(rmsds) == n_blocks
+
+        ensure_cols = ["SMILES", "Parent OID", "Conformer", confs_col]
+        if has_e:
+            ensure_cols.append("E_kcal")
+        if has_de:
+            ensure_cols.append("(delta)E_kcal")
+        if has_rms:
+            ensure_cols.append("RMSD")
+        self._ensure_columns(ensure_cols)
+
+        sc = getattr(self, "_confs_blocks_sidecar", None)
+        if sc is None:
+            self._confs_blocks_sidecar = {}
+            sc = self._confs_blocks_sidecar
+
+        def _fmt_num(val) -> str:
+            try:
+                return f"{float(val):.6g}"
+            except Exception:
+                return ""
+
+        batch_rows: list[tuple[int, dict[str, str]]] = []
+        new_mols: list[tuple[int, Chem.Mol]] = []
+        confs_pairs: list[tuple[int, str]] = []
+        field_names: set[str] = set()
+
+        for conf_i in indices:
+            enc = blocks[conf_i]
+            if not isinstance(enc, str) or not enc.strip():
+                continue
+            try:
+                mol_block = base64.b64decode(enc.encode("ascii")).decode("utf-8")
+            except Exception:
+                continue
+            mol3d = Chem.MolFromMolBlock(mol_block, sanitize=True, removeHs=False)
+            if mol3d is None:
+                mol3d = Chem.MolFromMolBlock(mol_block, sanitize=False, removeHs=False)
+            if mol3d is None:
+                continue
+            # Structure column keeps a 2D depiction; packed confs holds the 3D coordinates.
+            depict = prepare_mol_2d(mol3d)
+            if depict is None:
+                depict = Chem.Mol(mol3d)
+
+            smi = mol_to_canonical_smiles(depict) or mol_to_canonical_smiles(mol3d) or ""
+            meta = {
+                "ok": True,
+                "op": "viewer_export",
+                "n_kept": 1,
+                "n_packed": 1,
+            }
+            packed = pack_confs_cell(meta, mol3d)
+            light, b64 = demote_v1_cell_to_sidecar(packed, confs_col)
+
+            oid = self.next_oid
+            self.next_oid += 1
+            if b64 is not None:
+                sc[(oid, confs_col)] = b64
+
+            row_cells: dict[str, str] = {}
+            for h in self.headers[2:]:
+                if h == "SMILES":
+                    row_cells[h] = smi
+                elif h == "Parent OID":
+                    row_cells[h] = "" if parent_oid is None else str(int(parent_oid))
+                elif h == "Conformer":
+                    row_cells[h] = str(int(conf_i) + 1)
+                elif h == confs_col:
+                    row_cells[h] = light
+                elif h == "E_kcal" and has_e:
+                    row_cells[h] = _fmt_num(energies[conf_i])
+                elif h == "(delta)E_kcal" and has_de:
+                    row_cells[h] = _fmt_num(deltas[conf_i])
+                elif h == "RMSD" and has_rms:
+                    row_cells[h] = _fmt_num(rmsds[conf_i])
+                else:
+                    row_cells[h] = ""
+            batch_rows.append((oid, row_cells))
+            new_mols.append((oid, depict))
+            confs_pairs.append((oid, light))
+            field_names.update(row_cells.keys())
+
+        if not batch_rows:
+            return 0
+
+        self.table.setSortingEnabled(False)
+        try:
+            self.table.setUpdatesEnabled(False)
+        except Exception:
+            pass
+        try:
+            self._table_model.append_rows_batch(batch_rows)
+            for oid, mol in new_mols:
+                self.mols[oid] = mol
+                self.start_render_worker(oid, mol)
+            if confs_pairs:
+                self._table_model.set_column_text_by_oids(confs_col, confs_pairs)
+            self._sync_global_bounds_for_headers(sorted(field_names), refresh_filters=False)
+            self.schedule_calculate_global_bounds()
+        finally:
+            try:
+                self.table.setUpdatesEnabled(True)
+            except Exception:
+                pass
+        self.status_label.setText(f"Exported {len(batch_rows)} conformer row(s) from the 3D viewer.")
+        return len(batch_rows)
+
     def open_superpose_conformers(self):
         if not self.headers or self._table_model.rowCount() == 0:
             QMessageBox.information(
@@ -358,6 +514,432 @@ class ConformersDescriptorsMixin:
             except Exception:
                 pass
         self.status_label.setText(self._consume_partial_results_notice() or "Done.")
+
+    def _mol_3d_for_structure_superpose(self, oid: int, src: str) -> Chem.Mol | None:
+        """Best-effort 3D mol for structure superposition from *src* (Structure / confs / …)."""
+        from ...confs_codec import mol_from_packed_confs_cell, mol_has_3d_coordinates
+        from ..mol_viewer_3d import prepare_mol_3d
+
+        r = self.get_row_by_id(oid)
+        if r < 0:
+            return None
+        src_h = (src or "Structure").strip() or "Structure"
+        if src_h != "Structure" and src_h in self.headers:
+            raw = self._table_model.backing_value_for_row_header(r, src_h)
+            sc = getattr(self, "_confs_blocks_sidecar", {}) or {}
+            full = rehydrate_v1_confs_cell(raw, src_h, int(oid), sc)
+            packed = mol_from_packed_confs_cell(full, min_conformers=1)
+            if packed is not None and mol_has_3d_coordinates(packed):
+                return packed
+        m = self.mols.get(oid)
+        if m is None:
+            m = self._mol_for_structure_row(r)
+        if m is None:
+            return None
+        if mol_has_3d_coordinates(m):
+            return Chem.Mol(m)
+        # Prefer packed confs even when source is Structure.
+        for col in ("confs", "superpose"):
+            if col not in self.headers:
+                continue
+            raw = self._table_model.backing_value_for_row_header(r, col)
+            sc = getattr(self, "_confs_blocks_sidecar", {}) or {}
+            full = rehydrate_v1_confs_cell(raw, col, int(oid), sc)
+            packed = mol_from_packed_confs_cell(full, min_conformers=1)
+            if packed is not None and mol_has_3d_coordinates(packed):
+                return packed
+        return prepare_mol_3d(m)
+
+    def open_superpose_structures(self):
+        if not self.headers or self._table_model.rowCount() == 0:
+            QMessageBox.information(
+                self,
+                "Superpose Structures",
+                "Open a file or add rows so the table has data to process.",
+            )
+            return
+        from ...confs_codec import conformer_mol_blocks_b64_json
+        from ...workers import run_superpose_structures
+        from ..dialogs import SuperposeStructuresDialog
+        from ..mol_viewer_3d import open_conformation_viewer_from_blocks_payload
+
+        sources = ["Structure"] + [c for c in ("confs", "superpose") if c in self.headers]
+        d = SuperposeStructuresDialog(
+            len(self._selected_logical_rows()),
+            source_columns=sources,
+            parent=self,
+        )
+        self._prepare_tool_dialog(d)
+        if d.exec_() != QDialog.Accepted:
+            return
+        only_selected = d.only_selected_rows()
+        allowed = self._selected_oids_set() if only_selected else None
+        if self._abort_if_only_selected_but_empty(only_selected, allowed, "Superpose Structures"):
+            return
+        oids_list = self._all_oids_in_table_order()
+        if allowed is not None:
+            oids_list = [o for o in oids_list if o in allowed]
+        if len(oids_list) < 2:
+            QMessageBox.information(
+                self,
+                "Superpose Structures",
+                "Select at least two rows (Selected Rows Only) to superpose structures.",
+            )
+            return
+        src = d.source_column()
+        params = d.params()
+        probes: list[tuple[int, Chem.Mol]] = []
+        for o in oids_list:
+            m = self._mol_3d_for_structure_superpose(int(o), src)
+            if m is None:
+                continue
+            probes.append((int(o), m))
+        if len(probes) < 2:
+            QMessageBox.information(
+                self,
+                "Superpose Structures",
+                "Need at least two rows with usable 3D structures in scope.",
+            )
+            return
+        ref_oid, ref_mol = probes[0]
+        self.status_label.setText(f"Superposing {len(probes)} structures…")
+        QApplication.processEvents()
+        results = run_superpose_structures(
+            ref_mol,
+            probes,
+            params,
+            ref_oid=ref_oid,
+        )
+        self.table.setSortingEnabled(False)
+        try:
+            self.table.setUpdatesEnabled(False)
+        except Exception:
+            pass
+        ok_n = 0
+        viewer_mols: list[Chem.Mol] = []
+        try:
+            if "superpose" not in self.headers:
+                col_at = len(self.headers)
+                self.headers.append("superpose")
+                self._table_model.insert_column_at(col_at, "superpose", None)
+            sc = getattr(self, "_confs_blocks_sidecar", None)
+            if sc is None:
+                self._confs_blocks_sidecar = {}
+                sc = self._confs_blocks_sidecar
+            for oid, mol, meta in results:
+                if mol is None or not meta.get("ok"):
+                    continue
+                viewer_mols.append(mol)
+                ok_n += 1
+            if viewer_mols:
+                from ...confs_codec import pack_mols_as_confs_cell
+
+                ensemble_meta = {
+                    "ok": True,
+                    "op": "superpose_structures",
+                    "n_kept": len(viewer_mols),
+                    "n_packed": len(viewer_mols),
+                    "n_conf": len(viewer_mols),
+                    "ref_oid": int(ref_oid),
+                }
+                cell = pack_mols_as_confs_cell(ensemble_meta, viewer_mols)
+                light, b64 = demote_v1_cell_to_sidecar(cell, "superpose")
+                if b64 is not None:
+                    sc[(int(ref_oid), "superpose")] = b64
+                self._table_model.set_column_text_by_oids("superpose", [(int(ref_oid), light)])
+            self.schedule_calculate_global_bounds()
+            self.table.setSortingEnabled(False)
+        finally:
+            try:
+                self.table.setUpdatesEnabled(True)
+            except Exception:
+                pass
+        if viewer_mols:
+            # Build a multi-mol blocks payload for the shared 3D viewer (different atom counts OK).
+            import base64
+            import json
+
+            blocks: list[str] = []
+            for m in viewer_mols:
+                try:
+                    block = Chem.MolToMolBlock(m)
+                    blocks.append(base64.b64encode(block.encode("utf-8")).decode("ascii"))
+                except Exception:
+                    continue
+            if len(blocks) >= 2:
+                payload = base64.b64encode(json.dumps(blocks).encode("utf-8")).decode("ascii")
+                open_conformation_viewer_from_blocks_payload(
+                    self,
+                    payload,
+                    title="Superpose Structures",
+                    initial_superpose=True,
+                    export_parent_oid=int(ref_oid),
+                    export_confs_column="superpose",
+                )
+            elif len(blocks) == 1:
+                payload = conformer_mol_blocks_b64_json(viewer_mols[0])
+                open_conformation_viewer_from_blocks_payload(
+                    self,
+                    payload,
+                    title="Superpose Structures",
+                    initial_superpose=False,
+                    export_parent_oid=int(ref_oid),
+                    export_confs_column="superpose",
+                )
+        failed = len(results) - ok_n
+        status = f"Superpose structures: packed {ok_n} onto reference OID {ref_oid}"
+        if failed:
+            status += f" ({failed} failed)"
+        self.status_label.setText(status + ".")
+
+    def open_calculate_strain_energy(self):
+        if not self.headers or self._table_model.rowCount() == 0:
+            QMessageBox.information(
+                self,
+                "Calculate Strain Energy",
+                "Open a file or add rows so the table has data to process.",
+            )
+            return
+        sources = [c for c in ("confs", "superpose") if c in self.headers]
+        if not sources:
+            QMessageBox.information(
+                self,
+                "Calculate Strain Energy",
+                'Add a "confs" column first by running Generate Conformations '
+                "(packed multi-conformer cells).",
+            )
+            return
+        from ..dialogs import StrainEnergyDialog
+
+        d = StrainEnergyDialog(
+            len(self._selected_logical_rows()),
+            source_columns=sources,
+            parent=self,
+        )
+        self._prepare_tool_dialog(d)
+        d.setAttribute(Qt.WA_DeleteOnClose, True)
+        d.accepted.connect(lambda *_, dlg=d: self._on_calculate_strain_energy_dialog_accepted(dlg))
+        d.show()
+
+    def _on_calculate_strain_energy_dialog_accepted(self, d) -> None:
+        from ..mol_viewer_3d import open_conformation_viewer_from_blocks_payload
+        from ...confs_codec import mol_from_packed_confs_cell
+        from ...workers import RmsdParams, run_conformer_rmsd, run_strain_energy
+
+        only_selected = d.only_selected_rows()
+        allowed = self._selected_oids_set() if only_selected else None
+        if self._abort_if_only_selected_but_empty(only_selected, allowed, "Calculate Strain Energy"):
+            return
+        params = d.params()
+        src_col = str(params.source_column or "").strip()
+        if not src_col or src_col not in self.headers:
+            QMessageBox.information(
+                self,
+                "Calculate Strain Energy",
+                f'Column "{src_col}" was not found in the table.',
+            )
+            return
+        oids_list = self._all_oids_in_table_order()
+        if allowed is not None:
+            oids_list = [o for o in oids_list if o in allowed]
+        data: list[tuple[int, str]] = []
+        for o in oids_list:
+            r = self.get_row_by_id(o)
+            if r < 0:
+                continue
+            raw = self._table_model.backing_value_for_row_header(r, src_col)
+            sc = getattr(self, "_confs_blocks_sidecar", {}) or {}
+            full = rehydrate_v1_confs_cell(raw, src_col, int(o), sc)
+            if unpack_confs_blocks_json_b64(full) is None:
+                continue
+            data.append((o, full))
+        if not data:
+            QMessageBox.information(
+                self,
+                "Calculate Strain Energy",
+                f'No rows in scope have a packed multi-conformer "{src_col}" cell. '
+                "Run Generate Conformations first.",
+            )
+            return
+        if len(data) > 1:
+            QMessageBox.information(
+                self,
+                "Calculate Strain Energy",
+                "Select a single row with packed conformers (Selected Rows Only), "
+                "then run Calculate Strain Energy to open the 3D viewer.",
+            )
+            return
+        _oid, cell = data[0]
+        mol = mol_from_packed_confs_cell(cell, min_conformers=1)
+        if mol is None:
+            QMessageBox.warning(
+                self,
+                "Calculate Strain Energy",
+                "Could not rebuild conformers from the packed cell.",
+            )
+            return
+        self.status_label.setText("Calculating strain energy and RMSD…")
+        QApplication.processEvents()
+        _row, meta = run_strain_energy(mol, params)
+        if not meta.get("ok"):
+            err = meta.get("err") or "energy_failed"
+            QMessageBox.warning(
+                self,
+                "Calculate Strain Energy",
+                f"Could not compute strain energies ({err}).",
+            )
+            self.status_label.setText("Ready.")
+            return
+        energies = meta.get("energies") or []
+        strains = meta.get("strains") or []
+        if len(energies) != mol.GetNumConformers() or len(strains) != len(energies):
+            QMessageBox.warning(
+                self,
+                "Calculate Strain Energy",
+                "Energy list length does not match the number of conformers.",
+            )
+            self.status_label.setText("Ready.")
+            return
+        rms_vals: list[float] = []
+        rms_max = 0.0
+        _rms_row, rms_meta = run_conformer_rmsd(
+            mol,
+            RmsdParams(
+                reference_conformer_index=int(meta.get("ref_idx", params.reference_conformer_index)),
+                heavy_atoms_only=True,
+            ),
+        )
+        if rms_meta.get("ok") and _rms_row:
+            try:
+                rms_vals = [float(x) for x in str(_rms_row.get("RMSD_values", "")).split(";") if x.strip()]
+            except Exception:
+                rms_vals = []
+            try:
+                rms_max = float(rms_meta.get("rms_max", _rms_row.get("RMSD_max", 0.0)))
+            except Exception:
+                rms_max = max(rms_vals) if rms_vals else 0.0
+            if len(rms_vals) != len(energies):
+                rms_vals = []
+        blocks_b64 = unpack_confs_blocks_json_b64(cell)
+        if not blocks_b64:
+            QMessageBox.warning(
+                self,
+                "Calculate Strain Energy",
+                "Could not read packed conformer blocks for the viewer.",
+            )
+            self.status_label.setText("Ready.")
+            return
+        overlay = {
+            "energies": [float(e) for e in energies],
+            "deltas": [float(s) for s in strains],
+            "e_ref": float(meta.get("e_ref_kcal", 0.0)),
+            "strain_max": float(meta.get("strain_max_kcal", 0.0)),
+            "ref_idx": int(meta.get("ref_idx", 0)),
+            "ff": str(meta.get("ff") or ""),
+        }
+        if rms_vals:
+            overlay["rmsds"] = rms_vals
+            overlay["rmsd_max"] = float(rms_max)
+        open_conformation_viewer_from_blocks_payload(
+            self,
+            blocks_b64,
+            title="Strain Energy",
+            initial_superpose=False,
+            strain_overlay=overlay,
+            initial_conf_index=int(meta.get("ref_idx", 0)),
+            export_parent_oid=int(_oid),
+            export_confs_column=src_col,
+        )
+        status = (
+            f"Strain energy viewer: {meta.get('ff', '')} · "
+            f"{len(energies)} conformer(s) · E_ref={meta.get('e_ref_kcal')} kcal/mol"
+        )
+        if rms_vals:
+            status += f" · max RMSD={rms_max:.3f} Å"
+        self.status_label.setText(status + ".")
+
+    def open_calculate_rmsd(self):
+        if not self.headers or self._table_model.rowCount() == 0:
+            QMessageBox.information(
+                self,
+                "Calculate RMSD",
+                "Open a file or add rows so the table has data to process.",
+            )
+            return
+        sources = [c for c in ("confs", "superpose") if c in self.headers]
+        if not sources:
+            QMessageBox.information(
+                self,
+                "Calculate RMSD",
+                'Add a "confs" column first by running Generate Conformations '
+                "(packed multi-conformer cells).",
+            )
+            return
+        from ..dialogs import CalculateRmsdDialog
+
+        d = CalculateRmsdDialog(
+            len(self._selected_logical_rows()),
+            source_columns=sources,
+            parent=self,
+        )
+        self._prepare_tool_dialog(d)
+        d.setAttribute(Qt.WA_DeleteOnClose, True)
+        d.accepted.connect(lambda *_, dlg=d: self._on_calculate_rmsd_dialog_accepted(dlg))
+        d.show()
+
+    def _on_calculate_rmsd_dialog_accepted(self, d) -> None:
+        from ...workers import RMSD_HEADERS, RmsdWorker
+
+        only_selected = d.only_selected_rows()
+        allowed = self._selected_oids_set() if only_selected else None
+        if self._abort_if_only_selected_but_empty(only_selected, allowed, "Calculate RMSD"):
+            return
+        params = d.params()
+        src_col = str(params.source_column or "").strip()
+        if not src_col or src_col not in self.headers:
+            QMessageBox.information(
+                self,
+                "Calculate RMSD",
+                f'Column "{src_col}" was not found in the table.',
+            )
+            return
+        oids_list = self._all_oids_in_table_order()
+        if allowed is not None:
+            oids_list = [o for o in oids_list if o in allowed]
+        data: list[tuple[int, str]] = []
+        for o in oids_list:
+            r = self.get_row_by_id(o)
+            if r < 0:
+                continue
+            raw = self._table_model.backing_value_for_row_header(r, src_col)
+            sc = getattr(self, "_confs_blocks_sidecar", {}) or {}
+            full = rehydrate_v1_confs_cell(raw, src_col, int(o), sc)
+            if unpack_confs_blocks_json_b64(full) is None:
+                continue
+            data.append((o, full))
+        if not data:
+            QMessageBox.information(
+                self,
+                "Calculate RMSD",
+                f'No rows in scope have a packed multi-conformer "{src_col}" cell. '
+                "Run Generate Conformations first.",
+            )
+            return
+        out_headers = self._unique_table_column_names(list(RMSD_HEADERS))
+        n = len(data)
+        ps = self._tool_progress_state
+        self._begin_tool_progress("Calculate RMSD", n)
+        self.process_queue.enqueue(
+            f"Calculate RMSD ({n} rows)",
+            lambda ev, d=data, p=params, oh=out_headers, sigs=self.signals, prog=ps: RmsdWorker(
+                d,
+                p,
+                sigs,
+                cancel_event=ev,
+                progress_state=prog,
+                output_headers=oh,
+            ),
+        )
 
     def _unique_table_column_names(self, bases: list[str]) -> list[str]:
         """Return column header names; append `` (n)`` when a name already exists in the table."""

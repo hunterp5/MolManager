@@ -63,8 +63,8 @@ class PropertyDialog(QDialog):
         self.src_combo = QComboBox()
         self.src_combo.addItems([c for c in columns if (c or "").strip()])
         target_row.addWidget(self.src_combo, 1)
-        self.only_selected_cb = QCheckBox("Only selected rows")
-        self._only_selected_scope_prefix = "Only selected rows"
+        self.only_selected_cb = QCheckBox("Selected Rows Only")
+        self._only_selected_scope_prefix = "Selected Rows Only"
         if self._have_selection:
             self.only_selected_cb.setText(f"{self._only_selected_scope_prefix} ({selected_row_count} row(s))")
         else:

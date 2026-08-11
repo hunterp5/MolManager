@@ -129,8 +129,8 @@ class MedChemPlotPanel(QWidget):
         self.refresh_btn.clicked.connect(self._on_refresh)
         scope.addWidget(self.refresh_btn)
         scope.addStretch(1)
-        self.only_selected_cb = QCheckBox("Only selected rows")
-        self._only_selected_scope_prefix = "Only selected rows"
+        self.only_selected_cb = QCheckBox("Selected Rows Only")
+        self._only_selected_scope_prefix = "Selected Rows Only"
         if self._have_selection:
             self.only_selected_cb.setText(f"{self._only_selected_scope_prefix} ({n_sel} row(s))")
         else:
@@ -180,7 +180,15 @@ class MedChemPlotPanel(QWidget):
         self._reload_color_columns()
         self._update_spectrum_controls()
         self.summary_text.setPlainText("Preparing plot…")
+        self.setMinimumWidth(self.embedded_minimum_width())
         QTimer.singleShot(0, self._start_refresh_job)
+
+    def embedded_minimum_width(self) -> int:
+        """Width needed so Color-by controls do not overlap when docked."""
+        return 600
+
+    def embedded_preferred_width(self) -> int:
+        return max(self.embedded_minimum_width(), 720)
 
     def create_floating_dialog(self, parent_app: ChemicalTableApp) -> MedChemSpaceDialog:
         """Re-open this panel in a floating window after undocking from the main table."""
@@ -321,7 +329,7 @@ class MedChemPlotPanel(QWidget):
         assert app is not None
         only_sel = selection_scope_checked(self)
         if only_sel and not app._selected_oids_set():
-            raise ValueError("\u201cOnly selected rows\u201d is checked but nothing is selected.")
+            raise ValueError("\u201cSelected Rows Only\u201d is checked but nothing is selected.")
         only_rows = app._selected_logical_rows() if only_sel else None
         visible_rows = app._visible_source_row_indices()
         return snapshot_scope_row_indices(

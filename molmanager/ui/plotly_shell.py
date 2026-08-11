@@ -285,6 +285,7 @@ def interactive_plot_shell_html() -> str:
             }});
             applyInFlight = false;
             flushPendingSelection();
+            try {{ Plotly.Plots.resize(gd); }} catch (_rz) {{}}
           }}).finally(function() {{
             applyInFlight = false;
             setTimeout(function() {{ suppressPlotDeselect = false; }}, 200);
@@ -293,6 +294,16 @@ def interactive_plot_shell_html() -> str:
           console.error('molmanager Plotly embed failed:', e);
         }}
       }};
+      function resizePlot() {{
+        try {{
+          if (gd && gd.data) Plotly.Plots.resize(gd);
+        }} catch (_r) {{}}
+      }}
+      var resizeTimer = null;
+      window.addEventListener('resize', function() {{
+        if (resizeTimer) clearTimeout(resizeTimer);
+        resizeTimer = setTimeout(resizePlot, 50);
+      }});
     }})();
   </script>
 </body>
