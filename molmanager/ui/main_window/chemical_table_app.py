@@ -31,7 +31,6 @@ from PyQt5.QtWidgets import (
     QLabel,
     QLineEdit,
     QMainWindow,
-    QMenu,
     QPushButton,
     QScrollArea,
     QSizePolicy,
@@ -1065,6 +1064,17 @@ class ChemicalTableApp(
         corner = QWidget(mb)
         corner_ly = QHBoxLayout(corner)
         corner_ly.setContentsMargins(0, 0, 4, 0)
+
+        btn_layout = QToolButton(corner)
+        btn_layout.setText("Layout")
+        btn_layout.setToolTip("Choose how the table and plot panes are arranged.")
+        btn_layout.setToolButtonStyle(Qt.ToolButtonTextOnly)
+        btn_layout.setAutoRaise(True)
+        btn_layout.setFocusPolicy(Qt.NoFocus)
+        btn_layout.setFont(mb.font())
+        btn_layout.clicked.connect(self.open_workspace_layout_picker)
+        corner_ly.addWidget(btn_layout)
+
         btn_guide = QToolButton(corner)
         btn_guide.setText("User Guide")
         btn_guide.setToolTip("Open the MolManager user guide (F1).")
@@ -1074,27 +1084,6 @@ class ChemicalTableApp(
         btn_guide.setFont(mb.font())
         btn_guide.clicked.connect(self._act_user_guide.trigger)
         corner_ly.addWidget(btn_guide)
-
-        from .workspace_layout import LAYOUT_PRESETS
-
-        btn_layout = QToolButton(corner)
-        btn_layout.setText("Layout")
-        btn_layout.setToolTip("Choose how the table and plot panes are arranged.")
-        btn_layout.setPopupMode(QToolButton.InstantPopup)
-        btn_layout.setToolButtonStyle(Qt.ToolButtonTextOnly)
-        btn_layout.setAutoRaise(True)
-        btn_layout.setFocusPolicy(Qt.NoFocus)
-        btn_layout.setFont(mb.font())
-        layout_menu = QMenu(btn_layout)
-        for layout_id, label in LAYOUT_PRESETS:
-            act = QAction(label, self)
-            act.setData(layout_id)
-            act.triggered.connect(
-                lambda _checked=False, lid=layout_id: self.apply_workspace_layout(lid)
-            )
-            layout_menu.addAction(act)
-        btn_layout.setMenu(layout_menu)
-        corner_ly.addWidget(btn_layout)
 
         btn_proc = QToolButton(corner)
         btn_proc.setText("Processes")
@@ -1106,6 +1095,16 @@ class ChemicalTableApp(
         btn_proc.clicked.connect(self.open_processes_dialog)
         corner_ly.addWidget(btn_proc)
         mb.setCornerWidget(corner, Qt.TopRightCorner)
+
+    def open_workspace_layout_picker(self) -> None:
+        """Show the graphic layout picker and apply the chosen preset."""
+        from ..dialogs.workspace_layout_picker import WorkspaceLayoutPickerDialog
+
+        mgr = getattr(self, "_workspace_layout", None)
+        current = mgr.layout_id if mgr is not None else None
+        dlg = WorkspaceLayoutPickerDialog(self, current_layout_id=current)
+        dlg.layout_chosen.connect(self.apply_workspace_layout)
+        dlg.exec_()
 
     def apply_workspace_layout(self, layout_id: str) -> None:
         """Apply a workspace layout preset and undock plots that no longer fit."""

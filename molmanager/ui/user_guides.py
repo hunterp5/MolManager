@@ -276,6 +276,7 @@ and the plotter (including radar charts).</li>
 </ul>
 <h3>Top-right buttons</h3>
 <ul>
+<li><b>Layout</b> — opens a window of layout diagrams; click one to arrange the table and plot panes.</li>
 <li><b>User Guide</b> — opens this help window (<b>F1</b>).</li>
 <li><b>Processes</b> — lists running and queued background jobs; shows elapsed time and lets you cancel.</li>
 </ul>

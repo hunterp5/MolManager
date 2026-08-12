@@ -29,12 +29,14 @@ from PyQt5.QtWidgets import QApplication, QWidget
 THEME_LIGHT = "light"
 THEME_DARK = "dark"
 THEME_GROOVY = "groovy"
-THEME_CUSTOM = "custom"
+THEME_CUSTOM = "custom"  # legacy single custom id; migrated to named themes
+THEME_CUSTOM_PREFIX = "custom:"
 
 _SETTINGS_ORG = "MolManager"
 _SETTINGS_APP = "MolManager"
 _SETTINGS_KEY_THEME = "gui/theme"
-_SETTINGS_KEY_CUSTOM_PALETTE = "gui/custom_palette"
+_SETTINGS_KEY_CUSTOM_PALETTE = "gui/custom_palette"  # legacy single palette
+_SETTINGS_KEY_CUSTOM_THEMES = "gui/custom_themes"
 _SETTINGS_KEY_TABLE_FONT_PT = "gui/table_font_pt"
 _SETTINGS_KEY_APP_FONT_PT = "gui/app_font_pt"
 
@@ -127,14 +129,45 @@ def apply_application_font_pt(pt: int) -> int:
     return pt
 
 
+def is_custom_theme_id(theme: str | None) -> bool:
+    raw = str(theme or "").strip()
+    return raw.lower() == THEME_CUSTOM or raw.startswith(THEME_CUSTOM_PREFIX)
+
+
+def custom_theme_display_name(theme_id: str) -> str:
+    raw = str(theme_id or "").strip()
+    if raw.startswith(THEME_CUSTOM_PREFIX):
+        return raw[len(THEME_CUSTOM_PREFIX) :].strip() or "Custom"
+    if raw.lower() == THEME_CUSTOM:
+        return "Custom"
+    return raw
+
+
+def make_custom_theme_id(name: str) -> str:
+    cleaned = " ".join(str(name or "").split()).strip()
+    if not cleaned:
+        cleaned = "Custom"
+    return f"{THEME_CUSTOM_PREFIX}{cleaned}"
+
+
 def _normalize_theme_name(theme: str | None) -> str:
-    raw = str(theme or "").strip().lower().replace("-", "_")
-    if raw in ("dark", "dark_mode"):
+    raw = str(theme or "").strip()
+    if raw.startswith(THEME_CUSTOM_PREFIX):
+        name = custom_theme_display_name(raw)
+        return make_custom_theme_id(name)
+    low = raw.lower().replace("-", "_")
+    if low in ("dark", "dark_mode"):
         return THEME_DARK
-    if raw in ("groovy", "groovy_mode", "psychedelic"):
+    if low in ("groovy", "groovy_mode", "psychedelic"):
         return THEME_GROOVY
-    if raw in ("custom", "custom_mode"):
-        return THEME_CUSTOM
+    if low in ("custom", "custom_mode"):
+        # Legacy single custom → named theme if present, else light.
+        themes = list_custom_theme_names()
+        if "Custom" in themes:
+            return make_custom_theme_id("Custom")
+        if themes:
+            return make_custom_theme_id(themes[0])
+        return THEME_LIGHT
     return THEME_LIGHT
 
 
@@ -143,7 +176,12 @@ def load_saved_theme_name() -> str:
     settings = QSettings(_SETTINGS_ORG, _SETTINGS_APP)
     if not settings.contains(_SETTINGS_KEY_THEME):
         return THEME_LIGHT
-    return _normalize_theme_name(str(settings.value(_SETTINGS_KEY_THEME) or ""))
+    name = _normalize_theme_name(str(settings.value(_SETTINGS_KEY_THEME) or ""))
+    if is_custom_theme_id(name):
+        display = custom_theme_display_name(name)
+        if display not in list_custom_theme_names():
+            return THEME_LIGHT
+    return name
 
 
 def save_theme_name(theme: str) -> None:
@@ -160,10 +198,25 @@ def default_custom_palette_colors() -> dict[str, str]:
     return out
 
 
-def load_saved_custom_palette_colors() -> dict[str, str]:
-    """Saved Custom theme colors merged onto the light defaults."""
+def _normalize_palette_colors(colors: dict | None) -> dict[str, str]:
     base = default_custom_palette_colors()
+    if not isinstance(colors, dict):
+        return base
+    for key, _label, _role in CUSTOM_PALETTE_ROLES:
+        val = colors.get(key)
+        if not isinstance(val, str):
+            continue
+        c = QColor(val)
+        if c.isValid():
+            base[key] = c.name()
+    return base
+
+
+def _load_legacy_custom_palette_dict() -> dict[str, str] | None:
+    """Parse the legacy single-palette QSettings key, or None if unset/invalid."""
     settings = QSettings(_SETTINGS_ORG, _SETTINGS_APP)
+    if not settings.contains(_SETTINGS_KEY_CUSTOM_PALETTE):
+        return None
     raw = settings.value(_SETTINGS_KEY_CUSTOM_PALETTE, "")
     data: dict | None = None
     if isinstance(raw, dict):
@@ -178,27 +231,94 @@ def load_saved_custom_palette_colors() -> dict[str, str]:
             if isinstance(parsed, dict):
                 data = parsed
     if not data:
-        return base
-    for key, _label, _role in CUSTOM_PALETTE_ROLES:
-        val = data.get(key)
-        if not isinstance(val, str):
-            continue
-        c = QColor(val)
-        if c.isValid():
-            base[key] = c.name()
-    return base
+        return None
+    return _normalize_palette_colors(data)
+
+
+def _read_custom_themes_raw() -> dict[str, dict[str, str]]:
+    settings = QSettings(_SETTINGS_ORG, _SETTINGS_APP)
+    raw = settings.value(_SETTINGS_KEY_CUSTOM_THEMES, "")
+    data: dict | None = None
+    if isinstance(raw, dict):
+        data = raw
+    else:
+        text = str(raw or "").strip()
+        if text:
+            try:
+                parsed = json.loads(text)
+            except (TypeError, ValueError, json.JSONDecodeError):
+                parsed = None
+            if isinstance(parsed, dict):
+                data = parsed
+    out: dict[str, dict[str, str]] = {}
+    if data:
+        for name, colors in data.items():
+            label = " ".join(str(name or "").split()).strip()
+            if not label:
+                continue
+            out[label] = _normalize_palette_colors(colors if isinstance(colors, dict) else None)
+    return out
+
+
+def _write_custom_themes_raw(themes: dict[str, dict[str, str]]) -> None:
+    payload = {name: _normalize_palette_colors(colors) for name, colors in themes.items()}
+    QSettings(_SETTINGS_ORG, _SETTINGS_APP).setValue(
+        _SETTINGS_KEY_CUSTOM_THEMES,
+        json.dumps(payload, separators=(",", ":"), sort_keys=True),
+    )
+
+
+def list_custom_theme_names() -> list[str]:
+    """Sorted display names of saved custom themes."""
+    return sorted(_read_custom_themes_raw().keys(), key=lambda s: s.casefold())
+
+
+def load_custom_theme_colors(name_or_id: str) -> dict[str, str]:
+    """Colors for a named custom theme (defaults if missing)."""
+    name = custom_theme_display_name(name_or_id)
+    themes = _read_custom_themes_raw()
+    if name in themes:
+        return dict(themes[name])
+    return default_custom_palette_colors()
+
+
+def save_custom_theme(name: str, colors: dict[str, str]) -> str:
+    """Save/overwrite a named custom theme; returns the display name used."""
+    cleaned = " ".join(str(name or "").split()).strip() or "Custom"
+    themes = _read_custom_themes_raw()
+    themes[cleaned] = _normalize_palette_colors(colors)
+    _write_custom_themes_raw(themes)
+    return cleaned
+
+
+def delete_custom_theme(name: str) -> bool:
+    """Remove a named custom theme. Returns True if it existed."""
+    cleaned = " ".join(str(name or "").split()).strip()
+    themes = _read_custom_themes_raw()
+    if cleaned not in themes:
+        return False
+    del themes[cleaned]
+    _write_custom_themes_raw(themes)
+    return True
+
+
+def load_saved_custom_palette_colors() -> dict[str, str]:
+    """Preferred named custom palette, else legacy single palette / light defaults."""
+    themes = _read_custom_themes_raw()
+    if themes:
+        if "Custom" in themes:
+            return dict(themes["Custom"])
+        first = sorted(themes.keys(), key=lambda s: s.casefold())[0]
+        return dict(themes[first])
+    legacy = _load_legacy_custom_palette_dict()
+    if legacy is not None:
+        return legacy
+    return default_custom_palette_colors()
 
 
 def save_custom_palette_colors(colors: dict[str, str]) -> dict[str, str]:
-    """Persist Custom theme colors; returns the normalized saved mapping."""
-    base = default_custom_palette_colors()
-    for key, _label, _role in CUSTOM_PALETTE_ROLES:
-        val = colors.get(key)
-        if not isinstance(val, str):
-            continue
-        c = QColor(val)
-        if c.isValid():
-            base[key] = c.name()
+    """Persist colors to the legacy single-palette key (does not add a menu theme)."""
+    base = _normalize_palette_colors(colors)
     QSettings(_SETTINGS_ORG, _SETTINGS_APP).setValue(
         _SETTINGS_KEY_CUSTOM_PALETTE,
         json.dumps(base, separators=(",", ":"), sort_keys=True),
@@ -381,7 +501,17 @@ def filter_card_stylesheet(theme: str | None = None) -> str:
 
 def _light_palette() -> QPalette:
     """Fusion default palette (light mode)."""
-    return QApplication.style().standardPalette()
+    app = QApplication.instance()
+    if app is not None:
+        style = app.style()
+        if style is not None:
+            return style.standardPalette()
+    from PyQt5.QtWidgets import QStyleFactory
+
+    fusion = QStyleFactory.create("Fusion")
+    if fusion is not None:
+        return fusion.standardPalette()
+    return QPalette()
 
 
 def _dark_palette() -> QPalette:
@@ -485,8 +615,8 @@ def palette_for_theme(theme: str, *, rng: random.Random | None = None) -> QPalet
         return _dark_palette()
     if name == THEME_GROOVY:
         return _groovy_palette(rng)
-    if name == THEME_CUSTOM:
-        return _custom_palette(load_saved_custom_palette_colors())
+    if is_custom_theme_id(name):
+        return _custom_palette(load_custom_theme_colors(name))
     return _light_palette()
 
 

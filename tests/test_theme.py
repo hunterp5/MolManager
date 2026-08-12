@@ -22,23 +22,33 @@ from molmanager.ui.theme import (
     THEME_GROOVY,
     THEME_LIGHT,
     current_theme_name,
+    delete_custom_theme,
     filter_card_stylesheet,
+    list_custom_theme_names,
+    load_custom_theme_colors,
     load_saved_custom_palette_colors,
     load_saved_theme_name,
+    make_custom_theme_id,
     palette_for_theme,
     save_custom_palette_colors,
+    save_custom_theme,
     save_theme_name,
 )
 
 
-def test_theme_save_and_load(tmp_path, monkeypatch):
-    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
-    # No saved preference → light.
+def _isolate_theme_settings(tmp_path, monkeypatch) -> None:
+    """Point theme QSettings at a temp INI so tests do not touch the real profile."""
     from PyQt5.QtCore import QSettings
 
-    from molmanager.ui.theme import _SETTINGS_APP, _SETTINGS_KEY_THEME, _SETTINGS_ORG
+    ini = str(tmp_path / "molmanager_theme_test.ini")
+    monkeypatch.setattr(
+        "molmanager.ui.theme.QSettings",
+        lambda *_a, **_k: QSettings(ini, QSettings.IniFormat),
+    )
 
-    QSettings(_SETTINGS_ORG, _SETTINGS_APP).remove(_SETTINGS_KEY_THEME)
+
+def test_theme_save_and_load(tmp_path, monkeypatch):
+    _isolate_theme_settings(tmp_path, monkeypatch)
     assert load_saved_theme_name() == THEME_LIGHT
     save_theme_name(THEME_DARK)
     assert load_saved_theme_name() == THEME_DARK
@@ -46,8 +56,14 @@ def test_theme_save_and_load(tmp_path, monkeypatch):
     assert load_saved_theme_name() == THEME_LIGHT
     save_theme_name(THEME_GROOVY)
     assert load_saved_theme_name() == THEME_GROOVY
+    # Legacy "custom" with no named themes falls back to light.
     save_theme_name(THEME_CUSTOM)
-    assert load_saved_theme_name() == THEME_CUSTOM
+    assert load_saved_theme_name() == THEME_LIGHT
+    save_custom_theme("Ocean", {"window": "#112233"})
+    save_theme_name(THEME_CUSTOM)
+    assert load_saved_theme_name() == make_custom_theme_id("Ocean")
+    save_theme_name(make_custom_theme_id("Ocean"))
+    assert load_saved_theme_name() == make_custom_theme_id("Ocean")
 
 
 def test_filter_card_stylesheet_uses_palette_roles():
@@ -61,7 +77,8 @@ def test_filter_card_stylesheet_uses_palette_roles():
     assert filter_card_stylesheet(THEME_GROOVY) == filter_card_stylesheet(THEME_LIGHT)
 
 
-def test_apply_application_theme_sets_current(qapp):
+def test_apply_application_theme_sets_current(qapp, tmp_path, monkeypatch):
+    _isolate_theme_settings(tmp_path, monkeypatch)
     from PyQt5.QtWidgets import QApplication
 
     from molmanager.ui.theme import apply_application_theme
@@ -72,25 +89,22 @@ def test_apply_application_theme_sets_current(qapp):
     assert current_theme_name() == THEME_LIGHT
     apply_application_theme(QApplication.instance(), THEME_GROOVY)
     assert current_theme_name() == THEME_GROOVY
-    apply_application_theme(QApplication.instance(), THEME_CUSTOM)
-    assert current_theme_name() == THEME_CUSTOM
+    name = save_custom_theme("ApplyMe", {"window": "#445566"})
+    tid = make_custom_theme_id(name)
+    apply_application_theme(QApplication.instance(), tid)
+    assert current_theme_name() == tid
 
 
 def test_custom_palette_save_load_and_apply(qapp, tmp_path, monkeypatch):
-    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+    _isolate_theme_settings(tmp_path, monkeypatch)
     from PyQt5.QtGui import QPalette
     from PyQt5.QtWidgets import QApplication
 
     from molmanager.ui.theme import (
-        _SETTINGS_APP,
-        _SETTINGS_KEY_CUSTOM_PALETTE,
-        _SETTINGS_ORG,
         apply_application_theme,
         default_custom_palette_colors,
     )
-    from PyQt5.QtCore import QSettings
 
-    QSettings(_SETTINGS_ORG, _SETTINGS_APP).remove(_SETTINGS_KEY_CUSTOM_PALETTE)
     defaults = default_custom_palette_colors()
     assert "window" in defaults and defaults["window"].startswith("#")
     custom = dict(defaults)
@@ -101,20 +115,46 @@ def test_custom_palette_save_load_and_apply(qapp, tmp_path, monkeypatch):
     loaded = load_saved_custom_palette_colors()
     assert loaded["window"].lower() == "#112233"
     assert loaded["highlight"].lower() == "#aabbcc"
-    pal = palette_for_theme(THEME_CUSTOM)
+    # Legacy save must not invent a named menu theme.
+    assert list_custom_theme_names() == []
+    tid = make_custom_theme_id("Mine")
+    save_custom_theme("Mine", saved)
+    pal = palette_for_theme(tid)
     assert pal.color(QPalette.Window).name().lower() == "#112233"
-    apply_application_theme(QApplication.instance(), THEME_CUSTOM)
-    assert current_theme_name() == THEME_CUSTOM
+    apply_application_theme(QApplication.instance(), tid)
+    assert current_theme_name() == tid
     assert QApplication.instance().palette().color(QPalette.Window).name().lower() == "#112233"
 
 
-def test_both_themes_use_fusion_without_global_stylesheet(qapp):
+def test_named_custom_themes_save_switch_delete(tmp_path, monkeypatch):
+    _isolate_theme_settings(tmp_path, monkeypatch)
+
+    a = save_custom_theme("Alpha", {"window": "#111111"})
+    b = save_custom_theme("Beta", {"window": "#222222"})
+    assert list_custom_theme_names() == ["Alpha", "Beta"]
+    assert load_custom_theme_colors("Alpha")["window"].lower() == "#111111"
+    assert load_custom_theme_colors(make_custom_theme_id("Beta"))["window"].lower() == "#222222"
+    save_theme_name(make_custom_theme_id(a))
+    assert load_saved_theme_name() == make_custom_theme_id("Alpha")
+    assert delete_custom_theme(b) is True
+    assert list_custom_theme_names() == ["Alpha"]
+    assert delete_custom_theme("Missing") is False
+
+
+def test_both_themes_use_fusion_without_global_stylesheet(qapp, tmp_path, monkeypatch):
+    _isolate_theme_settings(tmp_path, monkeypatch)
     from PyQt5.QtWidgets import QApplication
 
     from molmanager.ui.theme import apply_application_theme
 
     app = QApplication.instance()
-    for theme in (THEME_LIGHT, THEME_DARK, THEME_GROOVY, THEME_CUSTOM):
+    save_custom_theme("FusionCustom", {"window": "#abcdef"})
+    for theme in (
+        THEME_LIGHT,
+        THEME_DARK,
+        THEME_GROOVY,
+        make_custom_theme_id("FusionCustom"),
+    ):
         apply_application_theme(app, theme)
         assert app.style().objectName().lower() == "fusion"
         assert app.styleSheet() == ""
