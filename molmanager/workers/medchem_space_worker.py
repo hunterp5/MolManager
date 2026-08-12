@@ -18,9 +18,25 @@
 
 from __future__ import annotations
 
+from PyQt5 import sip
 from PyQt5.QtCore import QObject, QRunnable, pyqtSignal
 
 from ..medchem_space import MedChemRowSnapshot, MedChemSpaceBuildResult, build_medchem_space_result
+
+
+def _safe_emit(obj, emitter_name: str, *args) -> None:
+    """Emit if the signals QObject still exists (avoids close/dock races)."""
+    if obj is None:
+        return
+    try:
+        if sip.isdeleted(obj):
+            return
+    except Exception:
+        return
+    try:
+        getattr(obj, emitter_name).emit(*args)
+    except RuntimeError:
+        pass
 
 
 class MedChemSpaceSignals(QObject):
@@ -50,6 +66,6 @@ class MedChemSpaceWorker(QRunnable):
                 progress_state=self.params.get("progress_state"),
                 progress_label=str(self.params.get("progress_label") or "Medchem plot"),
             )
-            self.signals.finished.emit(result)
+            _safe_emit(self.signals, "finished", result)
         except Exception as exc:
-            self.signals.failed.emit(str(exc) or exc.__class__.__name__)
+            _safe_emit(self.signals, "failed", str(exc) or exc.__class__.__name__)

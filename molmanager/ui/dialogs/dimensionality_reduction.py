@@ -21,7 +21,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any
 
 import pandas as pd
-from PyQt5.QtCore import QEvent, Qt
+from PyQt5.QtCore import QEvent, Qt, QTimer
 from PyQt5.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -42,6 +42,11 @@ from PyQt5.QtWidgets import (
 )
 from rdkit import Chem
 
+from ..dockable_plot import (
+    hide_plot_options_dialog,
+    make_plot_options_dialog,
+    show_plot_options_dialog,
+)
 from ...dimensionality_reduction import DimensionReductionResult, is_fingerprint_bitcount_column
 from ...workers import SIMILARITY_FP_TYPE_LABELS
 from ...workers.dimensionality_reduction import DimensionReductionSignals, DimensionReductionWorker
@@ -95,7 +100,7 @@ class DimensionReductionPanel(QWidget):
         plot_ly.setContentsMargins(0, 0, 0, 0)
         if _HAS_WEB and parent is not None:
             self._plot_view = PlotlyInteractiveView(parent, plot_host)
-            self._plot_view.setMinimumHeight(280)
+            self._plot_view.setMinimumHeight(420)
             plot_ly.addWidget(self._plot_view, 1)
             self._plot_placeholder = None
         else:
@@ -199,7 +204,12 @@ class DimensionReductionPanel(QWidget):
         opts.addWidget(QLabel("Results"))
         opts.addWidget(self.summary_text)
 
-        root.addWidget(self._opts_panel)
+        self._opts_dialog = make_plot_options_dialog(
+            self,
+            self._opts_panel,
+            min_width=640,
+            min_height=480,
+        )
 
         foot = QHBoxLayout()
         foot.setContentsMargins(0, 4, 0, 0)
@@ -219,10 +229,10 @@ class DimensionReductionPanel(QWidget):
         )
         self._close_plot_btn.clicked.connect(self._close_docked_plot)
         foot.addWidget(self._close_plot_btn)
-        self._opts_toggle_btn = QPushButton("Hide Options")
-        self._opts_toggle_btn.setToolTip("Show or hide feature/method options under the plot.")
-        self._opts_toggle_btn.clicked.connect(self._toggle_opts_panel)
-        foot.addWidget(self._opts_toggle_btn)
+        self._opts_btn = QPushButton("Plot Options")
+        self._opts_btn.setToolTip("Configure features, method parameters, and color options.")
+        self._opts_btn.clicked.connect(self._open_plot_options)
+        foot.addWidget(self._opts_btn)
         foot.addStretch(1)
         self._clear_sel_btn = QPushButton("Clear Selection")
         self._clear_sel_btn.setToolTip("Clear the current table and plot selection.")
@@ -232,8 +242,8 @@ class DimensionReductionPanel(QWidget):
 
         host = parent if parent is not None else self
         self._signals = DimensionReductionSignals(host)
-        self._signals.finished.connect(self._on_finished)
-        self._signals.failed.connect(self._on_failed)
+        self._signals.finished.connect(self._on_finished, Qt.QueuedConnection)
+        self._signals.failed.connect(self._on_failed, Qt.QueuedConnection)
 
         self._refresh_structure_sources()
         self._reload_columns()
@@ -242,11 +252,9 @@ class DimensionReductionPanel(QWidget):
         self._sync_footer_chrome()
         self.setMinimumWidth(self.embedded_minimum_width())
 
-    def _toggle_opts_panel(self) -> None:
-        """Show or hide the feature/method options so the plot can fill the panel."""
-        show = not self._opts_panel.isVisible()
-        self._opts_panel.setVisible(show)
-        self._opts_toggle_btn.setText("Hide Options" if show else "Show Options")
+    def _open_plot_options(self) -> None:
+        """Open the feature/method configuration dialog."""
+        show_plot_options_dialog(self._opts_dialog)
 
     def _clear_selection(self) -> None:
         """Clear table and plot point selection."""
@@ -272,18 +280,23 @@ class DimensionReductionPanel(QWidget):
 
     def _send_to_new_window(self) -> None:
         if self.parent_app is not None:
-            self.parent_app.undock_plot_to_window()
+            self.parent_app.undock_plot_to_window(self)
 
     def _close_docked_plot(self) -> None:
         if self.parent_app is not None:
-            self.parent_app.close_docked_plot()
+            self.parent_app.close_docked_plot(self)
 
     def _is_docked_in_main_window(self) -> bool:
         app = self.parent_app
-        return app is not None and getattr(app, "_docked_plot_widget", None) is self
+        if app is None:
+            return False
+        check = getattr(app, "is_plot_docked", None)
+        if callable(check):
+            return bool(check(self))
+        return getattr(app, "_docked_plot_widget", None) is self
 
     def _sync_footer_chrome(self) -> None:
-        """Floating: Add to Main. Docked: Send/Close. Hide Options + Clear Selection always."""
+        """Floating: Add to Main. Docked: Send/Close. Clear Selection always."""
         floating = isinstance(self.window(), DimensionReductionDialog)
         docked = self._is_docked_in_main_window()
         self._add_to_main_btn.setVisible(floating)
@@ -296,11 +309,11 @@ class DimensionReductionPanel(QWidget):
         return super().event(event)
 
     def embedded_minimum_width(self) -> int:
-        """Width needed so feature/color controls and the plot stay usable when docked."""
-        return 600
+        """Minimum dock width for the figure (options open in a separate dialog)."""
+        return 420
 
     def embedded_preferred_width(self) -> int:
-        return max(self.embedded_minimum_width(), 720)
+        return max(self.embedded_minimum_width(), 640)
 
     def create_floating_dialog(self, parent_app: ChemicalTableApp) -> QDialog:
         """Re-open this panel in a floating window after undocking from the main table."""
@@ -482,14 +495,6 @@ class DimensionReductionPanel(QWidget):
                 "\u201cSelected Rows Only\u201d is checked but nothing is selected.",
             )
             return
-        try:
-            df, oids = self._scoped_dataframe_and_oids()
-        except Exception as exc:
-            QMessageBox.warning(self, self._window_title, str(exc))
-            return
-        if df.empty:
-            QMessageBox.information(self, self._window_title, "No rows in the current scope.")
-            return
         if not features and not use_fp:
             QMessageBox.warning(
                 self,
@@ -509,11 +514,53 @@ class DimensionReductionPanel(QWidget):
         color_col = self.color_combo.currentText()
         if color_col == "(none)":
             color_col = None
+
+        # Close options and report status before any heavy prep so the UI stays responsive.
+        hide_plot_options_dialog(self._opts_dialog)
+        self._job_running = True
+        self.run_btn.setEnabled(False)
+        self.summary_text.setPlainText("Computing…")
+        self.parent_app.status_label.setText(f"{self._window_title}: preparing…")
+
+        prep = {
+            "use_fp": use_fp,
+            "features": features,
+            "only_sel": only_sel,
+            "color_col": color_col,
+            "struct_src": self.struct_src_combo.currentText() if use_fp else None,
+            "method_params": dict(self._method_params()),
+            "standardize": self.standardize_cb.isChecked(),
+            "fingerprint": self.fp_combo.currentText() if use_fp else None,
+        }
+        QTimer.singleShot(0, lambda p=prep: self._launch_dimred_job(p))
+
+    def _launch_dimred_job(self, prep: dict) -> None:
+        """Build inputs then start the background worker (after options dialog has closed)."""
+        if self.parent_app is None or not self._job_running:
+            return
+        use_fp = bool(prep.get("use_fp"))
+        features = list(prep.get("features") or [])
+        only_sel = bool(prep.get("only_sel"))
+        color_col = prep.get("color_col")
+        try:
+            df, oids = self._scoped_dataframe_and_oids()
+        except Exception as exc:
+            self._reset_dimred_job_ui()
+            QMessageBox.warning(self, self._window_title, str(exc))
+            return
+        if df.empty:
+            self._reset_dimred_job_ui()
+            QMessageBox.information(self, self._window_title, "No rows in the current scope.")
+            return
         mol_rows = None
         if use_fp:
-            src = self.struct_src_combo.currentText()
+            src = str(prep.get("struct_src") or "")
+            self.parent_app.status_label.setText(
+                f"{self._window_title}: collecting structures…"
+            )
             mol_rows = self._collect_table_mols(src, only_sel)
             if len(mol_rows) < 2 and not features:
+                self._reset_dimred_job_ui()
                 QMessageBox.information(
                     self,
                     self._window_title,
@@ -527,14 +574,11 @@ class DimensionReductionPanel(QWidget):
             "feature_columns": features,
             "use_fingerprints": use_fp,
             "mol_rows": mol_rows,
-            "fingerprint": self.fp_combo.currentText() if use_fp else None,
-            "standardize": self.standardize_cb.isChecked(),
+            "fingerprint": prep.get("fingerprint"),
+            "standardize": bool(prep.get("standardize", True)),
             "color_column": color_col,
-            **self._method_params(),
+            **dict(prep.get("method_params") or {}),
         }
-        self._job_running = True
-        self.run_btn.setEnabled(False)
-        self.summary_text.setPlainText("Computing…")
         import threading
 
         from ..background_jobs import register_background_job
@@ -547,8 +591,19 @@ class DimensionReductionPanel(QWidget):
             f"{self._window_title}…",
             cancel=self._bg_cancel_event.set,
         )
+        n = len(oids)
+        self.parent_app.status_label.setText(
+            f"{self._window_title}: computing in background ({n:,} row(s))…"
+        )
         worker = DimensionReductionWorker(params, self._signals, cancel_event=self._bg_cancel_event)
         self.parent_app.threadpool.start(worker)
+
+    def _reset_dimred_job_ui(self) -> None:
+        self._clear_dimred_background_job()
+        self._job_running = False
+        self.run_btn.setEnabled(True)
+        if self.parent_app is not None:
+            self.parent_app.status_label.setText(f"{self._window_title}: ready.")
 
     def _clear_dimred_background_job(self) -> None:
         job_id = getattr(self, "_bg_job_id", None)
@@ -565,6 +620,8 @@ class DimensionReductionPanel(QWidget):
         self.summary_text.setPlainText(result.summary)
         self._last_result = result
         if self._plot_view is None:
+            if self.parent_app is not None:
+                self.parent_app.status_label.setText(f"{self._window_title}: done.")
             return
         color_col = self.color_combo.currentText()
         if color_col == "(none)":
@@ -604,6 +661,8 @@ class DimensionReductionPanel(QWidget):
                 self.parent_app.status_label.setText(f"{self._window_title}: cancelled.")
             return
         self.summary_text.setPlainText("")
+        if self.parent_app is not None:
+            self.parent_app.status_label.setText(f"{self._window_title}: failed.")
         QMessageBox.warning(self, self._window_title, message or "Computation failed.")
 
 
@@ -625,7 +684,7 @@ class DimensionReductionDialog(QDialog):
         self._only_selected_scope_prefix = self._panel._only_selected_scope_prefix
 
         self.setWindowTitle(panel._window_title)
-        self.resize(920, 780)
+        self.resize(900, 900)
 
         root = QVBoxLayout(self)
         root.addWidget(self._panel, 1)

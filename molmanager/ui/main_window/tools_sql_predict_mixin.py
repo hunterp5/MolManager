@@ -207,17 +207,7 @@ class ToolsSqlPredictMixin:
     def open_plot(self):
         if not self.headers:
             return
-        w = getattr(self, "_docked_plot_widget", None)
-        if w is not None:
-            try:
-                self.show_docked_plot_panel()
-                self._sync_dialog_only_selected_scope(w)
-                self._sync_active_plots_from_table_selection()
-                self.activateWindow()
-                self.raise_()
-                return
-            except RuntimeError:
-                self._docked_plot_widget = None
+        # Prefer opening a new floating plotter so multiple PlotWidgets can be docked.
         dlg = self._create_plot_dialog()
         self._register_plot_dialog(dlg)
         self._sync_dialog_only_selected_scope(dlg)

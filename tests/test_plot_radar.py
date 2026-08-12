@@ -40,9 +40,9 @@ def model(qapp):  # noqa: ARG001
     return CompoundTableModel(["ID_HIDDEN", "Structure", "SMILES", "MW"])
 
 
-def test_plotter_does_not_include_radar_type():
+def test_plotter_includes_radar_type():
     labels = [label for label, _ in PLOT_TYPE_CHOICES]
-    assert "Radar" not in labels
+    assert "Radar" in labels
 
 
 def test_normalize_radar_rows_scales_to_unit_interval():

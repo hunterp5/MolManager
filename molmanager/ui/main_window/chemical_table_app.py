@@ -31,10 +31,10 @@ from PyQt5.QtWidgets import (
     QLabel,
     QLineEdit,
     QMainWindow,
+    QMenu,
     QPushButton,
     QScrollArea,
     QSizePolicy,
-    QSplitter,
     QStackedWidget,
     QToolButton,
     QUndoStack,
@@ -230,7 +230,6 @@ class ChemicalTableApp(
         self._processing_batches = False
         self._last_batch_received = False
         self._plot_dialogs: list = []
-        self._docked_plot_widget = None
         self._selected_oids_override: frozenset[int] | None = None
         self._in_programmatic_table_selection = False
         self._table_selection_job_gen = 0
@@ -517,49 +516,12 @@ class ChemicalTableApp(
         table_area_lyt.setSpacing(4)
         table_area_lyt.addWidget(self._search_panel)
         table_area_lyt.addWidget(self._table_stack, 1)
-        self._plot_panel = QFrame()
-        self._plot_panel.setVisible(False)
-        from ..dockable_plot import PLOT_PANEL_BASE_MINIMUM_WIDTH
 
-        self._plot_panel.setMinimumWidth(PLOT_PANEL_BASE_MINIMUM_WIDTH)
-        plot_panel_lyt = QVBoxLayout(self._plot_panel)
-        plot_panel_lyt.setContentsMargins(0, 0, 0, 0)
-        plot_panel_lyt.setSpacing(2)
-        self._plot_panel_host = QWidget()
-        self._plot_panel_host.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
-        plot_panel_lyt.addWidget(self._plot_panel_host, 1)
-        self._plot_panel_bottom = QWidget()
-        plot_bottom = QHBoxLayout(self._plot_panel_bottom)
-        plot_bottom.setContentsMargins(0, 0, 0, 0)
-        plot_bottom.setSpacing(4)
-        self._btn_send_plot_window = QPushButton("Send to New Window")
-        self._btn_send_plot_window.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
-        self._btn_send_plot_window.setToolTip(
-            "Open the docked plot in a separate floating plotter window."
-        )
-        self._btn_send_plot_window.clicked.connect(self.undock_plot_to_window)
-        plot_bottom.addWidget(self._btn_send_plot_window)
-        self._btn_close_plot = QPushButton("Close Plot")
-        self._btn_close_plot.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
-        self._btn_close_plot.setToolTip(
-            "Close the docked plot and free the panel so another plot can be docked."
-        )
-        self._btn_close_plot.clicked.connect(self.close_docked_plot)
-        plot_bottom.addWidget(self._btn_close_plot)
-        plot_panel_lyt.addWidget(self._plot_panel_bottom)
-        self._plot_panel.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Expanding)
-        self._content_splitter = QSplitter(Qt.Horizontal)
-        self._content_splitter.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
-        self._content_splitter.setHandleWidth(6)
-        self._content_splitter.addWidget(self._table_area)
-        self._content_splitter.addWidget(self._plot_panel)
-        self._content_splitter.setStretchFactor(0, 1)
-        self._content_splitter.setStretchFactor(1, 0)
-        # Table must stay open; plot may collapse when the panel is hidden.
-        self._content_splitter.setCollapsible(0, False)
-        self._content_splitter.setCollapsible(1, True)
-        self._content_splitter.setSizes([1, 0])
-        content_h.addWidget(self._content_splitter, 1)
+        from .workspace_layout import WorkspaceLayoutManager
+
+        self._workspace_layout = WorkspaceLayoutManager(self._table_area, cw)
+        self._workspace_layout.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        content_h.addWidget(self._workspace_layout, 1)
         # Wide enough for filter cards and two-column bottom actions (avoids clipping).
         _filter_panel_w = 320
         self.f_panel = QFrame()
@@ -1068,30 +1030,14 @@ class ChemicalTableApp(
         data_menu.addAction(
             QAction("Golden Triangle plot…", self, triggered=self.open_golden_triangle_plot)
         )
-        act_radar = QAction("Radar Plot…", self, triggered=self.open_radar_plot)
-        act_radar.setToolTip(
-            "Compare compounds on up to six numeric properties (spider/radar chart)."
-        )
-        data_menu.addAction(act_radar)
 
         data_menu.addSeparator()
-        plot_menu = data_menu.addMenu("&Plotter")
-        plot_menu.setToolTipsVisible(True)
         act_plot = self._bind_hotkey(
             "data.plotter",
             QAction("&Plotter…", self, triggered=self.open_plot),
         )
         act_plot.setToolTip("Open the plotter or show the docked plot panel.")
-        plot_menu.addAction(act_plot)
-        self._act_toggle_plot_panel = self._bind_hotkey(
-            "data.toggle_plot_panel",
-            QAction("Toggle Panel", self, triggered=self.toggle_plot_panel),
-        )
-        self._act_toggle_plot_panel.setToolTip(
-            "Show or hide the plot panel docked beside the table (Ctrl+Shift+P)."
-        )
-        self.addAction(self._act_toggle_plot_panel)
-        plot_menu.addAction(self._act_toggle_plot_panel)
+        data_menu.addAction(act_plot)
 
         ext_menu = mb.addMenu("E&xternal")
         ext_menu.addAction(QAction("Connect to SQL database…", self, triggered=self.open_external_db))
@@ -1128,6 +1074,28 @@ class ChemicalTableApp(
         btn_guide.setFont(mb.font())
         btn_guide.clicked.connect(self._act_user_guide.trigger)
         corner_ly.addWidget(btn_guide)
+
+        from .workspace_layout import LAYOUT_PRESETS
+
+        btn_layout = QToolButton(corner)
+        btn_layout.setText("Layout")
+        btn_layout.setToolTip("Choose how the table and plot panes are arranged.")
+        btn_layout.setPopupMode(QToolButton.InstantPopup)
+        btn_layout.setToolButtonStyle(Qt.ToolButtonTextOnly)
+        btn_layout.setAutoRaise(True)
+        btn_layout.setFocusPolicy(Qt.NoFocus)
+        btn_layout.setFont(mb.font())
+        layout_menu = QMenu(btn_layout)
+        for layout_id, label in LAYOUT_PRESETS:
+            act = QAction(label, self)
+            act.setData(layout_id)
+            act.triggered.connect(
+                lambda _checked=False, lid=layout_id: self.apply_workspace_layout(lid)
+            )
+            layout_menu.addAction(act)
+        btn_layout.setMenu(layout_menu)
+        corner_ly.addWidget(btn_layout)
+
         btn_proc = QToolButton(corner)
         btn_proc.setText("Processes")
         btn_proc.setToolTip("View queued background jobs (conformers, descriptors, import, export, …).")
@@ -1138,6 +1106,16 @@ class ChemicalTableApp(
         btn_proc.clicked.connect(self.open_processes_dialog)
         corner_ly.addWidget(btn_proc)
         mb.setCornerWidget(corner, Qt.TopRightCorner)
+
+    def apply_workspace_layout(self, layout_id: str) -> None:
+        """Apply a workspace layout preset and undock plots that no longer fit."""
+        mgr = getattr(self, "_workspace_layout", None)
+        if mgr is None:
+            return
+        extras = mgr.apply_layout(layout_id, preserve_plots=True)
+        for w in extras:
+            self._float_released_plot_widget(w)
+        self.status_label.setText(f"Layout: {layout_id.replace('_', ' ')}.")
 
     def _on_processes_dialog_destroyed(self) -> None:
         self._processes_dialog = None

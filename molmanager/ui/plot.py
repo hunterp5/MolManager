@@ -38,6 +38,7 @@ PLOT_TYPE_LINE_2D = "line_2d"
 PLOT_TYPE_BOX = "box"
 PLOT_TYPE_VIOLIN = "violin"
 PLOT_TYPE_HEATMAP = "heatmap"
+PLOT_TYPE_RADAR = "radar"
 
 PLOT_TYPE_CHOICES: tuple[tuple[str, str], ...] = (
     ("Scatter/Histogram", PLOT_TYPE_SCATTER),
@@ -45,6 +46,7 @@ PLOT_TYPE_CHOICES: tuple[tuple[str, str], ...] = (
     ("Heatmap", PLOT_TYPE_HEATMAP),
     ("Box plot", PLOT_TYPE_BOX),
     ("Violin", PLOT_TYPE_VIOLIN),
+    ("Radar", PLOT_TYPE_RADAR),
 )
 
 import json
@@ -78,6 +80,7 @@ from PyQt5.QtWidgets import (
 )
 from plotly import graph_objects as go
 
+from .dockable_plot import make_plot_options_dialog, show_plot_options_dialog
 from ..plot_analysis import (
     FIT_NONE,
     FIT_TRUNCATED_GAUSSIAN,
@@ -98,6 +101,19 @@ from ..plot_color import (
 )
 from ..medchem_space import snapshot_scope_row_indices
 from ..plot_heatmap import build_heatmap_figure, oids_in_heatmap_cell, summarize_heatmap
+from ..plot_radar import (
+    MAX_RADAR_DISPLAY_ENTRIES,
+    MAX_RADAR_TRACES,
+    MAX_RADAR_VARIABLES,
+    MIN_RADAR_VARIABLES,
+    SPOKE_NONE,
+    build_radar_figure,
+    collect_radar_rows,
+    compute_radar_normalization_bounds,
+    filter_radar_rows_by_oids,
+    resolve_entry_row_oid,
+    summarize_radar,
+)
 from .plot_color_range_controls import PlotColorRangeControls
 from .plot_table_sync import (
     apply_table_selection_for_source_rows,
@@ -262,6 +278,10 @@ class _PlotBridge(QObject):
     def heatmapCellClicked(self, x_value: float, y_value: float) -> None:  # noqa: N802
         self._plot_widget._on_heatmap_cell_clicked(float(x_value), float(y_value))
 
+    @pyqtSlot(int)
+    def radarTraceClicked(self, trace_index: int) -> None:  # noqa: N802
+        self._plot_widget._on_radar_trace_clicked(int(trace_index))
+
 class PlotStatisticsPanel(QWidget):
     """Embedded statistics and curve-fit summary beside the plot options."""
 
@@ -314,10 +334,16 @@ class PlotWidget(QWidget):
         self._heat_oids: list[int] = []
         self._heat_x_edges: list[float] = []
         self._heat_y_edges: list[float] = []
+        self._radar_oids: list[int] = []
 
         root = QVBoxLayout(self)
         root.setContentsMargins(4, 4, 4, 4)
         root.setSpacing(4)
+
+        self._opts_panel = QWidget()
+        opts_root = QVBoxLayout(self._opts_panel)
+        opts_root.setContentsMargins(0, 0, 0, 0)
+        opts_root.setSpacing(6)
 
         self._type_row_host = QWidget()
         type_row = QHBoxLayout(self._type_row_host)
@@ -329,13 +355,13 @@ class PlotWidget(QWidget):
             self.plot_type_combo.addItem(label, key)
         self.plot_type_combo.setToolTip(
             "Scatter/Histogram: histogram when only X is set; 2D/3D scatter from axes. "
-            "Other types use a fixed chart style."
+            "Radar: compare 2–6 numeric spokes. Other types use a fixed chart style."
         )
         type_row.addWidget(self.plot_type_combo, 1)
-        root.addWidget(self._type_row_host)
+        opts_root.addWidget(self._type_row_host)
 
         self.web = QWebEngineView(self)
-        self.web.setMinimumHeight(220)
+        self.web.setMinimumHeight(420)
         self.web.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
 
         ctrl_wrap = QWidget(self)
@@ -474,7 +500,53 @@ class PlotWidget(QWidget):
         analysis_row.addStretch()
         axes_l.addLayout(analysis_row)
 
+        self._axes_group = gb_axes
         ctrl_root.addWidget(gb_axes)
+
+        self._radar_host = QWidget()
+        radar_ly = QVBoxLayout(self._radar_host)
+        radar_ly.setContentsMargins(0, 0, 0, 0)
+        radar_ly.setSpacing(6)
+        spokes_gb = QGroupBox("Spokes (numeric columns)")
+        spokes_ly = QVBoxLayout(spokes_gb)
+        spoke_row = QHBoxLayout()
+        spoke_row.setSpacing(6)
+        self.spoke_combos: list[QComboBox] = []
+        for i in range(MAX_RADAR_VARIABLES):
+            spoke_row.addWidget(QLabel(f"{i + 1}:"))
+            combo = QComboBox()
+            combo.setToolTip(f"Spoke {i + 1}: choose a numeric column, or {SPOKE_NONE}.")
+            combo.currentIndexChanged.connect(lambda _idx, n=i: self._on_radar_spoke_changed(n))
+            self.spoke_combos.append(combo)
+            spoke_row.addWidget(combo, 1)
+        spokes_ly.addLayout(spoke_row)
+        self.entry_edits: list[QLineEdit] = []
+        for row_start in (0, 3):
+            entries_row = QHBoxLayout()
+            entries_row.setSpacing(6)
+            for i in range(row_start, min(row_start + 3, MAX_RADAR_DISPLAY_ENTRIES)):
+                entries_row.addWidget(QLabel(f"Entry {i + 1}:"))
+                edit = QLineEdit()
+                edit.setPlaceholderText("Row ID")
+                edit.setToolTip(
+                    "OID or 1-based table row number. Leave empty to plot all rows in scope."
+                )
+                edit.textChanged.connect(self._schedule_plot)
+                self.entry_edits.append(edit)
+                entries_row.addWidget(edit, 1)
+            spokes_ly.addLayout(entries_row)
+        hint = QLabel(
+            f"Choose {MIN_RADAR_VARIABLES}–{MAX_RADAR_VARIABLES} different spoke columns. "
+            f"Type up to {MAX_RADAR_DISPLAY_ENTRIES} row IDs to plot only those entries; "
+            f"leave entry fields empty to plot every row in scope (up to {MAX_RADAR_TRACES:,}). "
+            "Spoke values are min–max normalized across all rows in scope before plotting. "
+            "Click a trace to select that row in the table."
+        )
+        hint.setWordWrap(True)
+        spokes_ly.addWidget(hint)
+        radar_ly.addWidget(spokes_gb)
+        self._radar_host.hide()
+        ctrl_root.addWidget(self._radar_host)
 
         self._controls_bottom = QSplitter(Qt.Horizontal)
         self._controls_bottom.setChildrenCollapsible(False)
@@ -488,15 +560,16 @@ class PlotWidget(QWidget):
         self._controls_bottom.setSizes(
             [PlotWidget._AXES_CONTROLS_MIN_WIDTH, PlotWidget._STATS_PANEL_MIN_WIDTH + 40]
         )
+        opts_root.addWidget(self._controls_bottom, 1)
 
-        self._plot_body_splitter = QSplitter(Qt.Vertical)
-        self._plot_body_splitter.setChildrenCollapsible(False)
-        self._plot_body_splitter.setHandleWidth(6)
-        self._plot_body_splitter.addWidget(self.web)
-        self._plot_body_splitter.addWidget(self._controls_bottom)
-        self._plot_body_splitter.setStretchFactor(0, 1)
-        self._plot_body_splitter.setStretchFactor(1, 0)
-        root.addWidget(self._plot_body_splitter, 1)
+        self._opts_dialog = make_plot_options_dialog(
+            self,
+            self._opts_panel,
+            min_width=720,
+            min_height=420,
+        )
+
+        root.addWidget(self.web, 1)
 
         foot = QHBoxLayout()
         foot.setContentsMargins(0, 4, 0, 0)
@@ -520,10 +593,10 @@ class PlotWidget(QWidget):
         )
         self._close_plot_btn.clicked.connect(self._close_docked_plot)
         foot.addWidget(self._close_plot_btn)
-        self._opts_toggle_btn = QPushButton("Hide Options")
-        self._opts_toggle_btn.setToolTip("Show or hide plot type, axes, and statistics controls.")
-        self._opts_toggle_btn.clicked.connect(self._toggle_opts_panel)
-        foot.addWidget(self._opts_toggle_btn)
+        self._opts_btn = QPushButton("Plot Options")
+        self._opts_btn.setToolTip("Configure plot type, axes, color, fit, and statistics.")
+        self._opts_btn.clicked.connect(self._open_plot_options)
+        foot.addWidget(self._opts_btn)
         foot.addStretch(1)
         root.addLayout(foot)
         self._sync_footer_chrome()
@@ -552,6 +625,7 @@ class PlotWidget(QWidget):
 
         self._load_plot_shell()
         self._reload_color_columns()
+        self._refresh_radar_spoke_columns()
         self._on_axis_change()
         if parent_app is not None:
             model = parent_app._table_model
@@ -563,12 +637,9 @@ class PlotWidget(QWidget):
             model.columnsRemoved.connect(self._on_table_columns_changed)
             model.headerDataChanged.connect(self._on_table_header_data_changed)
 
-    def _toggle_opts_panel(self) -> None:
-        """Show or hide plot type, axes/options, and statistics under the figure."""
-        show = not self._type_row_host.isVisible()
-        self._type_row_host.setVisible(show)
-        self._controls_bottom.setVisible(show)
-        self._opts_toggle_btn.setText("Hide Options" if show else "Show Options")
+    def _open_plot_options(self) -> None:
+        """Open the plot configuration dialog (axes, color, fit, statistics)."""
+        show_plot_options_dialog(self._opts_dialog)
 
     def _add_to_main_window(self) -> None:
         if self.parent_app is None:
@@ -586,15 +657,20 @@ class PlotWidget(QWidget):
 
     def _send_to_new_window(self) -> None:
         if self.parent_app is not None:
-            self.parent_app.undock_plot_to_window()
+            self.parent_app.undock_plot_to_window(self)
 
     def _close_docked_plot(self) -> None:
         if self.parent_app is not None:
-            self.parent_app.close_docked_plot()
+            self.parent_app.close_docked_plot(self)
 
     def _is_docked_in_main_window(self) -> bool:
         app = self.parent_app
-        return app is not None and getattr(app, "_docked_plot_widget", None) is self
+        if app is None:
+            return False
+        check = getattr(app, "is_plot_docked", None)
+        if callable(check):
+            return bool(check(self))
+        return getattr(app, "_docked_plot_widget", None) is self
 
     def _sync_footer_chrome(self) -> None:
         floating = isinstance(self.window(), PlotDialog)
@@ -613,16 +689,11 @@ class PlotWidget(QWidget):
         return PlotDialog(parent_app, plot_widget=self)
 
     def embedded_minimum_width(self) -> int:
-        """Width needed so axes + statistics controls do not overlap when docked."""
-        return (
-            self._AXES_CONTROLS_MIN_WIDTH
-            + self._STATS_PANEL_MIN_WIDTH
-            + 6  # bottom splitter handle
-            + 8  # root horizontal margins
-        )
+        """Minimum dock width for the figure (options open in a separate dialog)."""
+        return 420
 
     def embedded_preferred_width(self) -> int:
-        return max(self.embedded_minimum_width(), 840)
+        return max(self.embedded_minimum_width(), 640)
 
     def _on_table_rows_changed(self, *_args) -> None:
         """Refresh plot when rows are added or removed."""
@@ -647,7 +718,7 @@ class PlotWidget(QWidget):
             self.refresh_axis_columns()
 
     def refresh_axis_columns(self) -> None:
-        """Sync X/Y/Z column lists with the table (e.g. after add/remove/rename or new numeric columns)."""
+        """Sync X/Y/Z and radar spoke column lists with the table."""
         if self.parent_app is None:
             return
         cols = self._numeric_column_names()
@@ -659,7 +730,76 @@ class PlotWidget(QWidget):
         self._set_axis_combo_items(self.z_combo, cols, previous=z_prev, allow_none=True)
         self._prev_range_axis = {"x": "", "y": "", "z": ""}
         self._reload_color_columns()
+        self._refresh_radar_spoke_columns()
         self._on_axis_change()
+
+    def _refresh_radar_spoke_columns(self) -> None:
+        """Sync radar spoke dropdowns when table columns change."""
+        if self.parent_app is None or not self.spoke_combos:
+            return
+        cols = self._numeric_column_names()
+        previous = [c.currentText() for c in self.spoke_combos]
+        for combo, prev in zip(self.spoke_combos, previous):
+            combo.blockSignals(True)
+            try:
+                combo.clear()
+                combo.addItem(SPOKE_NONE)
+                for col in cols:
+                    combo.addItem(col)
+                idx = combo.findText(prev)
+                combo.setCurrentIndex(idx if idx >= 0 else 0)
+            finally:
+                combo.blockSignals(False)
+
+    def _selected_radar_spoke_columns(self) -> list[str]:
+        cols: list[str] = []
+        for combo in self.spoke_combos:
+            text = combo.currentText()
+            if text and text != SPOKE_NONE:
+                cols.append(text)
+        return cols
+
+    def _on_radar_spoke_changed(self, spoke_index: int) -> None:
+        combo = self.spoke_combos[spoke_index]
+        chosen = combo.currentText()
+        if chosen and chosen != SPOKE_NONE:
+            for i, other in enumerate(self.spoke_combos):
+                if i != spoke_index and other.currentText() == chosen:
+                    combo.blockSignals(True)
+                    try:
+                        combo.setCurrentIndex(0)
+                    finally:
+                        combo.blockSignals(False)
+                    QMessageBox.information(
+                        self,
+                        "Radar Plot",
+                        f'Column "{chosen}" is already assigned to another spoke.',
+                    )
+                    return
+        self._schedule_plot()
+
+    def _selected_radar_entry_oids(self) -> tuple[list[int] | None, list[str]]:
+        """Return (oids to plot, or None for all rows) and invalid ID strings entered."""
+        if self.parent_app is None:
+            return None, []
+        model = self.parent_app._table_model
+        oids: list[int] = []
+        invalid: list[str] = []
+        for edit in self.entry_edits:
+            text = edit.text().strip()
+            if not text:
+                continue
+            oid = resolve_entry_row_oid(
+                text,
+                model=model,
+                row_for_oid=self.parent_app.get_row_by_id,
+            )
+            if oid is None:
+                invalid.append(text)
+                continue
+            if oid not in oids:
+                oids.append(oid)
+        return (oids or None), invalid
 
     def _reload_color_columns(self) -> None:
         prev = self.color_combo.currentText()
@@ -725,7 +865,7 @@ class PlotWidget(QWidget):
 
     def _analysis_supports_fit(self) -> bool:
         ptype = self._current_plot_type()
-        if ptype in (PLOT_TYPE_HEATMAP, PLOT_TYPE_BOX, PLOT_TYPE_VIOLIN):
+        if ptype in (PLOT_TYPE_HEATMAP, PLOT_TYPE_BOX, PLOT_TYPE_VIOLIN, PLOT_TYPE_RADAR):
             return False
         if ptype == PLOT_TYPE_LINE_2D:
             return True
@@ -857,7 +997,7 @@ class PlotWidget(QWidget):
 
     def _color_by_supported(self) -> bool:
         ptype = self._current_plot_type()
-        if ptype in (PLOT_TYPE_HEATMAP, PLOT_TYPE_BOX, PLOT_TYPE_VIOLIN):
+        if ptype in (PLOT_TYPE_HEATMAP, PLOT_TYPE_BOX, PLOT_TYPE_VIOLIN, PLOT_TYPE_RADAR):
             return False
         if ptype == PLOT_TYPE_LINE_2D:
             return True
@@ -1036,7 +1176,7 @@ class PlotWidget(QWidget):
             return True
         if ptype == PLOT_TYPE_HEATMAP:
             return False
-        if ptype in (PLOT_TYPE_BOX, PLOT_TYPE_VIOLIN):
+        if ptype in (PLOT_TYPE_BOX, PLOT_TYPE_VIOLIN, PLOT_TYPE_RADAR):
             return False
         return mode in ("2D", "3D", "Histogram")
 
@@ -1298,6 +1438,11 @@ class PlotWidget(QWidget):
             return "Choose X and Y columns for the line chart."
         if ptype == PLOT_TYPE_HEATMAP:
             return "Choose X and Y columns for the heatmap."
+        if ptype == PLOT_TYPE_RADAR:
+            return (
+                f"Choose {MIN_RADAR_VARIABLES}–{MAX_RADAR_VARIABLES} numeric spokes "
+                "in Plot Options."
+            )
         return "Choose axes for the current plot type."
 
     def plot(self):
@@ -1308,6 +1453,8 @@ class PlotWidget(QWidget):
             self._plot_line_2d()
         elif ptype == PLOT_TYPE_HEATMAP:
             self._plot_heatmap()
+        elif ptype == PLOT_TYPE_RADAR:
+            self._plot_radar()
         else:
             mode = self._effective_plot_mode()
             if mode is None:
@@ -1591,6 +1738,108 @@ class PlotWidget(QWidget):
         self._push_plotly_figure(fig)
         self.parent_app.status_label.setText(f"Histogram: {len(vals):,} value(s) in {xname!r}.")
 
+    def _radar_scope_allowed_oids(self) -> set[int] | None:
+        if self.parent_app is None:
+            return None
+        n_sel = len(self.parent_app._selected_logical_rows())
+        if n_sel > 0 and self.only_selected_cb.isChecked():
+            return self.parent_app._selected_oids_set()
+        return None
+
+    def _plot_radar(self) -> None:
+        self._clear_heatmap_state()
+        self._hist_edges = []
+        self._hist_vals = []
+        self._hist_oids = []
+        columns = self._selected_radar_spoke_columns()
+        if len(columns) < MIN_RADAR_VARIABLES:
+            self._radar_oids = []
+            self._plotted_oids = []
+            self._selected_point_indices = set()
+            self._render_empty_plot(self._empty_plot_hint())
+            return
+        if self.parent_app is None:
+            return
+
+        row_indices = list(self._plot_source_row_indices())
+        oids, raw_rows = collect_radar_rows(
+            self.parent_app._table_model,
+            list(self.parent_app.headers),
+            columns,
+            allowed_oids=self._radar_scope_allowed_oids(),
+            row_indices=row_indices,
+        )
+        rows = [[float(v) for v in row] for row in raw_rows]
+        if not rows:
+            self._radar_oids = []
+            self._plotted_oids = []
+            self._selected_point_indices = set()
+            self._stats_panel.set_lines(["No statistics for the current plot."])
+            self._render_empty_plot("No rows with numeric values in all selected spokes.")
+            self.parent_app.status_label.setText(
+                "Radar Plot: no rows with numeric values in all selected spokes."
+            )
+            return
+
+        norm_mins, norm_maxs = compute_radar_normalization_bounds(rows)
+        display_oids, invalid_ids = self._selected_radar_entry_oids()
+        if invalid_ids:
+            self.parent_app.status_label.setText(
+                "Radar Plot: unknown row ID(s): " + ", ".join(invalid_ids)
+            )
+        total_in_scope = len(oids)
+        if display_oids is not None:
+            oids, rows = filter_radar_rows_by_oids(oids, rows, display_oids)
+            if not rows:
+                self._radar_oids = []
+                self._plotted_oids = []
+                self._selected_point_indices = set()
+                self._stats_panel.set_lines(["No statistics for the current plot."])
+                self._render_empty_plot("Entered row IDs have no data for the current spokes.")
+                if not invalid_ids:
+                    self.parent_app.status_label.setText(
+                        "Radar Plot: entered row IDs have no data for the current spokes."
+                    )
+                return
+        elif total_in_scope > MAX_RADAR_TRACES:
+            oids = oids[:MAX_RADAR_TRACES]
+            rows = rows[:MAX_RADAR_TRACES]
+
+        self._radar_oids = list(oids)
+        self._plotted_oids = list(oids)
+        self._selected_point_indices = set()
+        fig = build_radar_figure(
+            columns,
+            oids,
+            rows,
+            norm_mins=norm_mins,
+            norm_maxs=norm_maxs,
+        )
+        self._present_analysis_panel(summarize_radar(columns, rows, oids=oids), None)
+        self._push_plotly_figure(fig)
+        msg = f"Radar Plot: {len(rows):,} row(s), {len(columns)} spoke(s) (normalized)."
+        if display_oids is None and total_in_scope > len(rows):
+            msg = (
+                f"Radar Plot: showing first {MAX_RADAR_TRACES:,} of "
+                f"{total_in_scope:,} rows (normalized)."
+            )
+        if not invalid_ids:
+            self.parent_app.status_label.setText(msg)
+
+    def _on_radar_trace_clicked(self, trace_index: int) -> None:
+        if trace_index < 0 or trace_index >= len(self._radar_oids):
+            return
+        if self.parent_app is None:
+            return
+        oid = int(self._radar_oids[trace_index])
+        row = self.parent_app.get_row_by_id(oid)
+        if row < 0:
+            return
+        apply_table_selection_for_source_rows(self.parent_app, [row])
+        self.parent_app.status_label.setText(
+            f"Radar Plot: selected row {row + 1:,} (OID {oid})."
+        )
+
     def _clear_heatmap_state(self) -> None:
         self._heat_x = []
         self._heat_y = []
@@ -1772,6 +2021,13 @@ class PlotWidget(QWidget):
 
     def _on_axis_change(self):
         ptype = self._current_plot_type()
+        radar = ptype == PLOT_TYPE_RADAR
+        self._axes_group.setVisible(not radar)
+        self._radar_host.setVisible(radar)
+        if radar:
+            self._update_color_controls()
+            self._schedule_plot()
+            return
         if ptype == PLOT_TYPE_SCATTER:
             self._x_axis_row.setVisible(True)
             self._y_axis_row.setVisible(True)
@@ -1826,7 +2082,7 @@ class PlotDialog(QDialog):
         super().__init__(parent_app)
         self.parent_app = parent_app
         self.setWindowTitle("Plot Data")
-        self.resize(980, 720)
+        self.resize(960, 900)
 
         self._plot_widget = plot_widget if plot_widget is not None else PlotWidget(parent_app)
         self.only_selected_cb = self._plot_widget.only_selected_cb

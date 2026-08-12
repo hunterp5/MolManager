@@ -271,7 +271,7 @@ work continues.</p>
 <li><b>Tools</b> — prepare structures, calculate descriptors, fingerprints, clustering, pKa,
 protomers, docking, filters, search, calculator, and sketcher.</li>
 <li><b>Data</b> — analyze the table, PCA / t-SNE / UMAP / SOM, medchem plots (BOILED-Egg, Golden Triangle),
-radar chart, and the plotter.</li>
+and the plotter (including radar charts).</li>
 <li><b>External</b> — SQL databases, PubChem, ChEMBL, and patent chemistry (SureChEMBL).</li>
 </ul>
 <h3>Top-right buttons</h3>
@@ -489,11 +489,9 @@ Download model weights with <code>python scripts/bootstrap_gnn_mtl_model.py</cod
     "tools_viz": """
 <h2>Plots, calculator, and sketcher</h2>
 <h3>Plotter (Data → Plotter)</h3>
-<p>Scatter, histogram, line, heatmap, box, and violin plots from numeric columns. Uses <b>visible
-(filtered) rows</b>. Dock the panel beside the table (<b>Ctrl+Shift+P</b>). Plot selection can sync
-back to table row selection.</p>
-<h3>Radar Plot (Data → Radar Plot)</h3>
-<p>Compare 2–6 numeric properties on a spider chart for chosen rows or the full filtered set.</p>
+<p>Scatter, histogram, line, heatmap, box, violin, and radar plots from numeric columns. Uses <b>visible
+(filtered) rows</b>. Use <b>Add to Main Window</b> to dock beside the table. Plot selection can sync
+back to table row selection. Choose <b>Radar</b> under plot type to compare 2–6 numeric spokes.</p>
 <h3>Calculator (Tools → Calculator)</h3>
 <p>Build a numeric column from expressions like <code>sqrt([MW])</code> using column names in brackets.</p>
 <h3>Random (Tools → Random)</h3>

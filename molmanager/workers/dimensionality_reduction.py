@@ -23,6 +23,7 @@ from dataclasses import asdict
 
 import numpy as np
 import pandas as pd
+from PyQt5 import sip
 from PyQt5.QtCore import QObject, QRunnable, pyqtSignal
 
 from ..dimensionality_reduction import (
@@ -34,6 +35,21 @@ from ..dimensionality_reduction import (
     run_umap,
 )
 from ..feature_matrix import build_combined_feature_matrix, standardize_feature_matrix
+
+
+def _safe_emit(obj, emitter_name: str, *args) -> None:
+    """Emit if the signals QObject still exists (avoids close/dock races)."""
+    if obj is None:
+        return
+    try:
+        if sip.isdeleted(obj):
+            return
+    except Exception:
+        return
+    try:
+        getattr(obj, emitter_name).emit(*args)
+    except RuntimeError:
+        pass
 
 
 class DimensionReductionSignals(QObject):
@@ -58,16 +74,16 @@ class DimensionReductionWorker(QRunnable):
 
     def run(self) -> None:
         if self._cancelled():
-            self.signals.failed.emit("Cancelled.")
+            _safe_emit(self.signals, "failed", "Cancelled.")
             return
         try:
             result = _compute(self.params)
             if self._cancelled():
-                self.signals.failed.emit("Cancelled.")
+                _safe_emit(self.signals, "failed", "Cancelled.")
                 return
-            self.signals.finished.emit(result)
+            _safe_emit(self.signals, "finished", result)
         except Exception as exc:
-            self.signals.failed.emit(str(exc) or exc.__class__.__name__)
+            _safe_emit(self.signals, "failed", str(exc) or exc.__class__.__name__)
 
 
 def _compute(params: dict) -> DimensionReductionResult:

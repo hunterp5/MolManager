@@ -36,6 +36,7 @@ from PyQt5.QtWidgets import (
     QWidget,
 )
 
+from ..dockable_plot import make_plot_options_dialog, show_plot_options_dialog
 from ...config import load_config
 from ...plot_color import (
     PLOT_COLORSCALE_CHOICES,
@@ -116,7 +117,7 @@ class MedChemPlotPanel(QWidget):
         plot_ly.setContentsMargins(0, 0, 0, 0)
         if _HAS_WEB and parent_app is not None:
             self._plot_view = PlotlyInteractiveView(parent_app, plot_host)
-            self._plot_view.setMinimumHeight(280)
+            self._plot_view.setMinimumHeight(420)
             plot_ly.addWidget(self._plot_view, 1)
             self._plot_placeholder = None
         else:
@@ -182,7 +183,7 @@ class MedChemPlotPanel(QWidget):
         opts.addWidget(QLabel("Summary"))
         opts.addWidget(self.summary_text)
 
-        root.addWidget(self._opts_panel)
+        self._opts_dialog = make_plot_options_dialog(self, self._opts_panel)
 
         foot = QHBoxLayout()
         foot.setContentsMargins(0, 4, 0, 0)
@@ -202,10 +203,10 @@ class MedChemPlotPanel(QWidget):
         )
         self._close_plot_btn.clicked.connect(self._close_docked_plot)
         foot.addWidget(self._close_plot_btn)
-        self._opts_toggle_btn = QPushButton("Hide Options")
-        self._opts_toggle_btn.setToolTip("Show or hide plot options under the plot.")
-        self._opts_toggle_btn.clicked.connect(self._toggle_opts_panel)
-        foot.addWidget(self._opts_toggle_btn)
+        self._opts_btn = QPushButton("Plot Options")
+        self._opts_btn.setToolTip("Configure structure source, color, and summary options.")
+        self._opts_btn.clicked.connect(self._open_plot_options)
+        foot.addWidget(self._opts_btn)
         foot.addStretch(1)
         if plot_kind == "golden_triangle":
             self.select_region_btn = QPushButton("Select in triangle")
@@ -233,11 +234,11 @@ class MedChemPlotPanel(QWidget):
         QTimer.singleShot(0, self._start_refresh_job)
 
     def embedded_minimum_width(self) -> int:
-        """Width needed so Color-by controls do not overlap when docked."""
-        return 600
+        """Minimum dock width for the figure (options open in a separate dialog)."""
+        return 420
 
     def embedded_preferred_width(self) -> int:
-        return max(self.embedded_minimum_width(), 720)
+        return max(self.embedded_minimum_width(), 640)
 
     def create_floating_dialog(self, parent_app: ChemicalTableApp) -> MedChemSpaceDialog:
         """Re-open this panel in a floating window after undocking from the main table."""
@@ -255,11 +256,9 @@ class MedChemPlotPanel(QWidget):
         elif self.parent_app is not None:
             self.parent_app.clear_table_selection()
 
-    def _toggle_opts_panel(self) -> None:
-        """Show or hide Options/Summary so the plot can fill the panel."""
-        show = not self._opts_panel.isVisible()
-        self._opts_panel.setVisible(show)
-        self._opts_toggle_btn.setText("Hide Options" if show else "Show Options")
+    def _open_plot_options(self) -> None:
+        """Open the plot configuration dialog."""
+        show_plot_options_dialog(self._opts_dialog)
 
     def _add_to_main_window(self) -> None:
         """Dock this panel beside the compound table (from a floating dialog)."""
@@ -278,15 +277,20 @@ class MedChemPlotPanel(QWidget):
 
     def _send_to_new_window(self) -> None:
         if self.parent_app is not None:
-            self.parent_app.undock_plot_to_window()
+            self.parent_app.undock_plot_to_window(self)
 
     def _close_docked_plot(self) -> None:
         if self.parent_app is not None:
-            self.parent_app.close_docked_plot()
+            self.parent_app.close_docked_plot(self)
 
     def _is_docked_in_main_window(self) -> bool:
         app = self.parent_app
-        return app is not None and getattr(app, "_docked_plot_widget", None) is self
+        if app is None:
+            return False
+        check = getattr(app, "is_plot_docked", None)
+        if callable(check):
+            return bool(check(self))
+        return getattr(app, "_docked_plot_widget", None) is self
 
     def _sync_footer_chrome(self) -> None:
         """Floating: Add to Main. Docked: Send/Close. Region select + Clear Selection always."""
@@ -931,7 +935,7 @@ class MedChemSpaceDialog(QDialog):
         self._only_selected_scope_prefix = self._panel._only_selected_scope_prefix
 
         self.setWindowTitle(window_title)
-        self.resize(920, 680)
+        self.resize(900, 880)
 
         root = QVBoxLayout(self)
         root.addWidget(self._panel, 1)

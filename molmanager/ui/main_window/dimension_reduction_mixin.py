@@ -82,11 +82,6 @@ class DimensionReductionMixin:
                 return
             except (RuntimeError, AttributeError):
                 setattr(self, attr, None)
-        docked = getattr(self, "_docked_plot_widget", None)
-        if docked is not None and getattr(docked, "_method", None) == kind:
-            self.show_docked_plot_panel()
-            self._sync_dialog_only_selected_scope(docked)
-            return
         d = factory()
         setattr(self, attr, d)
         self._prepare_tool_dialog(d)

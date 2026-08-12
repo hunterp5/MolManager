@@ -18,12 +18,54 @@
 
 from __future__ import annotations
 
-from PyQt5.QtWidgets import QWidget
+from PyQt5.QtCore import Qt
+from PyQt5.QtWidgets import QDialog, QVBoxLayout, QWidget
 
 # Floor when no docked content is present (empty host / buttons only).
 PLOT_PANEL_BASE_MINIMUM_WIDTH = 420
-# Comfortable default when embedding a plotter with axes + statistics side-by-side.
-PLOT_PANEL_DEFAULT_WIDTH = 840
+# Comfortable default dock width for a plot figure (options live in a dialog).
+PLOT_PANEL_DEFAULT_WIDTH = 640
+
+
+def make_plot_options_dialog(
+    parent: QWidget,
+    content: QWidget,
+    *,
+    title: str = "Plot Options",
+    min_width: int = 520,
+    min_height: int = 360,
+) -> QDialog:
+    """Build a modeless dialog that hosts a plot's options panel."""
+    dlg = QDialog(parent)
+    dlg.setWindowTitle(title)
+    dlg.setModal(False)
+    dlg.setWindowModality(Qt.NonModal)
+    dlg.setAttribute(Qt.WA_DeleteOnClose, False)
+    dlg.setMinimumWidth(min_width)
+    dlg.setMinimumHeight(min_height)
+    root = QVBoxLayout(dlg)
+    root.setContentsMargins(8, 8, 8, 8)
+    root.addWidget(content, 1)
+    return dlg
+
+
+def show_plot_options_dialog(dialog: QDialog | None) -> None:
+    """Show and raise an existing plot-options dialog."""
+    if dialog is None:
+        return
+    dialog.show()
+    dialog.raise_()
+    dialog.activateWindow()
+
+
+def hide_plot_options_dialog(dialog: QDialog | None) -> None:
+    """Hide a plot-options dialog if it is open."""
+    if dialog is None:
+        return
+    try:
+        dialog.hide()
+    except RuntimeError:
+        pass
 
 
 def iter_plot_selection_views(root: QWidget | None) -> list:

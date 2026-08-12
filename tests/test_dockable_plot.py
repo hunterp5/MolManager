@@ -45,23 +45,24 @@ def test_plot_embedded_widths_fallback_without_widget():
     )
 
 
-def test_plot_widget_embedded_minimum_covers_axes_and_stats():
+def test_plot_widget_dock_width_is_figure_sized():
+    """Options live in a dialog, so docked width no longer needs axes+stats side-by-side."""
+    import inspect
+
     from molmanager.ui.plot import PlotWidget
 
-    expected_min = (
-        PlotWidget._AXES_CONTROLS_MIN_WIDTH
-        + PlotWidget._STATS_PANEL_MIN_WIDTH
-        + 6
-        + 8
-    )
     stub = type(
         "W",
         (),
         {
-            "embedded_minimum_width": lambda self: expected_min,
-            "embedded_preferred_width": lambda self: max(expected_min, 840),
+            "embedded_minimum_width": lambda self: 420,
+            "embedded_preferred_width": lambda self: 640,
         },
     )()
-    assert plot_embedded_minimum_width(stub) == expected_min
-    assert plot_embedded_preferred_width(stub) >= expected_min
-    assert expected_min >= PlotWidget._AXES_CONTROLS_MIN_WIDTH + PlotWidget._STATS_PANEL_MIN_WIDTH
+    assert plot_embedded_minimum_width(stub) == 420
+    assert plot_embedded_preferred_width(stub) == 640
+    min_src = inspect.getsource(PlotWidget.embedded_minimum_width)
+    pref_src = inspect.getsource(PlotWidget.embedded_preferred_width)
+    assert "420" in min_src
+    assert "640" in pref_src
+    assert "_AXES_CONTROLS_MIN_WIDTH" not in min_src

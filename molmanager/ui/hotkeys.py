@@ -61,7 +61,6 @@ HOTKEY_SPECS: tuple[HotkeySpec, ...] = (
     HotkeySpec("tools.fingerprint_similarity", "Fingerprint Similarity…", "Tools", ()),
     HotkeySpec("tools.render_2d", "Render 2D…", "Tools", ()),
     HotkeySpec("data.plotter", "Plotter…", "Data", ()),
-    HotkeySpec("data.toggle_plot_panel", "Toggle Plot Panel", "Data", ("Ctrl+Shift+P",)),
     HotkeySpec("data.cluster", "Cluster…", "Data", ()),
     HotkeySpec("data.analyze_table", "Analyze Table…", "Data", ()),
     HotkeySpec("help.user_guides", "User Guide", "User Guide", ("F1",)),
