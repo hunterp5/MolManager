@@ -537,8 +537,15 @@ class ChemicalTableApp(
         self.f_panel.setFixedWidth(_filter_panel_w)
         self.f_panel.setVisible(False)
         sb_lyt = QVBoxLayout(self.f_panel)
-        sb_lyt.setContentsMargins(5, 5, 5, 0)
+        # Left/right inset only: top/bottom 0 so cards and footer align with the table edges.
+        sb_lyt.setContentsMargins(5, 0, 5, 0)
         sb_lyt.setSpacing(5)
+
+        # When search is open above the table, pad so the first card lines up with the table top.
+        self._filter_table_top_pad = QWidget()
+        self._filter_table_top_pad.setFixedHeight(0)
+        self._filter_table_top_pad.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Fixed)
+        sb_lyt.addWidget(self._filter_table_top_pad)
 
         self._filter_cards_host = FilterCardsHost(on_reorder=self.reorder_filter_card)
         # Ignored horizontal policy: scroll viewport sets width (prevents cards wider than panel).

@@ -30,8 +30,9 @@ def test_package_version():
 def test_user_guides_html_contains_topics():
     from molmanager.ui.user_guides import guide_html
 
-    h = guide_html("pubchem")
-    assert "PubChem" in h and "Tanimoto Similarity" in h
+    h = guide_html("ext_pubchem")
+    assert "PubChem" in h
+    assert "Topic unavailable" not in h
 
 
 def test_user_guides_sections_cover_all_topics():
@@ -46,8 +47,9 @@ def test_user_guides_sections_cover_all_topics():
 def test_user_guides_data_viz_topic():
     from molmanager.ui.user_guides import guide_html
 
-    h = guide_html("data_viz")
-    assert "Principal Component" in h and "BOILED-Egg" in h
+    h = guide_html("data_pca")
+    assert "Principal" in h or "PCA" in h
+    assert "Topic unavailable" not in h
 
 
 def test_pubchem_similarity_results_sort_key():
@@ -97,8 +99,9 @@ def test_parse_molecule_from_cell_text_accepts_smiles_and_inchi():
 def test_smina_dock_guide_html(qapp):  # noqa: ARG001
     from molmanager.ui.user_guides import guide_html
 
-    h = guide_html("smina_dock")
+    h = guide_html("tools_smina")
     assert "Smina" in h and "PDBQT" in h
+    assert "Topic unavailable" not in h
 
 
 def test_smina_dock_dialog_constructible(qapp):  # noqa: ARG001

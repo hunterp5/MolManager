@@ -1,0 +1,41 @@
+# Golden Triangle
+
+Golden Triangle displays a medchem golden-triangle style plot to relate key properties associated with developability heuristics.
+
+## Goal
+
+See which molecules fall into a historically favored property region for oral small molecules.
+
+## When to use
+
+Use alongside other property plots when optimizing potency vs simple physicochemical limits.
+
+## Inputs / scope
+
+Requires the property/structure inputs the plot expects; scope via **Selected Rows Only** as needed.
+
+## Options
+
+- **Selected Rows Only**.
+- **Structure from**.
+- **Color by**, **Spectrum**, **Min** / **Max**.
+- **Summary**.
+- **Select in triangle**.
+- **Add to Main Window**, **Send to New Window**, **Close Plot**, **Plot Options**, **Clear Selection**.
+
+## Workflow
+
+1. Ensure descriptor columns used by the triangle exist.
+2. Open **Golden Triangle** and configure source/color.
+3. Review in-triangle vs outside compounds.
+4. **Select in triangle** to focus follow-up tools.
+
+## Use cases
+
+- Check whether potent hits still sit in a preferred property band.
+- Color by series/cluster inside the triangle.
+- Export in-triangle selection for discussion.
+
+## Tips and limits
+
+Heuristic guidance only - many successful drugs sit outside cartoon regions. Descriptor errors move points misleadingly. Use with MPO rather than as a hard gate alone.

@@ -144,6 +144,7 @@ class TableSearchMixin:
         self._search_rows_layout.removeWidget(row)
         row.setParent(None)
         row.deleteLater()
+        QTimer.singleShot(0, self._sync_filter_panel_scroll_content)
 
     def _add_search_criterion_row(self) -> SearchCriterionRow:
         is_first = not self._search_criterion_rows
@@ -163,6 +164,7 @@ class TableSearchMixin:
         self._populate_search_row_columns(row)
         if not is_first:
             row.query_edit.setFocus(Qt.ShortcutFocusReason)
+        QTimer.singleShot(0, self._sync_filter_panel_scroll_content)
         return row
 
     @staticmethod
@@ -212,6 +214,7 @@ class TableSearchMixin:
                 "Search: use Add for more columns; AND/OR between rows. "
                 "Within a row: & AND, | or comma OR. Press Enter to run."
             )
+        QTimer.singleShot(0, self._sync_filter_panel_scroll_content)
 
     def open_table_search_with_column(self, logical_col: int) -> None:
         """Show the search bar and pre-select a column (e.g. from the header context menu)."""
@@ -225,6 +228,7 @@ class TableSearchMixin:
         self._search_criterion_rows[0].query_edit.setFocus(Qt.ShortcutFocusReason)
         hname = self.headers[logical_col]
         self.status_label.setText(f'Search: column "{hname}" selected. Enter a query, then press Enter.')
+        QTimer.singleShot(0, self._sync_filter_panel_scroll_content)
 
     def _search_query_pattern_mol(self, text: str) -> Chem.Mol | None:
         """Parse one query string as a substructure pattern (SMARTS first, then SMILES)."""

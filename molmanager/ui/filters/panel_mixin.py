@@ -1022,6 +1022,7 @@ class FilterPanelMixin:
 
     def _sync_filter_panel_scroll_content(self) -> None:
         """Refresh scroll-area geometry after cards are added or the panel is shown."""
+        self._sync_filter_panel_table_top_align()
         scroll = getattr(self, "_filter_scroll", None)
         if scroll is None:
             return
@@ -1032,6 +1033,19 @@ class FilterPanelMixin:
         if host is not None:
             host.updateGeometry()
         scroll.updateGeometry()
+
+    def _sync_filter_panel_table_top_align(self) -> None:
+        """Keep the first filter card flush with the table top (below the search bar if open)."""
+        pad = getattr(self, "_filter_table_top_pad", None)
+        if pad is None:
+            return
+        search = getattr(self, "_search_panel", None)
+        if search is not None and search.isVisible():
+            # Match workspace_column: search height + spacing above the table/plots.
+            spacing = 4
+            pad.setFixedHeight(max(0, int(search.height()) + spacing))
+        else:
+            pad.setFixedHeight(0)
 
     def toggle_filter_panel(self) -> None:
         """Show or hide the filter panel and resync card width when opening."""

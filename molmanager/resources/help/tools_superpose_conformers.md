@@ -1,0 +1,41 @@
+# Superpose Conformers
+
+Superpose Conformers aligns conformers within a molecule for visual comparison using shared atoms and alignment options.
+
+## Goal
+
+Overlay conformers so shape differences are easier to see in 3D.
+
+## When to use
+
+Use after generating ensembles when you want a common frame for inspection.
+
+## Inputs / scope
+
+Molecules that already have multiple conformers available in the working context; scope controls which rows are processed.
+
+## Options
+
+- Reference / source selectors as presented.
+- **Heavy atoms only** - ignore hydrogens in alignment.
+- **Allow reflection** - enantiomeric overlay option when enabled.
+- **Max iterations** - alignment budget.
+- **Align on** / pattern options when shown.
+- **Selected Rows Only** - scope.
+
+## Workflow
+
+1. Generate or load multi-conformer molecules.
+2. Open **Superpose Conformers** and set alignment options.
+3. Run superposition on the scoped rows.
+4. Inspect overlays in the 3D viewer.
+
+## Use cases
+
+- Compare ring flip conformers of one ligand.
+- Prepare aligned ensembles for a slide.
+- Check whether RMS pruning left distinct poses.
+
+## Tips and limits
+
+Alignment quality depends on a common substructure. Flexible tails may still diverge after core overlay. This does not dock to a protein.

@@ -50,6 +50,7 @@ include = ["molmanager*"]
 molmanager = [
     "ui/static/*",
     "resources/README.md",
+    "resources/help/**/*.md",
     "resources/models/**/README.md",
     "resources/models/**/.gitkeep",
     "resources/bin/**/.gitkeep",
