@@ -224,3 +224,29 @@ def test_substructure_async_handoff_hides_rows(qapp, monkeypatch):  # noqa: ARG0
     assert _src_row_visible(w, 0) is True
     for r in range(1, 70):
         assert _src_row_visible(w, r) is False
+
+
+def test_substructure_async_without_smiles_column_uses_mols(qapp, monkeypatch):  # noqa: ARG001
+    """Async path must match via in-memory mols when no SMILES column exists (e.g. SDF)."""
+    monkeypatch.setenv("MOLMANAGER_SUBSTRUCTURE_ASYNC_ROWS", "64")
+    w = ChemicalTableApp()
+    w.headers = ["ID_HIDDEN", "Structure", "Name"]
+    w._table_model.set_headers(list(w.headers))
+    for i in range(70):
+        smi = "c1ccccc1" if i == 0 else "CC"
+        w._table_model.append_row(i, {"Name": f"mol{i}"})
+        w.mols[i] = Chem.MolFromSmiles(smi)
+    w.next_oid = 70
+    w.calculate_global_bounds()
+    targets = w._substructure_filter_targets()
+    assert len(targets) == 70
+    assert isinstance(targets[0][1], Chem.Mol)
+    card = SubstructureFilterCard()
+    card.set_smarts("c1ccccc1")
+    w.filters = [card]
+    w.apply_filters()
+    assert w.threadpool.waitForDone(120_000)
+    qapp.processEvents()
+    assert _src_row_visible(w, 0) is True
+    for r in range(1, 70):
+        assert _src_row_visible(w, r) is False

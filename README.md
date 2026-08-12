@@ -318,14 +318,6 @@ The Chemprop Python packages are in `requirements.txt`, but the **GNN-MTL model 
 python scripts/bootstrap_gnn_mtl_model.py
 ```
 
-### Boltz (optional)
-
-The Boltz Python package is not in `requirements.txt`. Install only if you need it:
-
-```bash
-pip install "boltz>=2.0.0"
-```
-
 ---
 
 ## Troubleshooting
@@ -408,7 +400,7 @@ python -m molmanager
 python -m pytest tests/ -v
 ```
 
-Editable install extras in `pyproject.toml` (`pka`, `boltz`, `permeability`, `dev`) mirror subsets of `requirements.txt` for `pip install -e ".[extra]"` workflows.
+Editable install extras in `pyproject.toml` (`pka`, `permeability`, `dev`) mirror subsets of `requirements.txt` for `pip install -e ".[extra]"` workflows.
 
 Packaging and installer builds: `docs/PACKAGING.md`.
 

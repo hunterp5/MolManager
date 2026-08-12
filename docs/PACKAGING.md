@@ -10,7 +10,6 @@ This document supports building an installer (PyInstaller, Inno Setup, MSI, etc.
 | Python dependencies | `pip install -r requirements.txt` then `pip install -e .` |
 | 3Dmol.js | Already in `molmanager/ui/static/` |
 | AutoDock Vina | **Optional** binary in `molmanager/resources/bin/<platform>/` (not redistributed in git) |
-| Boltz-2 CLI | **`pip install boltz`** (or bundled copy in `resources/bin/`) |
 
 ## Recommended install commands (source / CI)
 
@@ -35,14 +34,14 @@ bash scripts/install_pytorch_pka.sh
 Editable install with extras (optional; most deps are in `requirements.txt`):
 
 ```bash
-pip install -e ".[boltz]"
+pip install -e ".[pka,permeability,dev]"
 ```
 
 ## Bundling external tools
 
-1. Run `scripts\bootstrap_optional_tools.ps1` (Windows) or `scripts/bootstrap_optional_tools.sh` (Linux/macOS) to install Python extras and print where to place Vina/Boltz binaries.
-2. Copy `vina.exe` / `boltz.exe` into `molmanager/resources/bin/win/` (or set `MOLMANAGER_BUNDLE_DIR`).
-3. Tools → Dock (Vina) and Tools → Boltz-2 default to bundled paths when present.
+1. Run `scripts\bootstrap_optional_tools.ps1` (Windows) or `scripts/bootstrap_optional_tools.sh` (Linux/macOS) to install Python deps and print where to place Vina/Smina binaries.
+2. Copy `vina.exe` / `smina.exe` into `molmanager/resources/bin/win/` (or set `MOLMANAGER_BUNDLE_DIR`).
+3. Tools → Dock defaults to bundled paths when present.
 
 ## PyInstaller (starter)
 
@@ -56,8 +55,7 @@ pyinstaller packaging/molmanager.spec
 Output under `dist/molmanager/`. You still need to ship:
 
 - Qt platform plugins (PyInstaller usually collects these)
-- Optional `resources/bin/` for Vina
-- Boltz models/cache if users run Boltz offline (see Boltz docs)
+- Optional `resources/bin/` for Vina/Smina
 
 Tune `packaging/molmanager.spec` hidden imports as you enable more Tools menu features.
 

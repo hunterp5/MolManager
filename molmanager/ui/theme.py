@@ -371,15 +371,17 @@ def filter_panel_stylesheet() -> str:
 
 def filter_card_stylesheet(theme: str | None = None) -> str:
     """
-    Compact filter cards — palette-driven to match Fusion light/dark app chrome.
+    Filter entries flush in the side panel — palette-driven, no floated card chrome.
     """
     del theme
     h = _FC_CTRL_H
     return f"""
     QFrame#FilterCard {{
-        background-color: palette(base);
-        border: 1px solid palette(mid);
-        border-radius: 6px;
+        background-color: transparent;
+        border: none;
+        border-bottom: 1px solid palette(mid);
+        border-radius: 0px;
+        padding: 2px 0px 4px 0px;
     }}
     QFrame#FilterCard QLabel {{
         font-size: 11px;
@@ -403,8 +405,8 @@ def filter_card_stylesheet(theme: str | None = None) -> str:
         max-height: {h}px;
         font-size: 11px;
         border: 1px solid palette(mid);
-        border-radius: 4px;
-        padding: 0px 6px;
+        border-radius: 2px;
+        padding: 0px 4px;
         background-color: palette(base);
         color: palette(text);
         selection-background-color: palette(highlight);
@@ -429,13 +431,13 @@ def filter_card_stylesheet(theme: str | None = None) -> str:
         selection-color: palette(highlightedtext);
     }}
     QFrame#FilterCard QPushButton#fcToggle {{
-        padding: 0px 7px;
+        padding: 0px 6px;
         font-size: 10px;
         min-height: {h}px;
         max-height: {h}px;
         min-width: 44px;
         border: 1px solid palette(mid);
-        border-radius: 4px;
+        border-radius: 2px;
         background-color: palette(button);
         color: palette(buttontext);
     }}
@@ -453,22 +455,22 @@ def filter_card_stylesheet(theme: str | None = None) -> str:
         max-width: 18px;
         min-height: 18px;
         max-height: 18px;
-        color: palette(mid);
+        color: #c0392b;
         background-color: transparent;
         border: none;
-        border-radius: 4px;
+        border-radius: 2px;
         font-size: 15px;
         font-weight: bold;
         padding: 0px;
     }}
     QFrame#FilterCard QPushButton#fcRemove:hover {{
-        color: palette(link);
+        color: #e74c3c;
         background-color: palette(alternatebase);
     }}
     QFrame#FilterCard QSlider::groove:horizontal {{
         height: 3px;
         background: palette(mid);
-        border-radius: 2px;
+        border-radius: 1px;
     }}
     QFrame#FilterCard QSlider::handle:horizontal {{
         width: 10px;
@@ -484,7 +486,7 @@ def filter_card_stylesheet(theme: str | None = None) -> str:
     QFrame#FilterCard QListWidget {{
         font-size: 10px;
         border: 1px solid palette(mid);
-        border-radius: 4px;
+        border-radius: 2px;
         background-color: palette(base);
         color: palette(text);
         outline: 0;

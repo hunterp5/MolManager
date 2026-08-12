@@ -157,6 +157,7 @@ class SessionMixin:
                     {
                         "kind": "substructure",
                         "smarts": cfg.get("smarts", "") or "",
+                        "structure_source": cfg.get("structure_source", "Structure") or "Structure",
                         "enabled": cfg.get("enabled", True),
                         "inverted": cfg.get("inverted", False),
                     }
@@ -356,9 +357,14 @@ class SessionMixin:
         for spec in doc.get("filters") or []:
             kind = spec.get("kind")
             if kind == "substructure":
-                c = SubstructureFilterCard()
+                sources = ["Structure"]
+                get_srcs = getattr(self, "chemistry_tool_structure_sources", None)
+                if callable(get_srcs):
+                    sources = get_srcs() or sources
+                c = SubstructureFilterCard(structure_sources=sources)
                 self._append_filter_widget(c)
                 c.set_smarts(str(spec.get("smarts", "") or ""))
+                c.set_structure_source(str(spec.get("structure_source", "Structure") or "Structure"))
                 c.restore_filter_flags(bool(spec.get("enabled", True)), bool(spec.get("inverted", False)))
             elif kind == "range":
                 props = list(self.global_bounds.keys()) or ["SMILES"]

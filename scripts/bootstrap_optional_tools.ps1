@@ -22,11 +22,6 @@ if ($perm -match '^[yY]') {
     python scripts/bootstrap_gnn_mtl_model.py
 }
 
-$boltz = Read-Host "Install Boltz Python package? [y/N]"
-if ($boltz -match '^[yY]') {
-    python -m pip install "boltz>=2.0.0"
-}
-
 $binDir = Join-Path $Root "molmanager\resources\bin\win"
 Write-Host ""
 Write-Host "Optional executables (copy into):"

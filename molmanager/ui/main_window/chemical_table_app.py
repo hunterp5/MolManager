@@ -26,7 +26,6 @@ from PyQt5.QtWidgets import (
     QCheckBox,
     QComboBox,
     QFrame,
-    QGridLayout,
     QHBoxLayout,
     QLabel,
     QLineEdit,
@@ -521,7 +520,7 @@ class ChemicalTableApp(
         self._workspace_layout = WorkspaceLayoutManager(self._table_area, cw)
         self._workspace_layout.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         content_h.addWidget(self._workspace_layout, 1)
-        # Wide enough for filter cards and two-column bottom actions (avoids clipping).
+        # Wide enough for filter cards and footer actions (avoids clipping).
         _filter_panel_w = 320
         self.f_panel = QFrame()
         self.f_panel.setObjectName("FilterPanel")
@@ -536,53 +535,39 @@ class ChemicalTableApp(
         self._filter_cards_host.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Minimum)
         self.f_container = QVBoxLayout(self._filter_cards_host)
         self.f_container.setContentsMargins(0, 0, 0, 0)
-        self.f_container.setSpacing(6)
+        self.f_container.setSpacing(2)
         self.f_container.setAlignment(Qt.AlignTop)
         self._filter_scroll = _FilterCardsScrollArea(self._filter_cards_host)
         self._filter_scroll.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Expanding)
         sb_lyt.addWidget(self._filter_scroll, 1)
         QTimer.singleShot(0, self._sync_filter_panel_scroll_content)
 
-        panel_btns = QGridLayout()
+        panel_btns = QHBoxLayout()
         panel_btns.setSpacing(_FILTER_PANEL_BTN_SPACING)
         panel_btns.setContentsMargins(0, 0, 0, 0)
-        btn_slider = QPushButton("Add Slider")
-        btn_slider.setToolTip("Add a numeric range (slider) filter for the current table.")
-        btn_slider.clicked.connect(lambda: self.add_filter_card())
-        btn_text = QPushButton("Add Text")
-        btn_text.setToolTip("Add a text filter card.")
-        btn_text.clicked.connect(lambda: self.add_text_filter_card())
-        btn_cat = QPushButton("Add Category")
-        btn_cat.setToolTip("Add a category filter card.")
-        btn_cat.clicked.connect(lambda: self.add_category_filter_card())
-        btn_ss = QPushButton("Add Substructure")
-        btn_ss.setToolTip("Add a SMARTS substructure filter card.")
-        btn_ss.clicked.connect(lambda: self.add_substructure_filter_card())
-        btn_close_panel = QPushButton("Close Filters")
+        btn_add = QPushButton("+")
+        btn_add.setToolTip("Add a filter…")
+        btn_add.setFixedSize(_FILTER_PANEL_BTN_H, _FILTER_PANEL_BTN_H)
+        btn_add.clicked.connect(self.open_add_filter_dialog)
+        btn_close_panel = QPushButton("Close")
         btn_close_panel.setToolTip(
             "Hide the filter panel. Active filters keep affecting the table."
         )
         btn_close_panel.clicked.connect(self.close_filter_panel_keep_filters)
-        btn_disable_all = QPushButton("Disable Filters")
+        btn_enable_all = QPushButton("Enable All")
+        btn_enable_all.setToolTip("Turn on every filter card in this panel.")
+        btn_enable_all.clicked.connect(self.enable_all_filters_keep_panel)
+        btn_disable_all = QPushButton("Disable All")
         btn_disable_all.setToolTip(
             "Turn off every filter while keeping this panel open. Use On on each card to enable again."
         )
         btn_disable_all.clicked.connect(self.disable_all_filters_keep_panel)
-        for btn in (
-            btn_slider,
-            btn_text,
-            btn_cat,
-            btn_ss,
-            btn_close_panel,
-            btn_disable_all,
-        ):
+        for btn in (btn_close_panel, btn_enable_all, btn_disable_all):
             _configure_filter_panel_button(btn)
-        panel_btns.addWidget(btn_slider, 0, 0)
-        panel_btns.addWidget(btn_text, 0, 1)
-        panel_btns.addWidget(btn_cat, 1, 0)
-        panel_btns.addWidget(btn_ss, 1, 1)
-        panel_btns.addWidget(btn_close_panel, 2, 0)
-        panel_btns.addWidget(btn_disable_all, 2, 1)
+        panel_btns.addWidget(btn_add, 0)
+        panel_btns.addWidget(btn_close_panel, 1)
+        panel_btns.addWidget(btn_enable_all, 1)
+        panel_btns.addWidget(btn_disable_all, 1)
         sb_lyt.addLayout(panel_btns)
         content_h.addWidget(self.f_panel)
         main_v.addLayout(content_h, 1)
@@ -964,6 +949,9 @@ class ChemicalTableApp(
         act_cat.setToolTip("Add a categorical multi-select filter for a column.")
         filter_menu.addAction(act_cat)
         filter_menu.addSeparator()
+        act_enable_all_filters = QAction("Enable All Filters", self, triggered=self.enable_all_filters_keep_panel)
+        act_enable_all_filters.setToolTip("Turn on every filter card in the panel.")
+        filter_menu.addAction(act_enable_all_filters)
         act_disable_all_filters = QAction("Disable All Filters", self, triggered=self.disable_all_filters_keep_panel)
         act_disable_all_filters.setToolTip(
             "Turn off every filter card. Cards stay in the panel; use On on each card to enable again."
@@ -1049,13 +1037,12 @@ class ChemicalTableApp(
 
         self._act_user_guide = self._bind_hotkey(
             "help.user_guides",
-            QAction(self),
+            QAction("&Help", self),
         )
-        self._act_user_guide.setToolTip(
-            "Open the MolManager user guide (F1)."
-        )
+        self._act_user_guide.setToolTip("Open MolManager help (F1).")
         self._act_user_guide.triggered.connect(lambda: open_user_guide_dialog(self))
         self.addAction(self._act_user_guide)
+        mb.addAction(self._act_user_guide)
 
         # Native Windows menu bars can swallow clicks meant for the corner widget; use in-window bar.
         if sys.platform == "win32":
@@ -1074,16 +1061,6 @@ class ChemicalTableApp(
         btn_layout.setFont(mb.font())
         btn_layout.clicked.connect(self.open_workspace_layout_picker)
         corner_ly.addWidget(btn_layout)
-
-        btn_guide = QToolButton(corner)
-        btn_guide.setText("User Guide")
-        btn_guide.setToolTip("Open the MolManager user guide (F1).")
-        btn_guide.setToolButtonStyle(Qt.ToolButtonTextOnly)
-        btn_guide.setAutoRaise(True)
-        btn_guide.setFocusPolicy(Qt.NoFocus)
-        btn_guide.setFont(mb.font())
-        btn_guide.clicked.connect(self._act_user_guide.trigger)
-        corner_ly.addWidget(btn_guide)
 
         btn_proc = QToolButton(corner)
         btn_proc.setText("Processes")

@@ -598,6 +598,10 @@ class PlotWidget(QWidget):
         self._opts_btn.clicked.connect(self._open_plot_options)
         foot.addWidget(self._opts_btn)
         foot.addStretch(1)
+        self._clear_sel_btn = QPushButton("Clear Selection")
+        self._clear_sel_btn.setToolTip("Clear the current table and plot selection.")
+        self._clear_sel_btn.clicked.connect(self._on_clear_selection_clicked)
+        foot.addWidget(self._clear_sel_btn)
         root.addLayout(foot)
         self._sync_footer_chrome()
         self.setMinimumWidth(self.embedded_minimum_width())
@@ -673,11 +677,20 @@ class PlotWidget(QWidget):
         return getattr(app, "_docked_plot_widget", None) is self
 
     def _sync_footer_chrome(self) -> None:
+        """Floating: Add to Main. Docked: Send/Close. Clear Selection always."""
         floating = isinstance(self.window(), PlotDialog)
         docked = self._is_docked_in_main_window()
         self._add_to_main_btn.setVisible(floating)
         self._send_window_btn.setVisible(docked)
         self._close_plot_btn.setVisible(docked)
+
+    def _on_clear_selection_clicked(self) -> None:
+        """Clear table and plot point selection from the footer button."""
+        if self.parent_app is None:
+            return
+        self._clear_plot_table_selection(update_plot=True)
+        if hasattr(self.parent_app, "status_label"):
+            self.parent_app.status_label.setText("Plot: selection cleared.")
 
     def event(self, event):  # noqa: N802 — Qt API name
         if event.type() == QEvent.ParentChange:

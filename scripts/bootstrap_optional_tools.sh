@@ -19,11 +19,6 @@ if [[ "$perm" =~ ^[yY] ]]; then
   python scripts/bootstrap_gnn_mtl_model.py
 fi
 
-read -r -p "Install Boltz Python package? [y/N] " boltz
-if [[ "$boltz" =~ ^[yY] ]]; then
-  python -m pip install "boltz>=2.0.0"
-fi
-
 PLAT=linux
 [[ "$(uname -s)" == "Darwin" ]] && PLAT=mac
 BINDIR="$ROOT/molmanager/resources/bin/$PLAT"

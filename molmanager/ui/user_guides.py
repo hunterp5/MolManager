@@ -273,11 +273,12 @@ protomers, docking, filters, search, calculator, and sketcher.</li>
 <li><b>Data</b> — analyze the table, PCA / t-SNE / UMAP / SOM, medchem plots (BOILED-Egg, Golden Triangle),
 and the plotter (including radar charts).</li>
 <li><b>External</b> — SQL databases, PubChem, ChEMBL, and patent chemistry (SureChEMBL).</li>
+<li><b>Settings</b> — GUI theme, font size, and hotkeys.</li>
+<li><b>Help</b> — opens this help window (<b>F1</b>).</li>
 </ul>
 <h3>Top-right buttons</h3>
 <ul>
 <li><b>Layout</b> — opens a window of layout diagrams; click one to arrange the table and plot panes.</li>
-<li><b>User Guide</b> — opens this help window (<b>F1</b>).</li>
 <li><b>Processes</b> — lists running and queued background jobs; shows elapsed time and lets you cancel.</li>
 </ul>
 <div class="tip"><b>Tip:</b> Hover any menu item for a short description before you click it.</div>
@@ -362,13 +363,15 @@ do not match. Combine substructure, numeric slider, text, and category filters.<
     "tools_filter": """
 <h2>Filters and search</h2>
 <h3>Filter cards (Tools → Filter)</h3>
+<p>Open the filter panel, then use <b>+</b> next to <b>Close</b> to add a card:</p>
 <ul>
-<li><b>Add Substructure</b> — keep rows that match a SMARTS pattern on a structure column.</li>
-<li><b>Add Slider</b> — numeric range on a column.</li>
-<li><b>Add Text</b> — text contains or equals.</li>
-<li><b>Add Category</b> — choose from discrete values.</li>
+<li><b>Substructure</b> — keep rows that match a SMARTS pattern; choose a <b>Source</b>
+(Structure column or another structure-bearing column).</li>
+<li><b>Slider</b> — numeric range on a column.</li>
+<li><b>Text</b> — text contains or equals.</li>
+<li><b>Category</b> — choose from discrete values.</li>
 </ul>
-<p><b>Disable All Filters</b> turns cards off without deleting them.
+<p><b>Enable All</b> / <b>Disable All</b> turn cards on or off without deleting them.
 <b>Delete All Filters</b> removes every card.</p>
 <h3>Search panel (Tools → Search, <b>Ctrl+F</b>)</h3>
 <p>Search one or more columns. Add multiple criteria rows and choose <b>AND</b> or <b>OR</b> between them.</p>
@@ -492,7 +495,8 @@ Download model weights with <code>python scripts/bootstrap_gnn_mtl_model.py</cod
 <h3>Plotter (Data → Plotter)</h3>
 <p>Scatter, histogram, line, heatmap, box, violin, and radar plots from numeric columns. Uses <b>visible
 (filtered) rows</b>. Use <b>Add to Main Window</b> to dock beside the table. Plot selection can sync
-back to table row selection. Choose <b>Radar</b> under plot type to compare 2–6 numeric spokes.</p>
+back to table row selection; use <b>Clear Selection</b> on the plot footer to clear both.
+Choose <b>Radar</b> under plot type to compare 2–6 numeric spokes.</p>
 <h3>Calculator (Tools → Calculator)</h3>
 <p>Build a numeric column from expressions like <code>sqrt([MW])</code> using column names in brackets.</p>
 <h3>Random (Tools → Random)</h3>
@@ -657,7 +661,7 @@ def open_user_guide_dialog(parent: QWidget | None, guide_id: str = "overview") -
                 host._user_guide_dialog = None
 
     dlg = QDialog(parent)
-    dlg.setWindowTitle("MolManager — User Guide")
+    dlg.setWindowTitle("MolManager — Help")
     dlg.resize(900, 620)
     dlg.setModal(False)
     dlg.setWindowModality(Qt.NonModal)
@@ -708,9 +712,9 @@ def _show_guide_dialog(dlg: QDialog, guide_id: str) -> None:
         browser.setHtml(guide_html(guide_id, dlg.palette()))
     entry = guide_entry(guide_id)
     if entry is not None:
-        dlg.setWindowTitle(f"MolManager — User Guide: {entry.menu_label}")
+        dlg.setWindowTitle(f"MolManager — Help: {entry.menu_label}")
     else:
-        dlg.setWindowTitle("MolManager — User Guide")
+        dlg.setWindowTitle("MolManager — Help")
     if lst is not None:
         for i in range(lst.count()):
             it = lst.item(i)
