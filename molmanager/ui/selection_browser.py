@@ -174,7 +174,26 @@ class SelectionBrowserDialog(QDialog):
         def _schedule_refresh() -> None:
             self._auto_refresh_timer.start()
 
-        model.dataChanged.connect(_schedule_refresh)
+        def _on_data_changed(top_left, bottom_right, roles=()) -> None:
+            # Ignore structure-column paint while scrolling (same as plot replot filter).
+            structure_col = CompoundTableModel.STRUCTURE_COL
+            if (
+                top_left.isValid()
+                and bottom_right.isValid()
+                and top_left.column() == structure_col
+                and bottom_right.column() == structure_col
+            ):
+                paint_roles = {
+                    Qt.DecorationRole,
+                    Qt.SizeHintRole,
+                    Qt.DisplayRole,
+                    Qt.ToolTipRole,
+                }
+                if not roles or set(roles) <= paint_roles:
+                    return
+            _schedule_refresh()
+
+        model.dataChanged.connect(_on_data_changed)
         model.rowsInserted.connect(_schedule_refresh)
         model.rowsRemoved.connect(_schedule_refresh)
         model.modelReset.connect(_schedule_refresh)
@@ -219,7 +238,7 @@ class SelectionBrowserDialog(QDialog):
                         continue
             self._idx = self._first_navigable_index(self._idx, +1)
         self._preview_pix_cache.clear()
-        self._update_ui()
+        self._update_ui(scroll_table=not preserve_position)
 
     def _rows_for_scope(self, app: Any) -> list[int]:
         visible = app._visible_source_row_indices()
@@ -540,7 +559,7 @@ class SelectionBrowserDialog(QDialog):
             self._struct_label.setPixmap(QPixmap())
             self._struct_label.setText("(no structure available)")
 
-    def _update_ui(self) -> None:
+    def _update_ui(self, *, scroll_table: bool = True) -> None:
         n = len(self._rows)
         single = n <= 1
         has_rows = n > 0
@@ -562,4 +581,9 @@ class SelectionBrowserDialog(QDialog):
         self._idx = max(0, min(self._idx, n - 1))
         self._idx = self._first_navigable_index(self._idx, +1)
         r = self._rows[self._idx]
-        self._focus_row(r)
+        if scroll_table:
+            self._focus_row(r)
+        else:
+            # Auto-refresh: update caption/preview without yanking the main table scroll.
+            self._sync_caption(r)
+            self._update_preview(r)

@@ -70,11 +70,19 @@ def source_rows_for_point_indices(parent_app: ChemicalTableApp, plotted_oids: li
     return sorted(set(rows))
 
 
-def apply_table_selection_for_source_rows(parent_app: ChemicalTableApp, source_rows: list[int]) -> None:
-    """Select visible proxy rows for source-model row indices (plot lasso / click)."""
+def apply_table_selection_for_source_rows(
+    parent_app: ChemicalTableApp,
+    source_rows: list[int],
+    *,
+    scroll: bool = True,
+) -> None:
+    """Select visible proxy rows for source-model row indices (plot lasso / click).
+
+    When ``scroll`` is True (user-driven plot select), reveal the first selected row.
+    Re-sync paths should pass ``scroll=False`` so table scrolling is not fought.
+    """
     if not source_rows:
         return
-    source_model = parent_app._table_model
     sm = parent_app.table.selectionModel()
     if sm is None:
         return
@@ -84,28 +92,39 @@ def apply_table_selection_for_source_rows(parent_app: ChemicalTableApp, source_r
     view_rows = parent_app._source_rows_to_view_rows(sorted(set(int(r) for r in source_rows)))
     if not view_rows:
         return
+    # Plot re-echo / replot sync often re-applies the same selection; never fight user scroll.
+    current_view = {ix.row() for ix in sm.selectedRows()}
+    if current_view == set(view_rows):
+        return
     col_last = max(0, view_model.columnCount() - 1)
     selection = item_selection_for_view_rows(view_model, view_rows, last_col=col_last)
     if selection.isEmpty():
         return
     table = parent_app.table
+    was_programmatic = bool(getattr(parent_app, "_in_programmatic_table_selection", False))
+    parent_app._in_programmatic_table_selection = True
     table.setUpdatesEnabled(False)
     try:
         sm.select(selection, QItemSelectionModel.ClearAndSelect | QItemSelectionModel.Rows)
+        anchor_col = 1 if col_last > 1 else 0
+        idx = view_model.index(view_rows[0], anchor_col)
+        sm.setCurrentIndex(idx, QItemSelectionModel.NoUpdate)
+        if scroll and idx.isValid():
+            table.scrollTo(idx, QAbstractItemView.PositionAtCenter)
     finally:
         table.setUpdatesEnabled(True)
-    anchor_col = 1 if col_last > 1 else 0
-    idx = view_model.index(view_rows[0], anchor_col)
-    sm.setCurrentIndex(idx, QItemSelectionModel.NoUpdate)
-    table.scrollTo(idx, QAbstractItemView.PositionAtCenter)
-    QTimer.singleShot(
-        0,
-        lambda: (
-            parent_app.activateWindow(),
-            table.setFocus(Qt.OtherFocusReason),
-            table.viewport().update(),
-        ),
-    )
+        parent_app._in_programmatic_table_selection = was_programmatic
+    if scroll:
+        QTimer.singleShot(
+            0,
+            lambda: (
+                parent_app.activateWindow(),
+                table.setFocus(Qt.OtherFocusReason),
+                table.viewport().update(),
+            ),
+        )
+    else:
+        table.viewport().update()
 
 
 def clear_table_selection_from_plot(parent_app: ChemicalTableApp) -> None:

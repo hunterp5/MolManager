@@ -1513,12 +1513,14 @@ class SketchWidgetRdkitMixin:
 
     def to_smiles_selected(self) -> str:
         """
-        SMILES/SMARTS for the current atom/bond selection only ('.'-joined if disconnected).
+        SMILES/SMARTS for the current atom selection only ('.'-joined if disconnected).
 
-        Uses selected atoms plus endpoints of selected bonds; bonds leaving the selection
-        are omitted. Wildcards export as SMARTS, matching ``to_smiles``.
+        Only explicitly selected atoms are included. Selected bonds may highlight
+        endpoints that are not selected; those atoms are omitted. Bonds are kept
+        only when both endpoints are selected. Wildcards export as SMARTS,
+        matching ``to_smiles``.
         """
-        ids = self._atoms_for_selection_move()
+        ids = self._selected_node_set()
         if not ids:
             return ""
         parts: list[str] = []

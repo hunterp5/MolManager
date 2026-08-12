@@ -1138,7 +1138,28 @@ class ChemicalTableApp(
         model = getattr(self, "_table_model", None)
         if model is None:
             return
-        model.dataChanged.connect(lambda *_args: self._schedule_active_plots_replot())
+
+        def _on_data_changed(top_left, bottom_right, roles=()) -> None:
+            # Structure pixmap paints while scrolling emit DecorationRole (etc.) only —
+            # those must not replot, or plot↔table selection sync fights the scrollbar.
+            structure_col = CompoundTableModel.STRUCTURE_COL
+            if (
+                top_left.isValid()
+                and bottom_right.isValid()
+                and top_left.column() == structure_col
+                and bottom_right.column() == structure_col
+            ):
+                paint_roles = {
+                    Qt.DecorationRole,
+                    Qt.SizeHintRole,
+                    Qt.DisplayRole,
+                    Qt.ToolTipRole,
+                }
+                if not roles or set(roles) <= paint_roles:
+                    return
+            self._schedule_active_plots_replot()
+
+        model.dataChanged.connect(_on_data_changed)
 
     def _wire_sqlite_store_dirty_tracking(self) -> None:
         model = getattr(self, "_table_model", None)

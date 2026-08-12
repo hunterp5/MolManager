@@ -50,7 +50,8 @@ def interactive_plot_shell_html() -> str:
           bridge = channel.objects.chemBridge || null;
         }});
       }} catch (_e) {{}}
-      var suppressPlotDeselect = false;
+      var suppressPlotBridge = false;
+      var suppressPlotBridgeGen = 0;
       var lastNonemptyPlotSelection = 0;
       var applyInFlight = false;
       var pendingSelectionJson = null;
@@ -59,6 +60,15 @@ def interactive_plot_shell_html() -> str:
           if (!gd || !gd.layout) return;
           Plotly.relayout(gd, {{selections: []}});
         }} catch (_clrSel) {{}}
+      }}
+      function beginSuppressPlotBridge(ms) {{
+        // Generation token so an earlier timeout cannot clear a later suppress window.
+        suppressPlotBridge = true;
+        var hold = (typeof ms === "number" && ms >= 0) ? ms : 250;
+        var gen = ++suppressPlotBridgeGen;
+        setTimeout(function() {{
+          if (gen === suppressPlotBridgeGen) suppressPlotBridge = false;
+        }}, hold);
       }}
       function scheduleClearSelectionShapes() {{
         setTimeout(clearSelectionShapes, 0);
@@ -98,6 +108,8 @@ def interactive_plot_shell_html() -> str:
       }}
       function applySelectionIndices(indicesJson) {{
         try {{
+          // Clearing Plotly lasso shapes can re-fire plotly_selected; ignore bridge while we paint.
+          beginSuppressPlotBridge(500);
           var idxs = parseSelectionIndices(indicesJson);
           if (!gd || !gd.data || !gd.data.length) return;
           var selTraces = selectionTracesFromLayout();
@@ -208,7 +220,7 @@ def interactive_plot_shell_html() -> str:
           var data = payload.data || [];
           var layout = payload.layout || {{}};
           var config = payload.config || {{}};
-          suppressPlotDeselect = true;
+          beginSuppressPlotBridge(800);
           applyInFlight = true;
           pendingSelectionJson = null;
           Plotly.react(gd, data, layout, config).then(function() {{
@@ -276,6 +288,7 @@ def interactive_plot_shell_html() -> str:
             gd.on('plotly_selected', function(ev) {{
               try {{
                 scheduleClearSelectionShapes();
+                if (suppressPlotBridge) return;
                 if (!bridge || !bridge.pointsSelected) return;
                 var idxs = [];
                 if (ev && ev.points && ev.points.length) {{
@@ -294,7 +307,7 @@ def interactive_plot_shell_html() -> str:
             gd.on('plotly_deselect', function() {{
               try {{
                 scheduleClearSelectionShapes();
-                if (suppressPlotDeselect) return;
+                if (suppressPlotBridge) return;
                 if (Date.now() - lastNonemptyPlotSelection < 450) return;
                 if (bridge && bridge.pointsSelected) bridge.pointsSelected("[]");
               }} catch (_deselErr) {{}}
@@ -304,7 +317,8 @@ def interactive_plot_shell_html() -> str:
             try {{ Plotly.Plots.resize(gd); }} catch (_rz) {{}}
           }}).finally(function() {{
             applyInFlight = false;
-            setTimeout(function() {{ suppressPlotDeselect = false; }}, 200);
+            // Hold a bit after react so restyle/relayout echo events stay suppressed.
+            beginSuppressPlotBridge(400);
           }});
         }} catch (e) {{
           console.error('molmanager Plotly embed failed:', e);

@@ -18,7 +18,11 @@
 
 from __future__ import annotations
 
-from molmanager.ui.plot_table_sync import point_indices_for_oids, selected_oids_for_plot
+from molmanager.ui.plot_table_sync import (
+    apply_table_selection_for_source_rows,
+    point_indices_for_oids,
+    selected_oids_for_plot,
+)
 
 
 def test_point_indices_for_oids() -> None:
@@ -67,3 +71,31 @@ def test_selected_oids_for_plot_highlighted_fallback() -> None:
     app = _FakeApp()
     app._table_model = _FakeModel({0: 10, 1: 20}, highlighted=frozenset({20}))
     assert selected_oids_for_plot(app) == {20}
+
+
+def test_apply_table_selection_skips_identical_selection() -> None:
+    """Re-applying the same plot selection must not scroll / re-select (snap-back loop)."""
+    from unittest.mock import MagicMock
+
+    sm = MagicMock()
+    row0 = MagicMock()
+    row0.row.return_value = 0
+    row2 = MagicMock()
+    row2.row.return_value = 2
+    sm.selectedRows.return_value = [row0, row2]
+
+    table = MagicMock()
+    table.selectionModel.return_value = sm
+    view_model = MagicMock()
+    view_model.columnCount.return_value = 3
+    table.model.return_value = view_model
+
+    app = MagicMock()
+    app.table = table
+    app._source_rows_to_view_rows.return_value = [0, 2]
+    app._in_programmatic_table_selection = False
+
+    apply_table_selection_for_source_rows(app, [0, 2], scroll=True)
+
+    sm.select.assert_not_called()
+    table.scrollTo.assert_not_called()

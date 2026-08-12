@@ -323,3 +323,30 @@ def test_to_smiles_selected_exports_subset(qapp) -> None:  # noqa: ARG001
     assert m is not None
     assert m.GetNumAtoms() == 2
     assert {a.GetSymbol() for a in m.GetAtoms()} == {"C", "O"}
+
+
+def test_to_smiles_selected_ignores_unselected_bond_endpoints(qapp) -> None:  # noqa: ARG001
+    """Selected bonds must not pull unselected endpoint atoms into the export."""
+    w = SketchWidget()
+    ids = []
+    for i, el in enumerate(("C", "C", "O", "N")):
+        nid = w.next_id
+        w.next_id += 1
+        w.nodes.append({"id": nid, "pos": QPoint(i * 40, 0), "element": el})
+        ids.append(nid)
+    w.bonds.append(_bond_make(ids[0], ids[1], 1, 0))
+    w.bonds.append(_bond_make(ids[1], ids[2], 1, 0))
+    w.bonds.append(_bond_make(ids[2], ids[3], 1, 0))
+    # Marquee-style: middle bond selected, but only the oxygen atom is selected.
+    w.selected_nodes = [ids[2]]
+    w.selected_bond_indices = {1}  # C–O bond (ids[1]–ids[2])
+    sel = w.to_smiles_selected()
+    assert sel
+    m = Chem.MolFromSmiles(sel) or Chem.MolFromSmarts(sel)
+    assert m is not None
+    assert m.GetNumAtoms() == 1
+    assert m.GetAtomWithIdx(0).GetSymbol() == "O"
+    # Bond-only selection (no atoms) exports nothing.
+    w.selected_nodes = []
+    w.selected_bond_indices = {0, 1, 2}
+    assert w.to_smiles_selected() == ""
