@@ -16,9 +16,13 @@
 
 """Filter panel cards (numeric range, substructure, text, category)."""
 
-from PyQt5.QtCore import Qt, QTimer, pyqtSignal
+from PyQt5.QtCore import QEvent, QMimeData, QPoint, Qt, QTimer, pyqtSignal
+from PyQt5.QtGui import QDrag
 from PyQt5.QtWidgets import (
+    QAbstractButton,
     QAbstractItemView,
+    QAbstractSlider,
+    QApplication,
     QComboBox,
     QFrame,
     QHBoxLayout,
@@ -33,22 +37,46 @@ from PyQt5.QtWidgets import (
     QWidget,
 )
 
-from rdkit import Chem
-
-
 # --- Filter cards (compact; panel scrolls) -------------------------------------
-_FILTER_CARD_MIN_HEIGHT_RANGE = 104
-_FILTER_CARD_MIN_HEIGHT_SUBSTRUCTURE = 78
-_FILTER_CARD_MIN_HEIGHT_TEXT = 84
-_FILTER_CARD_MIN_HEIGHT_CATEGORY = 120
+FILTER_CARD_MIME = "application/x-molmanager-filter-card"
+_FILTER_CARD_MIN_HEIGHT_RANGE = 144
+_FILTER_CARD_MIN_HEIGHT_SUBSTRUCTURE = 118
+_FILTER_CARD_MIN_HEIGHT_TEXT = 104
+_FILTER_CARD_MIN_HEIGHT_CATEGORY = 140
 _FC_PAD = 4
-_FC_GAP = 2
+_FC_GAP = 4
 _FC_CTRL_H = 20
 _FC_SLIDER_H = 14
 _FC_LIST_MAX = 96
 _FC_MINI_LABEL_W = 26
 _FC_TOOL_BTN_MIN_W = 48
 _FC_TOOL_BTN_WIDE_MIN_W = 76
+
+# Interactive controls: dragging from these should not reorder cards.
+_FC_DRAG_BLOCKERS = (
+    QAbstractButton,
+    QAbstractItemView,
+    QAbstractSlider,
+    QComboBox,
+    QLineEdit,
+)
+
+
+def filter_card_drop_index(host: QWidget, y: int, dragged: QWidget) -> int:
+    """Index among sibling cards (excluding ``dragged``) for a drop at local ``y``."""
+    layout = host.layout()
+    if layout is None:
+        return 0
+    insert_at = 0
+    for i in range(layout.count()):
+        item = layout.itemAt(i)
+        w = item.widget() if item is not None else None
+        if w is None or w is dragged:
+            continue
+        if y < w.y() + w.height() // 2:
+            return insert_at
+        insert_at += 1
+    return insert_at
 
 
 def _fc_install_card_shell(card: QFrame, min_height_px: int) -> None:
@@ -60,9 +88,11 @@ def _fc_install_card_shell(card: QFrame, min_height_px: int) -> None:
     card.setMinimumWidth(0)
     card.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Minimum)
     card.setStyleSheet(filter_card_stylesheet())
+    card.setCursor(Qt.ArrowCursor)
 
 
 def _fc_card_layout(card: QFrame) -> QVBoxLayout:
+    """Shared card insets: equal pad to the border and equal gap between rows (incl. title)."""
     ly = QVBoxLayout(card)
     ly.setContentsMargins(_FC_PAD, _FC_PAD, _FC_PAD, _FC_PAD)
     ly.setSpacing(_FC_GAP)
@@ -113,28 +143,6 @@ def _fc_toolbar_button(text: str, *, wide: bool = False) -> QPushButton:
     return btn
 
 
-def _fc_add_column_header_row(parent_layout: QVBoxLayout, combo: QComboBox, removed_cb) -> None:
-    """Top row: column combo and remove control."""
-    row = QHBoxLayout()
-    row.setSpacing(_FC_GAP)
-    row.addWidget(combo, 1, Qt.AlignVCenter)
-    rem = QPushButton()
-    style_filter_card_remove_button(rem)
-    rem.clicked.connect(removed_cb)
-    row.addWidget(rem, 0, Qt.AlignVCenter)
-    parent_layout.addLayout(row)
-
-
-def _fc_add_bottom_tools_row(parent_layout: QVBoxLayout, buttons: list[QPushButton]) -> None:
-    """Bottom row of uniform toolbar buttons (On, Invert, …)."""
-    row = QHBoxLayout()
-    row.setSpacing(_FC_GAP)
-    for btn in buttons:
-        row.addWidget(btn, 0, Qt.AlignVCenter)
-    row.addStretch(1)
-    parent_layout.addLayout(row)
-
-
 def _fc_set_toggle_active(btn: QPushButton, active: bool) -> None:
     from ..theme import polish_widget_property
 
@@ -147,6 +155,122 @@ def _fc_mini_label(text: str) -> QLabel:
     lbl.setFixedWidth(_FC_MINI_LABEL_W)
     lbl.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
     return lbl
+
+
+class _FilterCardDragMixin:
+    """Drag empty card chrome to reorder within the filter panel (not from controls)."""
+
+    _fc_drag_start: QPoint | None = None
+
+    def _fc_is_drag_chrome(self, pos: QPoint) -> bool:
+        child = self.childAt(pos)
+        while child is not None and child is not self:
+            if isinstance(child, _FC_DRAG_BLOCKERS):
+                return False
+            child = child.parentWidget()
+        return True
+
+    def mousePressEvent(self, event) -> None:  # noqa: N802 — Qt API
+        if event.button() == Qt.LeftButton and self._fc_is_drag_chrome(event.pos()):
+            self._fc_drag_start = QPoint(event.pos())
+        else:
+            self._fc_drag_start = None
+        super().mousePressEvent(event)
+
+    def mouseMoveEvent(self, event) -> None:  # noqa: N802 — Qt API
+        start = self._fc_drag_start
+        if (
+            start is not None
+            and event.buttons() & Qt.LeftButton
+            and (event.pos() - start).manhattanLength() >= QApplication.startDragDistance()
+        ):
+            self._fc_drag_start = None
+            self._fc_begin_reorder_drag()
+            return
+        super().mouseMoveEvent(event)
+
+    def mouseReleaseEvent(self, event) -> None:  # noqa: N802 — Qt API
+        self._fc_drag_start = None
+        super().mouseReleaseEvent(event)
+
+    def _fc_begin_reorder_drag(self) -> None:
+        from ..theme import polish_widget_property
+
+        polish_widget_property(self, "fcDragging", True)
+        mime = QMimeData()
+        mime.setData(FILTER_CARD_MIME, str(id(self)).encode("ascii"))
+        drag = QDrag(self)
+        drag.setMimeData(mime)
+        try:
+            drag.exec_(Qt.MoveAction)
+        finally:
+            polish_widget_property(self, "fcDragging", False)
+
+
+class FilterCardsHost(QWidget):
+    """Scroll-area contents that accept filter-card drops for reordering."""
+
+    def __init__(self, on_reorder=None, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self._on_reorder = on_reorder
+        self.setAcceptDrops(True)
+
+    def dragEnterEvent(self, event) -> None:  # noqa: N802 — Qt API
+        if event.mimeData().hasFormat(FILTER_CARD_MIME):
+            event.acceptProposedAction()
+        else:
+            event.ignore()
+
+    def dragMoveEvent(self, event) -> None:  # noqa: N802 — Qt API
+        if event.mimeData().hasFormat(FILTER_CARD_MIME):
+            event.acceptProposedAction()
+        else:
+            event.ignore()
+
+    def dropEvent(self, event) -> None:  # noqa: N802 — Qt API
+        card = self._card_from_mime(event.mimeData())
+        if card is None or self._on_reorder is None:
+            event.ignore()
+            return
+        idx = filter_card_drop_index(self, event.pos().y(), card)
+        self._on_reorder(card, idx)
+        event.acceptProposedAction()
+
+    def _card_from_mime(self, mime: QMimeData):
+        try:
+            wanted = int(bytes(mime.data(FILTER_CARD_MIME)).decode("ascii"))
+        except (TypeError, ValueError):
+            return None
+        layout = self.layout()
+        if layout is None:
+            return None
+        for i in range(layout.count()):
+            item = layout.itemAt(i)
+            w = item.widget() if item is not None else None
+            if w is not None and id(w) == wanted:
+                return w
+        return None
+
+
+
+class _FilterCardTitleLabel(QLabel):
+    """Shows the filter title; double-click starts in-place rename."""
+
+    def __init__(self, on_edit_request, text: str = "", parent: QWidget | None = None) -> None:
+        super().__init__(text, parent)
+        self._on_edit_request = on_edit_request
+        self.setObjectName("fcSectionTitle")
+        self.setToolTip("Double-click to rename")
+        self.setCursor(Qt.IBeamCursor)
+        self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        self.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+
+    def mouseDoubleClickEvent(self, event) -> None:  # noqa: N802 — Qt API
+        if event.button() == Qt.LeftButton:
+            self._on_edit_request()
+            event.accept()
+            return
+        super().mouseDoubleClickEvent(event)
 
 
 class _FilterCardEnableInvertMixin:
@@ -179,25 +303,114 @@ class _FilterCardEnableInvertMixin:
         )
         self._sync_invert_button_appearance()
 
+    def _fc_add_title_row(self, parent_layout: QVBoxLayout, title: str) -> QPushButton:
+        """Editable title + remove (×) on the top row (double-click title to rename)."""
+        self._filter_title_fallback = str(title or "Filter")
+        self._title_host = QWidget()
+        self._title_host_lyt = QHBoxLayout(self._title_host)
+        self._title_host_lyt.setContentsMargins(0, 0, 0, 0)
+        self._title_host_lyt.setSpacing(_FC_GAP)
+        self._title_label = _FilterCardTitleLabel(
+            self._fc_begin_title_edit, self._filter_title_fallback
+        )
+        # Match control row height; horizontal pad only (vertical inset comes from card layout).
+        self._title_label.setMinimumHeight(_FC_CTRL_H)
+        self._title_label.setMaximumHeight(_FC_CTRL_H)
+        self._title_host_lyt.addWidget(self._title_label, 1)
+        self._title_edit: QLineEdit | None = None
+        rem = QPushButton()
+        style_filter_card_remove_button(rem)
+        rem.clicked.connect(lambda: self.removed.emit(self))
+        self._title_host_lyt.addWidget(rem, 0, Qt.AlignVCenter)
+        self._remove_btn = rem
+        parent_layout.addWidget(self._title_host)
+        return rem
+
+    def filter_title(self) -> str:
+        if self._title_edit is not None:
+            return (self._title_edit.text() or "").strip() or self._filter_title_fallback
+        return self._title_label.text()
+
+    def set_filter_title(self, title: str) -> None:
+        text = (title or "").strip() or self._filter_title_fallback
+        self._filter_title_fallback = text
+        if self._title_edit is not None:
+            self._title_edit.setText(text)
+        else:
+            self._title_label.setText(text)
+
+    def _fc_begin_title_edit(self) -> None:
+        if self._title_edit is not None:
+            return
+        edit = QLineEdit(self._title_label.text())
+        edit.setObjectName("fcTitleEdit")
+        edit.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        edit.setMinimumHeight(_FC_CTRL_H)
+        edit.installEventFilter(self)
+        self._title_host_lyt.replaceWidget(self._title_label, edit)
+        self._title_label.hide()
+        self._title_edit = edit
+        edit.editingFinished.connect(self._fc_commit_title_edit)
+        edit.setFocus(Qt.MouseFocusReason)
+        edit.selectAll()
+
+    def _fc_commit_title_edit(self) -> None:
+        edit = self._title_edit
+        if edit is None:
+            return
+        self._title_edit = None
+        edit.blockSignals(True)
+        try:
+            edit.editingFinished.disconnect(self._fc_commit_title_edit)
+        except TypeError:
+            pass
+        new = (edit.text() or "").strip() or self._filter_title_fallback
+        self._title_label.setText(new)
+        self._filter_title_fallback = new
+        self._title_host_lyt.replaceWidget(edit, self._title_label)
+        edit.deleteLater()
+        self._title_label.show()
+
+    def _fc_cancel_title_edit(self) -> None:
+        edit = self._title_edit
+        if edit is None:
+            return
+        edit.blockSignals(True)
+        try:
+            edit.editingFinished.disconnect(self._fc_commit_title_edit)
+        except TypeError:
+            pass
+        self._title_host_lyt.replaceWidget(edit, self._title_label)
+        edit.deleteLater()
+        self._title_edit = None
+        self._title_label.show()
+
+    def eventFilter(self, obj, event):  # noqa: N802 — Qt API
+        if obj is getattr(self, "_title_edit", None) and event.type() == QEvent.KeyPress:
+            if event.key() == Qt.Key_Escape:
+                self._fc_cancel_title_edit()
+                return True
+        return super().eventFilter(obj, event)
+
     def _fc_add_header_toolbar(
         self,
         parent_layout: QVBoxLayout,
         *,
         leading: QWidget | None = None,
-    ) -> QPushButton:
-        """Header row: leading control expands; On / Invert / remove on the right."""
+        extra_buttons: list[QPushButton] | None = None,
+    ) -> None:
+        """Toolbar row of stretchable toggles (dropdowns sit on their own row; × is on the title)."""
         row = QHBoxLayout()
         row.setSpacing(_FC_GAP)
         if leading is not None:
+            # Kept for callers that still pass a leading widget; prefer a separate row.
             row.addWidget(leading, 1, Qt.AlignVCenter)
-        row.addWidget(self.enable_btn, 0, Qt.AlignVCenter)
-        row.addWidget(self.invert_btn, 0, Qt.AlignVCenter)
-        rem = QPushButton()
-        style_filter_card_remove_button(rem)
-        rem.clicked.connect(lambda: self.removed.emit(self))
-        row.addWidget(rem, 0, Qt.AlignVCenter)
+        buttons = [self.enable_btn, self.invert_btn, *(extra_buttons or [])]
+        for btn in buttons:
+            btn.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+            btn.setMinimumWidth(0)
+            row.addWidget(btn, 1, Qt.AlignVCenter)
         parent_layout.addLayout(row)
-        return rem
 
     def _sync_invert_button_appearance(self) -> None:
         if self._invert_on:
@@ -247,7 +460,7 @@ class _FilterCardEnableInvertMixin:
             sync_partial()
 
 
-class FilterCard(_FilterCardEnableInvertMixin, QFrame):
+class FilterCard(_FilterCardDragMixin, _FilterCardEnableInvertMixin, QFrame):
     changed = pyqtSignal()
     removed = pyqtSignal(object)
 
@@ -257,6 +470,7 @@ class FilterCard(_FilterCardEnableInvertMixin, QFrame):
         self._active_slider = None  # "min" | "max" | None
         _fc_install_card_shell(self, _FILTER_CARD_MIN_HEIGHT_RANGE)
         l = _fc_card_layout(self)
+        self._fc_add_title_row(l, "Slider")
         self.cb = QComboBox()
         _fc_configure_column_combo(self.cb)
         self.cb.addItems(props)
@@ -264,7 +478,8 @@ class FilterCard(_FilterCardEnableInvertMixin, QFrame):
             self.cb.setCurrentText(initial_property)
         self.cb.currentTextChanged.connect(self.refresh_limits)
         self._fc_init_enable_invert("Show rows outside the min/max range.")
-        self._fc_add_header_toolbar(l, leading=self.cb)
+        self._fc_add_header_toolbar(l)
+        l.addWidget(self.cb)
 
         min_lyt = QHBoxLayout()
         min_lyt.setSpacing(_FC_GAP)
@@ -403,7 +618,7 @@ class FilterCard(_FilterCardEnableInvertMixin, QFrame):
         self.blockSignals(False)
 
 
-class SubstructureFilterCard(_FilterCardEnableInvertMixin, QFrame):
+class SubstructureFilterCard(_FilterCardDragMixin, _FilterCardEnableInvertMixin, QFrame):
     changed = pyqtSignal()
     removed = pyqtSignal(object)
 
@@ -413,12 +628,14 @@ class SubstructureFilterCard(_FilterCardEnableInvertMixin, QFrame):
         self._last_query = None
         _fc_install_card_shell(self, _FILTER_CARD_MIN_HEIGHT_SUBSTRUCTURE)
         l = _fc_card_layout(self)
+        self._fc_add_title_row(l, "Substructure")
         self.src_combo = QComboBox()
         _fc_configure_column_combo(self.src_combo)
         self.set_structure_sources(structure_sources or ["Structure"])
         self.src_combo.currentIndexChanged.connect(self._on_source_change)
         self._fc_init_enable_invert("Hide rows that match SMARTS instead of showing them.")
-        self._fc_add_header_toolbar(l, leading=self.src_combo)
+        self._fc_add_header_toolbar(l)
+        l.addWidget(self.src_combo)
 
         self.smarts_edit = QLineEdit()
         self.smarts_edit.setPlaceholderText("SMARTS, e.g. [F,Cl], [!C;R], or [M]")
@@ -502,7 +719,7 @@ class SubstructureFilterCard(_FilterCardEnableInvertMixin, QFrame):
         self._last_query = None
 
 
-class TextFilterCard(_FilterCardEnableInvertMixin, QFrame):
+class TextFilterCard(_FilterCardDragMixin, _FilterCardEnableInvertMixin, QFrame):
     """Filter rows by text in a chosen column (partial or exact, case optional)."""
 
     changed = pyqtSignal()
@@ -515,6 +732,7 @@ class TextFilterCard(_FilterCardEnableInvertMixin, QFrame):
         self._partial_match = True
         _fc_install_card_shell(self, _FILTER_CARD_MIN_HEIGHT_TEXT)
         l = _fc_card_layout(self)
+        self._fc_add_title_row(l, "Text")
         self.cb = QComboBox()
         _fc_configure_column_combo(self.cb)
         self.cb.addItems(columns)
@@ -531,7 +749,11 @@ class TextFilterCard(_FilterCardEnableInvertMixin, QFrame):
         self.case_btn.setToolTip("Case-sensitive vs ignore case.")
         self.case_btn.clicked.connect(self._on_case_clicked)
         self._sync_case_button_appearance()
-        _fc_add_column_header_row(l, self.cb, lambda: self.removed.emit(self))
+        self._fc_add_header_toolbar(
+            l,
+            extra_buttons=[self.partial_btn, self.case_btn],
+        )
+        l.addWidget(self.cb)
         self.text_edit = QLineEdit()
         self.text_edit.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         self.text_edit.setMinimumWidth(0)
@@ -541,10 +763,6 @@ class TextFilterCard(_FilterCardEnableInvertMixin, QFrame):
         self._text_filter_timer.timeout.connect(self.changed.emit)
         self.text_edit.textChanged.connect(self._schedule_text_filter_changed)
         l.addWidget(self.text_edit)
-        _fc_add_bottom_tools_row(
-            l,
-            [self.enable_btn, self.invert_btn, self.partial_btn, self.case_btn],
-        )
 
     def _schedule_text_filter_changed(self, _text: str = "") -> None:
         self._text_filter_timer.start(280)
@@ -656,7 +874,7 @@ class TextFilterCard(_FilterCardEnableInvertMixin, QFrame):
         self._sync_match_placeholder()
 
 
-class CategoryFilterCard(_FilterCardEnableInvertMixin, QFrame):
+class CategoryFilterCard(_FilterCardDragMixin, _FilterCardEnableInvertMixin, QFrame):
     """Filter rows by membership in selected distinct values of a column."""
 
     changed = pyqtSignal()
@@ -668,6 +886,7 @@ class CategoryFilterCard(_FilterCardEnableInvertMixin, QFrame):
         self.app = app
         _fc_install_card_shell(self, _FILTER_CARD_MIN_HEIGHT_CATEGORY)
         l = _fc_card_layout(self)
+        self._fc_add_title_row(l, "Category")
         self.cb = QComboBox()
         _fc_configure_column_combo(self.cb)
         self.cb.addItems(columns)
@@ -682,7 +901,11 @@ class CategoryFilterCard(_FilterCardEnableInvertMixin, QFrame):
         self.none_btn = _fc_toolbar_button("None")
         self.none_btn.setToolTip("Uncheck every category in the list.")
         self.none_btn.clicked.connect(self._select_no_categories)
-        _fc_add_column_header_row(l, self.cb, lambda: self.removed.emit(self))
+        self._fc_add_header_toolbar(
+            l,
+            extra_buttons=[self.all_btn, self.none_btn],
+        )
+        l.addWidget(self.cb)
         self.list_widget = QListWidget()
         self.list_widget.setSelectionMode(QAbstractItemView.NoSelection)
         self.list_widget.setMaximumHeight(_FC_LIST_MAX)
@@ -693,10 +916,6 @@ class CategoryFilterCard(_FilterCardEnableInvertMixin, QFrame):
         self._category_n_checkable_cache: int | None = None
         self.list_widget.itemChanged.connect(self._on_category_list_item_changed)
         l.addWidget(self.list_widget)
-        _fc_add_bottom_tools_row(
-            l,
-            [self.enable_btn, self.invert_btn, self.all_btn, self.none_btn],
-        )
         self._populate_list()
 
     def _bust_category_selection_cache(self) -> None:
@@ -859,3 +1078,19 @@ class CategoryFilterCard(_FilterCardEnableInvertMixin, QFrame):
             self.cb.setCurrentText(prop)
         self.cb.blockSignals(False)
         self._populate_list(frozenset(str(x) for x in (values or [])))
+
+def next_default_filter_title(existing_filters: list, card_cls: type) -> str:
+    """Return "Type" or "Type N" for the next card of ``card_cls``."""
+    if card_cls is FilterCard:
+        base = "Slider"
+    elif card_cls is SubstructureFilterCard:
+        base = "Substructure"
+    elif card_cls is TextFilterCard:
+        base = "Text"
+    elif card_cls is CategoryFilterCard:
+        base = "Category"
+    else:
+        base = "Filter"
+    n = sum(1 for f in existing_filters if isinstance(f, card_cls))
+    return base if n == 0 else f"{base} {n + 1}"
+

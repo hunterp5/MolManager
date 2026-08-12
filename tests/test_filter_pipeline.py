@@ -250,3 +250,63 @@ def test_substructure_async_without_smiles_column_uses_mols(qapp, monkeypatch): 
     assert _src_row_visible(w, 0) is True
     for r in range(1, 70):
         assert _src_row_visible(w, r) is False
+
+def test_reorder_filter_card_updates_list_and_layout(qapp):  # noqa: ARG001
+    from PyQt5.QtWidgets import QVBoxLayout
+
+    from molmanager.ui.filters.cards import FilterCardsHost, filter_card_drop_index
+
+    w = ChemicalTableApp()
+    w.headers = ["ID_HIDDEN", "Structure", "SMILES", "MW"]
+    w._table_model.set_headers(list(w.headers))
+    w.calculate_global_bounds()
+    host = FilterCardsHost(on_reorder=w.reorder_filter_card)
+    layout = QVBoxLayout(host)
+    w._filter_cards_host = host
+    w.f_container = layout
+    a = FilterCard(["MW"], w, initial_property="MW")
+    b = TextFilterCard(["SMILES"], w)
+    c = SubstructureFilterCard()
+    for card in (a, b, c):
+        layout.addWidget(card)
+    w.filters = [a, b, c]
+
+    w.reorder_filter_card(a, 2)
+    assert w.filters == [b, c, a]
+    assert layout.itemAt(0).widget() is b
+    assert layout.itemAt(1).widget() is c
+    assert layout.itemAt(2).widget() is a
+
+    # Drop index: y above first other card mid -> 0
+    b.setGeometry(0, 0, 100, 40)
+    c.setGeometry(0, 50, 100, 40)
+    a.setGeometry(0, 100, 100, 40)
+    assert filter_card_drop_index(host, 10, a) == 0
+    assert filter_card_drop_index(host, 55, a) == 1
+    assert filter_card_drop_index(host, 200, a) == 2
+
+
+def test_filter_card_default_titles_and_rename(qapp):  # noqa: ARG001
+    from molmanager.ui.filters.cards import next_default_filter_title
+
+    w = ChemicalTableApp()
+    w.headers = ["ID_HIDDEN", "Structure", "SMILES", "MW"]
+    w._table_model.set_headers(list(w.headers))
+    w.calculate_global_bounds()
+
+    assert next_default_filter_title([], TextFilterCard) == "Text"
+    assert next_default_filter_title([TextFilterCard(["SMILES"], w)], TextFilterCard) == "Text 2"
+
+    a = TextFilterCard(["SMILES"], w)
+    a.set_filter_title(next_default_filter_title([], TextFilterCard))
+    b = TextFilterCard(["SMILES"], w)
+    b.set_filter_title(next_default_filter_title([a], TextFilterCard))
+    assert a.filter_title() == "Text"
+    assert b.filter_title() == "Text 2"
+    a.set_filter_title("My text filter")
+    assert a.filter_title() == "My text filter"
+
+    s = FilterCard(["MW"], w, initial_property="MW")
+    s.set_filter_title(next_default_filter_title([], FilterCard))
+    assert s.filter_title() == "Slider"
+

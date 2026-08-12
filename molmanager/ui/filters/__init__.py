@@ -19,15 +19,21 @@
 from .cards import (
     CategoryFilterCard,
     FilterCard,
+    FilterCardsHost,
     SubstructureFilterCard,
     TextFilterCard,
+    filter_card_drop_index,
+    next_default_filter_title,
 )
 from .panel_mixin import FilterPanelMixin
 
 __all__ = [
     "CategoryFilterCard",
     "FilterCard",
+    "FilterCardsHost",
     "FilterPanelMixin",
     "SubstructureFilterCard",
     "TextFilterCard",
+    "filter_card_drop_index",
+    "next_default_filter_title",
 ]

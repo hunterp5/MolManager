@@ -57,6 +57,7 @@ from ..compound_table_model import (
     STRUCTURE_ROW_DEFAULT_HEIGHT,
 )
 from ..filter_proxy_model import FilterProxyModel
+from ..filters.cards import FilterCardsHost
 from ..table_selection_delegate import RowHighlightDelegate
 from ..process_queue import ProcessQueueManager
 from ..user_guides import open_user_guide_dialog
@@ -77,8 +78,8 @@ _FILTER_PANEL_BTN_SPACING = 6
 
 
 def _configure_filter_panel_button(btn: QPushButton) -> None:
-    """Uniform size and stretch for all filter-panel action buttons."""
-    btn.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+    """Compact fixed-height action button for the filter panel footer."""
+    btn.setSizePolicy(QSizePolicy.Minimum, QSizePolicy.Fixed)
     btn.setFixedHeight(_FILTER_PANEL_BTN_H)
     btn.setMinimumWidth(0)
 
@@ -506,20 +507,29 @@ class ChemicalTableApp(
         self._table_stack.setCurrentIndex(1)
         self._search_panel = QFrame(cw)
         self._search_panel.setVisible(False)
+        self._search_panel.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Minimum)
         self._init_table_search_panel(self._search_panel)
         self._table_area = QWidget(cw)
         self._table_area.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         table_area_lyt = QVBoxLayout(self._table_area)
         table_area_lyt.setContentsMargins(0, 0, 0, 0)
-        table_area_lyt.setSpacing(4)
-        table_area_lyt.addWidget(self._search_panel)
+        table_area_lyt.setSpacing(0)
         table_area_lyt.addWidget(self._table_stack, 1)
 
         from .workspace_layout import WorkspaceLayoutManager
 
         self._workspace_layout = WorkspaceLayoutManager(self._table_area, cw)
         self._workspace_layout.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
-        content_h.addWidget(self._workspace_layout, 1)
+
+        # Search spans the full workspace width (above table+plots), stopping at the filter panel.
+        self._workspace_column = QWidget(cw)
+        self._workspace_column.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        workspace_col_lyt = QVBoxLayout(self._workspace_column)
+        workspace_col_lyt.setContentsMargins(0, 0, 0, 0)
+        workspace_col_lyt.setSpacing(4)
+        workspace_col_lyt.addWidget(self._search_panel)
+        workspace_col_lyt.addWidget(self._workspace_layout, 1)
+        content_h.addWidget(self._workspace_column, 1)
         # Wide enough for filter cards and footer actions (avoids clipping).
         _filter_panel_w = 320
         self.f_panel = QFrame()
@@ -527,15 +537,15 @@ class ChemicalTableApp(
         self.f_panel.setFixedWidth(_filter_panel_w)
         self.f_panel.setVisible(False)
         sb_lyt = QVBoxLayout(self.f_panel)
-        sb_lyt.setContentsMargins(5, 5, 5, 5)
+        sb_lyt.setContentsMargins(5, 5, 5, 0)
         sb_lyt.setSpacing(5)
 
-        self._filter_cards_host = QWidget()
+        self._filter_cards_host = FilterCardsHost(on_reorder=self.reorder_filter_card)
         # Ignored horizontal policy: scroll viewport sets width (prevents cards wider than panel).
         self._filter_cards_host.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Minimum)
         self.f_container = QVBoxLayout(self._filter_cards_host)
         self.f_container.setContentsMargins(0, 0, 0, 0)
-        self.f_container.setSpacing(2)
+        self.f_container.setSpacing(6)
         self.f_container.setAlignment(Qt.AlignTop)
         self._filter_scroll = _FilterCardsScrollArea(self._filter_cards_host)
         self._filter_scroll.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Expanding)
@@ -564,10 +574,12 @@ class ChemicalTableApp(
         btn_disable_all.clicked.connect(self.disable_all_filters_keep_panel)
         for btn in (btn_close_panel, btn_enable_all, btn_disable_all):
             _configure_filter_panel_button(btn)
-        panel_btns.addWidget(btn_add, 0)
-        panel_btns.addWidget(btn_close_panel, 1)
-        panel_btns.addWidget(btn_enable_all, 1)
-        panel_btns.addWidget(btn_disable_all, 1)
+        panel_btns.addStretch(1)
+        panel_btns.addWidget(btn_add, 0, Qt.AlignBottom)
+        panel_btns.addWidget(btn_close_panel, 0, Qt.AlignBottom)
+        panel_btns.addWidget(btn_enable_all, 0, Qt.AlignBottom)
+        panel_btns.addWidget(btn_disable_all, 0, Qt.AlignBottom)
+        panel_btns.addStretch(1)
         sb_lyt.addLayout(panel_btns)
         content_h.addWidget(self.f_panel)
         main_v.addLayout(content_h, 1)

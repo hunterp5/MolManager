@@ -156,6 +156,7 @@ class SessionMixin:
                 filters_out.append(
                     {
                         "kind": "substructure",
+                        "title": f.filter_title(),
                         "smarts": cfg.get("smarts", "") or "",
                         "structure_source": cfg.get("structure_source", "Structure") or "Structure",
                         "enabled": cfg.get("enabled", True),
@@ -167,6 +168,7 @@ class SessionMixin:
                 filters_out.append(
                     {
                         "kind": "text",
+                        "title": f.filter_title(),
                         "property": cfg.get("p", "") or "",
                         "text": cfg.get("text", "") or "",
                         "enabled": cfg.get("enabled", True),
@@ -180,6 +182,7 @@ class SessionMixin:
                 filters_out.append(
                     {
                         "kind": "category",
+                        "title": f.filter_title(),
                         "property": cfg.get("p", "") or "",
                         "values": list(cfg.get("values") or []),
                         "enabled": cfg.get("enabled", True),
@@ -191,6 +194,7 @@ class SessionMixin:
                 filters_out.append(
                     {
                         "kind": "range",
+                        "title": f.filter_title(),
                         "property": cfg.get("p", ""),
                         "min": cfg.get("min"),
                         "max": cfg.get("max"),
@@ -240,7 +244,13 @@ class SessionMixin:
             if cur_v != target_visual:
                 h.moveSection(cur_v, target_visual)
 
-    def _append_filter_widget(self, card) -> None:
+    def _append_filter_widget(self, card, *, title: str | None = None) -> None:
+        if title:
+            card.set_filter_title(str(title))
+        else:
+            from ..filters.cards import next_default_filter_title
+
+            card.set_filter_title(next_default_filter_title(self.filters, type(card)))
         card.changed.connect(self.apply_filters)
         card.removed.connect(lambda c=card: self.remove_filter(c))
         self.f_container.addWidget(card)
@@ -362,14 +372,14 @@ class SessionMixin:
                 if callable(get_srcs):
                     sources = get_srcs() or sources
                 c = SubstructureFilterCard(structure_sources=sources)
-                self._append_filter_widget(c)
+                self._append_filter_widget(c, title=str(spec.get("title") or "") or None)
                 c.set_smarts(str(spec.get("smarts", "") or ""))
                 c.set_structure_source(str(spec.get("structure_source", "Structure") or "Structure"))
                 c.restore_filter_flags(bool(spec.get("enabled", True)), bool(spec.get("inverted", False)))
             elif kind == "range":
                 props = list(self.global_bounds.keys()) or ["SMILES"]
                 c = FilterCard(props, self)
-                self._append_filter_widget(c)
+                self._append_filter_widget(c, title=str(spec.get("title") or "") or None)
                 p = str(spec.get("property", "") or "")
                 if p:
                     try:
@@ -382,7 +392,7 @@ class SessionMixin:
                 if not cols:
                     cols = list(self.global_bounds.keys()) or ["SMILES"]
                 c = TextFilterCard(cols, self)
-                self._append_filter_widget(c)
+                self._append_filter_widget(c, title=str(spec.get("title") or "") or None)
                 c.restore_from_session(
                     str(spec.get("property", "") or ""),
                     str(spec.get("text", "") or ""),
@@ -395,7 +405,7 @@ class SessionMixin:
                 if not cols:
                     cols = list(self.global_bounds.keys()) or ["SMILES"]
                 c = CategoryFilterCard(cols, self)
-                self._append_filter_widget(c)
+                self._append_filter_widget(c, title=str(spec.get("title") or "") or None)
                 vals = spec.get("values")
                 if not isinstance(vals, list):
                     vals = []

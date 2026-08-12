@@ -1,4 +1,20 @@
 #!/usr/bin/env bash
+# This file is part of MolManager.
+# Copyright (C) 2026 Hunter Picard
+#
+# MolManager is free software: you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation, either version 3 of the License, or
+# (at your option) any later version.
+#
+# MolManager is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License
+# along with MolManager.  If not, see <https://www.gnu.org/licenses/>.
+
 # Repair or install the CPU PyTorch 2.5.1 + pkasolver stack in the active Python (no extra venv).
 # On a fresh install, `pip install -r requirements.txt` already includes these packages.
 # Run this script when pKa fails due to a conflicting torch build (e.g. after installing admet-ai).

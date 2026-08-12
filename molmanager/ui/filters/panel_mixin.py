@@ -30,7 +30,13 @@ from ...filter_compute import build_sqlite_where, fetch_matching_oids
 from ...utils import mol_to_canonical_smiles, safe_float
 from ...workers import FilterApplyWorker, SubstructureFilterWorker
 from ..background_jobs import register_background_job, unregister_background_job
-from .cards import CategoryFilterCard, FilterCard, SubstructureFilterCard, TextFilterCard
+from .cards import (
+    CategoryFilterCard,
+    FilterCard,
+    SubstructureFilterCard,
+    TextFilterCard,
+    next_default_filter_title,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -900,6 +906,7 @@ class FilterPanelMixin:
         init = initial_property if initial_property and initial_property in props else None
         self.f_panel.setVisible(True)
         card = FilterCard(props, self, initial_property=init)
+        card.set_filter_title(next_default_filter_title(self.filters, FilterCard))
         card.changed.connect(self.apply_filters)
         card.removed.connect(lambda c: self.remove_filter(c))
         self.f_container.addWidget(card)
@@ -918,6 +925,7 @@ class FilterPanelMixin:
             return
         self.f_panel.setVisible(True)
         card = TextFilterCard(cols, self)
+        card.set_filter_title(next_default_filter_title(self.filters, TextFilterCard))
         card.changed.connect(self.apply_filters)
         card.removed.connect(lambda c: self.remove_filter(c))
         self.f_container.addWidget(card)
@@ -938,6 +946,7 @@ class FilterPanelMixin:
             return
         self.f_panel.setVisible(True)
         card = CategoryFilterCard(cols, self)
+        card.set_filter_title(next_default_filter_title(self.filters, CategoryFilterCard))
         card.changed.connect(self.apply_filters)
         card.removed.connect(lambda c: self.remove_filter(c))
         self.f_container.addWidget(card)
@@ -975,6 +984,7 @@ class FilterPanelMixin:
         if callable(get_srcs):
             sources = get_srcs() or sources
         card = SubstructureFilterCard(structure_sources=sources)
+        card.set_filter_title(next_default_filter_title(self.filters, SubstructureFilterCard))
         card.changed.connect(self.apply_filters)
         card.removed.connect(lambda c: self.remove_filter(c))
         self.f_container.addWidget(card)
@@ -988,6 +998,22 @@ class FilterPanelMixin:
             card.deleteLater()
             self.apply_filters()
             self._sync_filter_panel_scroll_content()
+
+    def reorder_filter_card(self, card, target_index: int) -> None:
+        """Move ``card`` so it sits at ``target_index`` among the other filter cards."""
+        if card not in self.filters:
+            return
+        others = [f for f in self.filters if f is not card]
+        n = len(others)
+        target_index = max(0, min(int(target_index), n))
+        new_order = list(others)
+        new_order.insert(target_index, card)
+        if new_order == self.filters:
+            return
+        self.filters = new_order
+        self.f_container.removeWidget(card)
+        self.f_container.insertWidget(target_index, card)
+        self._sync_filter_panel_scroll_content()
 
     def delete_all_filters_from_panel(self) -> None:
         """Remove every filter card from the panel (same as deleting each card)."""

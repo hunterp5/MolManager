@@ -371,9 +371,14 @@ do not match. Combine substructure, numeric slider, text, and category filters.<
 <li><b>Text</b> — text contains or equals.</li>
 <li><b>Category</b> — choose from discrete values.</li>
 </ul>
-<p><b>Enable All</b> / <b>Disable All</b> turn cards on or off without deleting them.
+<p>Drag a card by its empty background (not a control) to reorder filters in the panel.
+Double-click a card title to rename it (defaults are the filter type, with a number when you
+have more than one of that type).
+<b>Enable All</b> / <b>Disable All</b> turn cards on or off without deleting them.
 <b>Delete All Filters</b> removes every card.</p>
 <h3>Search panel (Tools → Search, <b>Ctrl+F</b>)</h3>
+<p>When open, the search bar spans the workspace above the table and any plots, and stops
+before the filter panel if that is open.</p>
 <p>Search one or more columns. Add multiple criteria rows and choose <b>AND</b> or <b>OR</b> between them.</p>
 <ul>
 <li>Combine terms with <code>&amp;</code> (AND) or <code>|</code> / comma (OR), e.g. <code>&gt;10 &amp; &lt;500</code>.</li>

@@ -101,7 +101,7 @@ class SearchCriterionRow(QWidget):
         )
         lay.addWidget(self.partial_cb)
 
-        self.case_cb = QCheckBox("Case sensitive")
+        self.case_cb = QCheckBox("Case Sensitive")
         self.case_cb.setToolTip("When on, letter case must match.")
         lay.addWidget(self.case_cb)
 
