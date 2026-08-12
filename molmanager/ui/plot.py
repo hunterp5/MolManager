@@ -54,7 +54,7 @@ import time
 import webbrowser
 from pathlib import Path
 
-from PyQt5.QtCore import QObject, Qt, QTimer, QUrl, pyqtSlot
+from PyQt5.QtCore import QEvent, QObject, Qt, QTimer, QUrl, pyqtSlot
 from PyQt5.QtGui import QKeySequence
 from PyQt5.QtWebChannel import QWebChannel
 from PyQt5.QtWebEngineWidgets import QWebEngineView
@@ -291,6 +291,7 @@ class PlotWidget(QWidget):
     # Color-by + Spectrum + Min/Max need ~640px; Statistics sits beside axes.
     _AXES_CONTROLS_MIN_WIDTH = 640
     _STATS_PANEL_MIN_WIDTH = 240
+    owns_docked_plot_actions = True
 
     def __init__(self, parent_app=None):
         super().__init__(None)
@@ -318,7 +319,9 @@ class PlotWidget(QWidget):
         root.setContentsMargins(4, 4, 4, 4)
         root.setSpacing(4)
 
-        type_row = QHBoxLayout()
+        self._type_row_host = QWidget()
+        type_row = QHBoxLayout(self._type_row_host)
+        type_row.setContentsMargins(0, 0, 0, 0)
         type_row.setSpacing(6)
         type_row.addWidget(QLabel("Plot type:"))
         self.plot_type_combo = QComboBox()
@@ -329,7 +332,7 @@ class PlotWidget(QWidget):
             "Other types use a fixed chart style."
         )
         type_row.addWidget(self.plot_type_combo, 1)
-        root.addLayout(type_row)
+        root.addWidget(self._type_row_host)
 
         self.web = QWebEngineView(self)
         self.web.setMinimumHeight(220)
@@ -405,11 +408,11 @@ class PlotWidget(QWidget):
             self.only_selected_cb.setEnabled(False)
 
         self.only_selected_cb.stateChanged.connect(self._schedule_plot)
-        actions_row = QHBoxLayout()
-        actions_row.setSpacing(8)
-        actions_row.addWidget(self.only_selected_cb)
-        actions_row.addStretch()
-        axes_l.addLayout(actions_row)
+        gb_options = QGroupBox("Options")
+        options_l = QVBoxLayout(gb_options)
+        options_l.setSpacing(4)
+        options_l.addWidget(self.only_selected_cb)
+        ctrl_root.addWidget(gb_options)
 
         color_row = QHBoxLayout()
         color_row.setSpacing(6)
@@ -473,16 +476,16 @@ class PlotWidget(QWidget):
 
         ctrl_root.addWidget(gb_axes)
 
-        bottom_splitter = QSplitter(Qt.Horizontal)
-        bottom_splitter.setChildrenCollapsible(False)
+        self._controls_bottom = QSplitter(Qt.Horizontal)
+        self._controls_bottom.setChildrenCollapsible(False)
         ctrl_wrap.setMinimumWidth(PlotWidget._AXES_CONTROLS_MIN_WIDTH)
-        bottom_splitter.addWidget(ctrl_wrap)
+        self._controls_bottom.addWidget(ctrl_wrap)
         self._stats_panel = PlotStatisticsPanel(self)
         self._stats_panel.setMinimumWidth(PlotWidget._STATS_PANEL_MIN_WIDTH)
-        bottom_splitter.addWidget(self._stats_panel)
-        bottom_splitter.setStretchFactor(0, 1)
-        bottom_splitter.setStretchFactor(1, 1)
-        bottom_splitter.setSizes(
+        self._controls_bottom.addWidget(self._stats_panel)
+        self._controls_bottom.setStretchFactor(0, 1)
+        self._controls_bottom.setStretchFactor(1, 1)
+        self._controls_bottom.setSizes(
             [PlotWidget._AXES_CONTROLS_MIN_WIDTH, PlotWidget._STATS_PANEL_MIN_WIDTH + 40]
         )
 
@@ -490,10 +493,40 @@ class PlotWidget(QWidget):
         self._plot_body_splitter.setChildrenCollapsible(False)
         self._plot_body_splitter.setHandleWidth(6)
         self._plot_body_splitter.addWidget(self.web)
-        self._plot_body_splitter.addWidget(bottom_splitter)
+        self._plot_body_splitter.addWidget(self._controls_bottom)
         self._plot_body_splitter.setStretchFactor(0, 1)
         self._plot_body_splitter.setStretchFactor(1, 0)
         root.addWidget(self._plot_body_splitter, 1)
+
+        foot = QHBoxLayout()
+        foot.setContentsMargins(0, 4, 0, 0)
+        self._add_to_main_btn = QPushButton("Add to Main Window")
+        self._add_to_main_btn.setAutoDefault(False)
+        self._add_to_main_btn.setDefault(False)
+        self._add_to_main_btn.setToolTip(
+            "Dock this plot beside the table in the main window (like the filter panel)."
+        )
+        self._add_to_main_btn.clicked.connect(self._add_to_main_window)
+        foot.addWidget(self._add_to_main_btn)
+        self._send_window_btn = QPushButton("Send to New Window")
+        self._send_window_btn.setToolTip(
+            "Open this docked plot in a separate floating window."
+        )
+        self._send_window_btn.clicked.connect(self._send_to_new_window)
+        foot.addWidget(self._send_window_btn)
+        self._close_plot_btn = QPushButton("Close Plot")
+        self._close_plot_btn.setToolTip(
+            "Close this docked plot and free the panel so another plot can be docked."
+        )
+        self._close_plot_btn.clicked.connect(self._close_docked_plot)
+        foot.addWidget(self._close_plot_btn)
+        self._opts_toggle_btn = QPushButton("Hide Options")
+        self._opts_toggle_btn.setToolTip("Show or hide plot type, axes, and statistics controls.")
+        self._opts_toggle_btn.clicked.connect(self._toggle_opts_panel)
+        foot.addWidget(self._opts_toggle_btn)
+        foot.addStretch(1)
+        root.addLayout(foot)
+        self._sync_footer_chrome()
         self.setMinimumWidth(self.embedded_minimum_width())
 
         self._bridge = _PlotBridge(self)
@@ -529,6 +562,55 @@ class PlotWidget(QWidget):
             model.columnsInserted.connect(self._on_table_columns_changed)
             model.columnsRemoved.connect(self._on_table_columns_changed)
             model.headerDataChanged.connect(self._on_table_header_data_changed)
+
+    def _toggle_opts_panel(self) -> None:
+        """Show or hide plot type, axes/options, and statistics under the figure."""
+        show = not self._type_row_host.isVisible()
+        self._type_row_host.setVisible(show)
+        self._controls_bottom.setVisible(show)
+        self._opts_toggle_btn.setText("Hide Options" if show else "Show Options")
+
+    def _add_to_main_window(self) -> None:
+        if self.parent_app is None:
+            return
+        dlg = self.window()
+        teardown = getattr(dlg, "_scope_sync_disconnect", None)
+        if callable(teardown):
+            teardown()
+        if not self.parent_app.dock_plot_widget(self):
+            return
+        if isinstance(dlg, PlotDialog):
+            dlg._plot_widget = None
+            dlg._force_close = True
+            dlg.close()
+
+    def _send_to_new_window(self) -> None:
+        if self.parent_app is not None:
+            self.parent_app.undock_plot_to_window()
+
+    def _close_docked_plot(self) -> None:
+        if self.parent_app is not None:
+            self.parent_app.close_docked_plot()
+
+    def _is_docked_in_main_window(self) -> bool:
+        app = self.parent_app
+        return app is not None and getattr(app, "_docked_plot_widget", None) is self
+
+    def _sync_footer_chrome(self) -> None:
+        floating = isinstance(self.window(), PlotDialog)
+        docked = self._is_docked_in_main_window()
+        self._add_to_main_btn.setVisible(floating)
+        self._send_window_btn.setVisible(docked)
+        self._close_plot_btn.setVisible(docked)
+
+    def event(self, event):  # noqa: N802 — Qt API name
+        if event.type() == QEvent.ParentChange:
+            self._sync_footer_chrome()
+        return super().event(event)
+
+    def create_floating_dialog(self, parent_app) -> PlotDialog:
+        """Re-open this plotter in a floating window after undocking from the main table."""
+        return PlotDialog(parent_app, plot_widget=self)
 
     def embedded_minimum_width(self) -> int:
         """Width needed so axes + statistics controls do not overlap when docked."""
@@ -1752,18 +1834,7 @@ class PlotDialog(QDialog):
 
         root = QVBoxLayout(self)
         root.addWidget(self._plot_widget, 1)
-
-        foot = QHBoxLayout()
-        self._add_to_main_btn = QPushButton("Add to Main Window")
-        self._add_to_main_btn.setAutoDefault(False)
-        self._add_to_main_btn.setDefault(False)
-        self._add_to_main_btn.setToolTip(
-            "Dock this plot beside the table in the main window (like the filter panel)."
-        )
-        self._add_to_main_btn.clicked.connect(self._add_to_main_window)
-        foot.addWidget(self._add_to_main_btn)
-        foot.addStretch()
-        root.addLayout(foot)
+        self._plot_widget._sync_footer_chrome()
 
         self._configure_floating_plot_dialog()
 
@@ -1788,18 +1859,6 @@ class PlotDialog(QDialog):
                 event.accept()
                 return
         super().keyPressEvent(event)
-
-    def _add_to_main_window(self) -> None:
-        if self.parent_app is None or self._plot_widget is None:
-            return
-        teardown = getattr(self, "_scope_sync_disconnect", None)
-        if callable(teardown):
-            teardown()
-        if not self.parent_app.dock_plot_widget(self._plot_widget):
-            return
-        self._plot_widget = None
-        self._force_close = True
-        self.close()
 
     def closeEvent(self, event):
         if self._force_close:

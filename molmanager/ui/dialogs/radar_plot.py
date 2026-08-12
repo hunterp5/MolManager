@@ -101,7 +101,9 @@ class RadarPlotPanel(QWidget):
             plot_ly.addWidget(self._plot_placeholder, 1)
         root.addWidget(plot_host, 1)
 
-        opts = QVBoxLayout()
+        self._opts_panel = QWidget()
+        opts = QVBoxLayout(self._opts_panel)
+        opts.setContentsMargins(0, 0, 0, 0)
         opts.setSpacing(6)
 
         scope = QHBoxLayout()
@@ -109,6 +111,10 @@ class RadarPlotPanel(QWidget):
         self.refresh_btn.clicked.connect(self.plot)
         scope.addWidget(self.refresh_btn)
         scope.addStretch(1)
+        opts.addLayout(scope)
+
+        options_gb = QGroupBox("Options")
+        options_ly = QVBoxLayout(options_gb)
         self.only_selected_cb = QCheckBox("Selected Rows Only")
         self._only_selected_scope_prefix = "Selected Rows Only"
         if self._have_selection:
@@ -116,8 +122,8 @@ class RadarPlotPanel(QWidget):
         else:
             self.only_selected_cb.setEnabled(False)
         self.only_selected_cb.stateChanged.connect(self._schedule_plot)
-        scope.addWidget(self.only_selected_cb)
-        opts.addLayout(scope)
+        options_ly.addWidget(self.only_selected_cb)
+        opts.addWidget(options_gb)
 
         spokes_gb = QGroupBox("Spokes (numeric columns)")
         spokes_ly = QVBoxLayout(spokes_gb)
@@ -160,7 +166,16 @@ class RadarPlotPanel(QWidget):
         spokes_ly.addWidget(hint)
         opts.addWidget(spokes_gb)
 
-        root.addLayout(opts)
+        root.addWidget(self._opts_panel)
+
+        foot = QHBoxLayout()
+        foot.setContentsMargins(0, 4, 0, 0)
+        self._opts_toggle_btn = QPushButton("Hide Options")
+        self._opts_toggle_btn.setToolTip("Show or hide plot options under the plot.")
+        self._opts_toggle_btn.clicked.connect(self._toggle_opts_panel)
+        foot.addWidget(self._opts_toggle_btn)
+        foot.addStretch(1)
+        root.addLayout(foot)
 
         self.refresh_spoke_columns()
         if parent_app is not None:
@@ -172,6 +187,12 @@ class RadarPlotPanel(QWidget):
             model.columnsRemoved.connect(self.refresh_spoke_columns)
             model.headerDataChanged.connect(self._on_header_data_changed)
         self._schedule_plot()
+
+    def _toggle_opts_panel(self) -> None:
+        """Show or hide Options/Spokes so the plot can fill the panel."""
+        show = not self._opts_panel.isVisible()
+        self._opts_panel.setVisible(show)
+        self._opts_toggle_btn.setText("Hide Options" if show else "Show Options")
 
     def _on_header_data_changed(self, orientation, first: int, last: int) -> None:  # noqa: ARG002
         if int(orientation) == Qt.Horizontal:

@@ -21,11 +21,12 @@ from __future__ import annotations
 import time
 from typing import TYPE_CHECKING, Any, Callable, Literal
 
-from PyQt5.QtCore import Qt, QTimer
+from PyQt5.QtCore import QEvent, Qt, QTimer
 from PyQt5.QtWidgets import (
     QCheckBox,
     QComboBox,
     QDialog,
+    QGroupBox,
     QHBoxLayout,
     QLabel,
     QMessageBox,
@@ -79,6 +80,8 @@ MedChemPlotKind = Literal["boiled_egg", "golden_triangle"]
 class MedChemPlotPanel(QWidget):
     """BOILED-Egg or golden-triangle controls + plot (dialog or docked beside the table)."""
 
+    owns_docked_plot_actions = True
+
     def __init__(
         self,
         parent_app: ChemicalTableApp | None,
@@ -126,25 +129,15 @@ class MedChemPlotPanel(QWidget):
             plot_ly.addWidget(self._plot_placeholder, 1)
         root.addWidget(plot_host, 1)
 
-        opts = QVBoxLayout()
+        self._opts_panel = QWidget()
+        opts = QVBoxLayout(self._opts_panel)
+        opts.setContentsMargins(0, 0, 0, 0)
         opts.setSpacing(6)
 
-        scope = QHBoxLayout()
-        if plot_kind == "golden_triangle":
-            self.select_region_btn = QPushButton("Select in triangle")
-            self.select_region_btn.clicked.connect(self._on_select_in_triangle)
-            scope.addWidget(self.select_region_btn)
-        else:
-            self.select_egg_btn = QPushButton("Select in egg")
-            self.select_egg_btn.clicked.connect(self._on_select_in_egg)
-            self.select_yolk_btn = QPushButton("Select in yolk")
-            self.select_yolk_btn.clicked.connect(self._on_select_in_yolk)
-            scope.addWidget(self.select_egg_btn)
-            scope.addWidget(self.select_yolk_btn)
-        self.refresh_btn = QPushButton("Refresh plot")
-        self.refresh_btn.clicked.connect(self._on_refresh)
-        scope.addWidget(self.refresh_btn)
-        scope.addStretch(1)
+        options_gb = QGroupBox("Options")
+        options_ly = QVBoxLayout(options_gb)
+        options_ly.setSpacing(6)
+
         self.only_selected_cb = QCheckBox("Selected Rows Only")
         self._only_selected_scope_prefix = "Selected Rows Only"
         if self._have_selection:
@@ -152,14 +145,14 @@ class MedChemPlotPanel(QWidget):
         else:
             self.only_selected_cb.setEnabled(False)
         self.only_selected_cb.stateChanged.connect(self._on_scope_changed)
-        scope.addWidget(self.only_selected_cb)
-        opts.addLayout(scope)
+        options_ly.addWidget(self.only_selected_cb)
 
         struct_row = QHBoxLayout()
         struct_row.addWidget(QLabel("Structure from:"))
         self.struct_src_combo = QComboBox()
         struct_row.addWidget(self.struct_src_combo, 1)
-        opts.addLayout(struct_row)
+        options_ly.addLayout(struct_row)
+        opts.addWidget(options_gb)
 
         color_row = QHBoxLayout()
         color_row.setSpacing(6)
@@ -168,7 +161,7 @@ class MedChemPlotPanel(QWidget):
         self.color_combo = QComboBox()
         self.color_combo.setMinimumWidth(120)
         self.color_combo.currentIndexChanged.connect(self._on_color_column_changed)
-        color_row.addWidget(self.color_combo)
+        color_row.addWidget(self.color_combo, 1)
         self._spectrum_label = QLabel("Spectrum:")
         color_row.addWidget(self._spectrum_label)
         self.colorscale_combo = QComboBox()
@@ -180,7 +173,6 @@ class MedChemPlotPanel(QWidget):
         self.color_range = PlotColorRangeControls()
         self.color_range.connect_changed(self._on_color_column_changed)
         color_row.addWidget(self.color_range)
-        color_row.addStretch()
         opts.addLayout(color_row)
 
         self.summary_text = QTextEdit()
@@ -190,11 +182,52 @@ class MedChemPlotPanel(QWidget):
         opts.addWidget(QLabel("Summary"))
         opts.addWidget(self.summary_text)
 
-        root.addLayout(opts)
+        root.addWidget(self._opts_panel)
+
+        foot = QHBoxLayout()
+        foot.setContentsMargins(0, 4, 0, 0)
+        self._add_to_main_btn = QPushButton("Add to Main Window")
+        self._add_to_main_btn.setToolTip("Dock this plot beside the compound table.")
+        self._add_to_main_btn.clicked.connect(self._add_to_main_window)
+        foot.addWidget(self._add_to_main_btn)
+        self._send_window_btn = QPushButton("Send to New Window")
+        self._send_window_btn.setToolTip(
+            "Open this docked plot in a separate floating window."
+        )
+        self._send_window_btn.clicked.connect(self._send_to_new_window)
+        foot.addWidget(self._send_window_btn)
+        self._close_plot_btn = QPushButton("Close Plot")
+        self._close_plot_btn.setToolTip(
+            "Close this docked plot and free the panel so another plot can be docked."
+        )
+        self._close_plot_btn.clicked.connect(self._close_docked_plot)
+        foot.addWidget(self._close_plot_btn)
+        self._opts_toggle_btn = QPushButton("Hide Options")
+        self._opts_toggle_btn.setToolTip("Show or hide plot options under the plot.")
+        self._opts_toggle_btn.clicked.connect(self._toggle_opts_panel)
+        foot.addWidget(self._opts_toggle_btn)
+        foot.addStretch(1)
+        if plot_kind == "golden_triangle":
+            self.select_region_btn = QPushButton("Select in triangle")
+            self.select_region_btn.clicked.connect(self._on_select_in_triangle)
+            foot.addWidget(self.select_region_btn)
+        else:
+            self.select_egg_btn = QPushButton("Select in egg")
+            self.select_egg_btn.clicked.connect(self._on_select_in_egg)
+            self.select_yolk_btn = QPushButton("Select in yolk")
+            self.select_yolk_btn.clicked.connect(self._on_select_in_yolk)
+            foot.addWidget(self.select_egg_btn)
+            foot.addWidget(self.select_yolk_btn)
+        self._clear_sel_btn = QPushButton("Clear Selection")
+        self._clear_sel_btn.setToolTip("Clear the current table and plot selection.")
+        self._clear_sel_btn.clicked.connect(self._clear_selection)
+        foot.addWidget(self._clear_sel_btn)
+        root.addLayout(foot)
 
         self._refresh_structure_sources()
         self._reload_color_columns()
         self._update_spectrum_controls()
+        self._sync_footer_chrome()
         self.summary_text.setPlainText("Preparing plot…")
         self.setMinimumWidth(self.embedded_minimum_width())
         QTimer.singleShot(0, self._start_refresh_job)
@@ -214,6 +247,59 @@ class MedChemPlotPanel(QWidget):
             window_title=self._window_title,
             panel=self,
         )
+
+    def _clear_selection(self) -> None:
+        """Clear table and plot point selection."""
+        if self._plot_view is not None:
+            self._plot_view.clear_table_selection(update_plot=True)
+        elif self.parent_app is not None:
+            self.parent_app.clear_table_selection()
+
+    def _toggle_opts_panel(self) -> None:
+        """Show or hide Options/Summary so the plot can fill the panel."""
+        show = not self._opts_panel.isVisible()
+        self._opts_panel.setVisible(show)
+        self._opts_toggle_btn.setText("Hide Options" if show else "Show Options")
+
+    def _add_to_main_window(self) -> None:
+        """Dock this panel beside the compound table (from a floating dialog)."""
+        if self.parent_app is None:
+            return
+        dlg = self.window()
+        teardown = getattr(dlg, "_scope_sync_disconnect", None)
+        if callable(teardown):
+            teardown()
+        if not self.parent_app.dock_plot_widget(self):
+            return
+        if isinstance(dlg, MedChemSpaceDialog):
+            dlg._panel = None
+            dlg._force_close = True
+            dlg.close()
+
+    def _send_to_new_window(self) -> None:
+        if self.parent_app is not None:
+            self.parent_app.undock_plot_to_window()
+
+    def _close_docked_plot(self) -> None:
+        if self.parent_app is not None:
+            self.parent_app.close_docked_plot()
+
+    def _is_docked_in_main_window(self) -> bool:
+        app = self.parent_app
+        return app is not None and getattr(app, "_docked_plot_widget", None) is self
+
+    def _sync_footer_chrome(self) -> None:
+        """Floating: Add to Main. Docked: Send/Close. Region select + Clear Selection always."""
+        floating = isinstance(self.window(), MedChemSpaceDialog)
+        docked = self._is_docked_in_main_window()
+        self._add_to_main_btn.setVisible(floating)
+        self._send_window_btn.setVisible(docked)
+        self._close_plot_btn.setVisible(docked)
+
+    def event(self, event):  # noqa: N802 — Qt API name
+        if event.type() == QEvent.ParentChange:
+            self._sync_footer_chrome()
+        return super().event(event)
 
     def _refresh_structure_sources(self) -> None:
         self.struct_src_combo.clear()
@@ -286,12 +372,12 @@ class MedChemPlotPanel(QWidget):
     def _set_refresh_ui_busy(self, busy: bool) -> None:
         self._job_running = busy
         for w in (
-            self.refresh_btn,
             self.struct_src_combo,
             self.only_selected_cb,
             getattr(self, "select_region_btn", None),
             getattr(self, "select_egg_btn", None),
             getattr(self, "select_yolk_btn", None),
+            self._clear_sel_btn,
         ):
             if w is not None:
                 w.setEnabled(not busy)
@@ -849,35 +935,13 @@ class MedChemSpaceDialog(QDialog):
 
         root = QVBoxLayout(self)
         root.addWidget(self._panel, 1)
-
-        foot = QHBoxLayout()
-        self._add_to_main_btn = QPushButton("Add to Main Window")
-        self._add_to_main_btn.setToolTip("Dock this plot beside the compound table.")
-        self._add_to_main_btn.clicked.connect(self._add_to_main_window)
-        foot.addWidget(self._add_to_main_btn)
-        foot.addStretch()
-        close_btn = QPushButton("Close")
-        close_btn.clicked.connect(self.close)
-        foot.addWidget(close_btn)
-        root.addLayout(foot)
+        self._panel._sync_footer_chrome()
 
         self.setModal(False)
         self.setWindowModality(Qt.NonModal)
         self.setAttribute(Qt.WA_DeleteOnClose, True)
         self._force_close = False
         make_window_minimizable(self)
-
-    def _add_to_main_window(self) -> None:
-        if self.parent_app is None:
-            return
-        teardown = getattr(self, "_scope_sync_disconnect", None)
-        if callable(teardown):
-            teardown()
-        if not self.parent_app.dock_plot_widget(self._panel):
-            return
-        self._panel = None
-        self._force_close = True
-        self.close()
 
     def closeEvent(self, event) -> None:  # noqa: N802 — Qt API name
         if self._force_close:

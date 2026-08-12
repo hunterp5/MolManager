@@ -312,6 +312,7 @@ class PlotToolsMixin:
                     w.setParent(None)
         lay.addWidget(plot_widget, 1)
         self._docked_plot_widget = plot_widget
+        self._sync_plot_panel_bottom_visibility()
         self.show_docked_plot_panel()
         prior_teardown = getattr(plot_widget, "_scope_sync_disconnect", None)
         if callable(prior_teardown):
@@ -319,8 +320,20 @@ class PlotToolsMixin:
         self._prepare_tool_plot(plot_widget)
         plot_widget.destroyed.connect(self._on_docked_plot_destroyed)
         self._sync_active_plots_from_table_selection()
+        sync_footer = getattr(plot_widget, "_sync_footer_chrome", None)
+        if callable(sync_footer):
+            sync_footer()
         self.status_label.setText("Plot: docked to the right of the table.")
         return True
+
+    def _sync_plot_panel_bottom_visibility(self) -> None:
+        """Hide host Send/Close when the docked plot owns those actions in its footer."""
+        bottom = getattr(self, "_plot_panel_bottom", None)
+        if bottom is None:
+            return
+        w = getattr(self, "_docked_plot_widget", None)
+        owns = bool(getattr(w, "owns_docked_plot_actions", False)) if w is not None else False
+        bottom.setVisible(not owns)
 
     def show_docked_plot_panel(self) -> None:
         """Show the docked plot panel and ensure it has a usable width."""
@@ -346,6 +359,7 @@ class PlotToolsMixin:
 
     def _on_docked_plot_destroyed(self, *_args) -> None:
         self._docked_plot_widget = None
+        self._sync_plot_panel_bottom_visibility()
         try:
             self.hide_docked_plot_panel()
         except Exception:
@@ -382,6 +396,7 @@ class PlotToolsMixin:
         if callable(teardown):
             teardown()
         self._docked_plot_widget = None
+        self._sync_plot_panel_bottom_visibility()
         self._apply_plot_panel_minimum_width()
 
     def undock_plot_to_window(self) -> bool:
