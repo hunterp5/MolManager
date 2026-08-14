@@ -217,13 +217,21 @@ python -m pip install --upgrade pip
 python3 -m pip install --upgrade pip
 ```
 
-### Step 6b — Install all dependencies
+### Step 6b — Install dependencies
 
-This downloads and installs everything MolManager needs in one step: the desktop app (PyQt5, RDKit), machine-learning tools (PyTorch, pkasolver, Chemprop), docking helpers (Meeko), and development tools (pytest). It can take **15–30 minutes** depending on your internet speed.
+**Core desktop (recommended if you do not need pKa / permeability / docking ML):** smaller download, no PyTorch.
+
+```bash
+pip install -r requirements-core.txt
+```
+
+**Full stack:** desktop app plus machine-learning tools (PyTorch, pkasolver, Chemprop), docking helpers (Meeko), and development tools (pytest). It can take **15–30 minutes** depending on your internet speed.
 
 ```bash
 pip install -r requirements.txt
 ```
+
+See [docs/PACKAGING.md](docs/PACKAGING.md) for install profiles and release versioning.
 
 ### Step 6c — Register the MolManager application
 
@@ -400,7 +408,7 @@ python -m molmanager
 python -m pytest tests/ -v
 ```
 
-Editable install extras in `pyproject.toml` (`pka`, `permeability`, `dev`) mirror subsets of `requirements.txt` for `pip install -e ".[extra]"` workflows.
+Editable install extras in `pyproject.toml` (`pka`, `permeability`, `docking`, `dev`) mirror subsets of `requirements.txt` for `pip install -e ".[extra]"` workflows. Prefer `requirements-core.txt` when you only need the table desktop app.
 
 Packaging and installer builds: `docs/PACKAGING.md`.
 

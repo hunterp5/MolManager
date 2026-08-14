@@ -1,4 +1,5 @@
-# MolManager — complete Python dependency list.
+# MolManager — full Python dependency list (core + ML + docking + dev).
+# For a smaller desktop-only install, prefer requirements-core.txt instead.
 # From the repo root with your virtual environment active:
 #   pip install -U pip
 #   pip install -r requirements.txt

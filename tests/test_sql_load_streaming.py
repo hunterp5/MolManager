@@ -18,10 +18,12 @@ from __future__ import annotations
 
 import sqlite3
 
+import pytest
+
 from molmanager.ui.main_window import ChemicalTableApp
 
 
-def test_load_from_sql_streaming_sqlite(tmp_path, qapp):  # noqa: ARG001
+def test_load_from_sql_streaming_sqlite(tmp_path, qapp):
     db_path = tmp_path / "sample.sqlite"
     con = sqlite3.connect(str(db_path))
     try:
@@ -36,11 +38,43 @@ def test_load_from_sql_streaming_sqlite(tmp_path, qapp):  # noqa: ARG001
 
     w = ChemicalTableApp()
     url = "sqlite:///" + str(db_path).replace("\\", "/")
-    w.load_from_sql(url=url, table="compounds", limit=10, apply_limit=True, clear_first=True)
+    w.load_from_sql(
+        url=url,
+        table="compounds",
+        limit=10,
+        apply_limit=True,
+        clear_first=True,
+        read_only=True,
+    )
 
     assert w._table_model.rowCount() == 3
     assert "SMILES" in w.headers
     assert w._table_model.value_for_header(0, "Note") == "alpha"
     assert w._table_model.value_for_header(1, "Note") == "beta"
+    # Deferred post-load may start Render 2D; cancel so session-scoped qapp can exit.
+    qapp.processEvents()
+    if hasattr(w, "cancel_render_2d_batch"):
+        w.cancel_render_2d_batch()
+    qapp.processEvents()
+    w.close()
+
+
+def test_load_from_sql_rejects_destructive_when_read_only(tmp_path, qapp):  # noqa: ARG001
+    db_path = tmp_path / "sample.sqlite"
+    con = sqlite3.connect(str(db_path))
+    try:
+        con.execute("CREATE TABLE compounds (SMILES TEXT)")
+        con.commit()
+    finally:
+        con.close()
+
+    w = ChemicalTableApp()
+    url = "sqlite:///" + str(db_path).replace("\\", "/")
+    with pytest.raises(ValueError, match="modify the database"):
+        w.load_from_sql(
+            url=url,
+            query="DELETE FROM compounds",
+            read_only=True,
+        )
     w.close()
 

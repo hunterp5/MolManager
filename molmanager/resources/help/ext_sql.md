@@ -36,4 +36,4 @@ Requires a reachable database and a valid SQL query returning tabular columns; s
 
 ## Tips and limits
 
-Credentials and network access are your responsibility - do not embed secrets in shared sessions carelessly. Large result sets can overwhelm memory; filter in SQL first. Invalid SMILES still fail chemistry tools after load.
+Credentials and network access are your responsibility — do not embed secrets in shared sessions carelessly. Prefer **SELECT** queries. The dialog defaults to a **read-only connection** (SQLite opens with `mode=ro`) and blocks SQL that looks destructive (INSERT/UPDATE/DELETE/DROP/…). Uncheck read-only only when you intentionally need a write connection, and confirm the warning. Large result sets can overwhelm memory; filter in SQL first and use **Max rows**. Invalid SMILES still fail chemistry tools after load.

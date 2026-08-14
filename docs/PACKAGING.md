@@ -2,27 +2,47 @@
 
 This document supports building an installer (PyInstaller, Inno Setup, MSI, etc.) so users can run molmanager without managing Python manually.
 
+## Install profiles
+
+| Profile | Command | Use when |
+|---------|---------|----------|
+| **Core desktop** | `pip install -r requirements-core.txt` then `pip install -e ".[dev]"` | Table/filter/plot work; smaller CI / laptops |
+| **Full (default docs)** | `pip install -r requirements.txt` then `pip install -e .` | pKa, permeability, docking helpers, and torch |
+| **Extras only** | `pip install -e ".[pka,permeability,docking,dev]"` after a matching torch | Editable workflows that already have a CUDA/CPU torch |
+
+`requirements.txt` remains the one-shot “install everything” path. Prefer **core** when you do not need ML tools.
+
 ## What is included
 
 | Component | How it ships |
 |-----------|----------------|
 | molmanager app (`molmanager` package) | PyInstaller one-folder/one-file, or `pip install -e .` |
-| Python dependencies | `pip install -r requirements.txt` then `pip install -e .` |
+| Python dependencies | `requirements-core.txt` or `requirements.txt`, then `pip install -e .` |
 | 3Dmol.js | Already in `molmanager/ui/static/` |
 | AutoDock Vina | **Optional** binary in `molmanager/resources/bin/<platform>/` (not redistributed in git) |
 
 ## Recommended install commands (source / CI)
+
+Core (recommended for most desktop development):
 
 ```bash
 python -m venv .venv
 # Windows:  .venv\Scripts\activate
 # macOS/Linux:  source .venv/bin/activate
 pip install -U pip
+pip install -r requirements-core.txt
+pip install -e ".[dev]"
+```
+
+Full stack (PyTorch, pkasolver, Chemprop, Meeko, pytest):
+
+```bash
+pip install -U pip
 pip install -r requirements.txt
 pip install -e .
 ```
 
-PyTorch, pkasolver, Chemprop, Meeko, and pytest are already in `requirements.txt`. The pKa repair script is only needed when another package upgrades PyTorch:
+The pKa repair script is only needed when another package upgrades PyTorch:
 
 ```bash
 # Windows
@@ -31,10 +51,10 @@ scripts\install_pytorch_pka.ps1
 bash scripts/install_pytorch_pka.sh
 ```
 
-Editable install with extras (optional; most deps are in `requirements.txt`):
+Editable install with extras (optional):
 
 ```bash
-pip install -e ".[pka,permeability,dev]"
+pip install -e ".[pka,permeability,docking,dev]"
 ```
 
 ## Bundling external tools
@@ -59,9 +79,24 @@ Output under `dist/molmanager/`. You still need to ship:
 
 Tune `packaging/molmanager.spec` hidden imports as you enable more Tools menu features.
 
-## Version
+For **enterprise single-user desktop** builds, prefer a **core** PyInstaller image (no torch/chemprop) unless the product SKU explicitly includes pKa/permeability. Keep ML tools as an optional second installer or documented pip extras.
 
-Application version: `molmanager.__version__` (shown in About when wired).
+## Version and release policy
+
+Keep these three values in sync on every tagged release:
+
+1. `molmanager.__version__` in `molmanager/__init__.py`
+2. `[project].version` in `pyproject.toml`
+3. Git tag: `vX.Y.Z` (annotated) matching that version
+
+Process:
+
+1. Bump both version fields together (no silent drift).
+2. Run the performance gate below on a machine representative of target hardware.
+3. Tag `vX.Y.Z` on `main` after merge from `dev`.
+4. Attach installer artifacts (if any) to the GitHub Release for that tag; note core vs full profile in the release notes.
+
+Application version is shown in About when wired to `molmanager.__version__`.
 
 ## Performance release gate (100k rows)
 

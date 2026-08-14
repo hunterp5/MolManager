@@ -115,11 +115,20 @@ class ExternalDBDialog(QDialog):
         self.chk_clear.setChecked(True)
         opts_form.addRow("", self.chk_clear)
 
+        self.chk_read_only = QCheckBox("Read-only connection (recommended)")
+        self.chk_read_only.setChecked(True)
+        self.chk_read_only.setToolTip(
+            "For SQLite, opens the file with mode=ro so accidental writes fail. "
+            "Also blocks SQL that looks destructive (INSERT/UPDATE/DELETE/DROP/…). "
+            "Server databases still need a read-only DB user for real write protection."
+        )
+        opts_form.addRow("", self.chk_read_only)
+
         root.addWidget(opts)
 
         hint = QLabel(
             "Tip: if your result includes a column named 'SMILES', the app will render structures.\n"
-            "Otherwise, it will load values as plain table text."
+            "Otherwise, it will load values as plain table text. Prefer SELECT queries."
         )
         hint.setStyleSheet("color: palette(mid);")
         root.addWidget(hint)
@@ -176,6 +185,7 @@ class ExternalDBDialog(QDialog):
                 limit=int(self.limit.value()),
                 apply_limit=bool(self.chk_visible_only.isChecked()),
                 clear_first=bool(self.chk_clear.isChecked()),
+                read_only=bool(self.chk_read_only.isChecked()),
             )
         except Exception as e:
             QMessageBox.critical(self, "External", str(e))

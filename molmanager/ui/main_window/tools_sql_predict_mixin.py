@@ -29,6 +29,7 @@ from PyQt5.QtWidgets import QApplication, QMessageBox
 from rdkit import Chem
 
 from ...config import load_config
+from ...services.sql_load_policy import engine_kwargs_for_sql_load, sql_looks_destructive
 from ..compound_table_model import STRUCTURE_DEPICT_HEIGHT, STRUCTURE_DEPICT_WIDTH
 from ...utils import redact_sqlalchemy_url, safe_float
 from ..singleton_modeless_dialog import reuse_or_show_modeless_singleton
@@ -580,16 +581,24 @@ class ToolsSqlPredictMixin:
         limit: int = 50000,
         apply_limit: bool = True,
         clear_first: bool = True,
+        read_only: bool = True,
     ) -> None:
         """Load a SQL query/table into the main table.
 
         If a 'SMILES' column exists (case-insensitive), molecules will be created and
         2D structure images are drawn automatically (same as after opening a structure file).
+
+        ``read_only`` (default True) opens SQLite with ``mode=ro`` and refuses queries that
+        look destructive. Uncheck read-only in the External SQL dialog only when you
+        intentionally need a write connection.
         """
         try:
             from sqlalchemy import create_engine, text
         except Exception as e:
-            raise RuntimeError("sqlalchemy is required for SQL loading. Install requirements.txt.") from e
+            raise RuntimeError(
+                "sqlalchemy is required for SQL loading. Install requirements-core.txt "
+                "(or requirements.txt)."
+            ) from e
 
         if bool(query) == bool(table):
             raise ValueError("Provide exactly one of: query or table.")
@@ -601,6 +610,25 @@ class ToolsSqlPredictMixin:
                     "SQL table name may only contain letters, digits, and underscores (identifier guard)."
                 )
             table = tname
+
+        if query and sql_looks_destructive(query):
+            if read_only:
+                raise ValueError(
+                    "This SQL looks like it may modify the database. "
+                    "Uncheck “Read-only connection” in the External SQL dialog only if you "
+                    "intentionally need a write connection, then confirm the warning."
+                )
+            r = QMessageBox.warning(
+                self,
+                "Destructive SQL",
+                "This SQL looks like it may modify the database (INSERT/UPDATE/DELETE/DROP/…). "
+                "MolManager is meant for loading query results into the table.\n\n"
+                "Continue and run this statement anyway?",
+                QMessageBox.Yes | QMessageBox.No,
+                QMessageBox.No,
+            )
+            if r != QMessageBox.Yes:
+                return
 
         sql_cfg = load_config()
         hard_cap = sql_cfg.sql_max_rows_hard
@@ -614,128 +642,126 @@ class ToolsSqlPredictMixin:
         if li < 0:
             li = 0
 
-        logger.debug("load_from_sql url=%s", redact_sqlalchemy_url(url))
+        logger.debug("load_from_sql url=%s read_only=%s", redact_sqlalchemy_url(url), read_only)
 
-        connect_args: dict = {}
-        lu = url.lower().strip()
-        if lu.startswith("sqlite"):
-            t_s = sql_cfg.sqlite_timeout_s
-            connect_args["timeout"] = max(1.0, min(t_s, 300.0))
-        elif "postgresql" in lu or lu.startswith("postgres"):
-            ct = sql_cfg.pg_connect_timeout
-            connect_args["connect_timeout"] = max(1, min(ct, 120))
-
-        eng_kw = {}
-        if connect_args:
-            eng_kw["connect_args"] = connect_args
-        eng = create_engine(url, **eng_kw)
+        out_url, eng_kw = engine_kwargs_for_sql_load(
+            url,
+            read_only=bool(read_only),
+            sqlite_timeout_s=sql_cfg.sqlite_timeout_s,
+            pg_connect_timeout=sql_cfg.pg_connect_timeout,
+        )
+        eng = create_engine(out_url, **eng_kw)
         page_size = max(128, int(sql_cfg.sqlite_backend_page_size))
         sql = ""
         cols: list[str] = []
         nrows = 0
         rows_hit_limit = False
-        with eng.connect() as conn:
-            limit_eff = int(li) if apply_limit and li else 0
+        limit_eff = 0
+        try:
+            with eng.connect() as conn:
+                limit_eff = int(li) if apply_limit and li else 0
 
-            if apply_limit and limit_eff > 0 and precowarn > 0:
-                est = None
-                try:
-                    if table:
-                        crow = conn.execute(text(f"SELECT COUNT(*) AS c FROM {table}")).mappings().first()
-                        est = int(crow["c"]) if crow and crow.get("c") is not None else None
-                    else:
-                        base = (query or "").strip().rstrip(";")
-                        if base:
-                            crow = conn.execute(
-                                text(f"SELECT COUNT(*) AS c FROM ({base}) AS __chem_cnt")
-                            ).mappings().first()
-                            est = int(crow["c"]) if crow and crow.get("c") is not None else None
-                except Exception:
+                if apply_limit and limit_eff > 0 and precowarn > 0:
                     est = None
-                if est is not None and est >= precowarn:
-                    r = QMessageBox.question(
-                        self,
-                        "Large SQL result",
-                        f"The data source reports about {est:,} row(s). Up to {limit_eff:,} row(s) will be fetched, "
-                        "which may use significant time and memory.\n\nContinue?",
-                        QMessageBox.Yes | QMessageBox.No,
-                        QMessageBox.No,
-                    )
-                    if r != QMessageBox.Yes:
-                        return
+                    try:
+                        if table:
+                            crow = conn.execute(text(f"SELECT COUNT(*) AS c FROM {table}")).mappings().first()
+                            est = int(crow["c"]) if crow and crow.get("c") is not None else None
+                        else:
+                            base = (query or "").strip().rstrip(";")
+                            if base:
+                                crow = conn.execute(
+                                    text(f"SELECT COUNT(*) AS c FROM ({base}) AS __chem_cnt")
+                                ).mappings().first()
+                                est = int(crow["c"]) if crow and crow.get("c") is not None else None
+                    except Exception:
+                        est = None
+                    if est is not None and est >= precowarn:
+                        r = QMessageBox.question(
+                            self,
+                            "Large SQL result",
+                            f"The data source reports about {est:,} row(s). Up to {limit_eff:,} row(s) will be fetched, "
+                            "which may use significant time and memory.\n\nContinue?",
+                            QMessageBox.Yes | QMessageBox.No,
+                            QMessageBox.No,
+                        )
+                        if r != QMessageBox.Yes:
+                            return
 
-            if table:
-                sql = f"SELECT * FROM {table}"
-                if apply_limit and limit_eff:
-                    sql += f" LIMIT {int(limit_eff)}"
-            else:
-                sql = query or ""
-                if apply_limit and limit_eff:
-                    # If the query already includes a LIMIT, leave it alone.
-                    if re.search(r"\blimit\b", sql, flags=re.IGNORECASE) is None:
-                        sql = f"SELECT * FROM ({sql}) AS subq LIMIT {int(limit_eff)}"
-            perf = getattr(self, "_perf", None)
-            scope = perf.track if perf is not None else (lambda *_args, **_kwargs: nullcontext())
-            with scope("sql.load_rows"):
-                try:
-                    self.table.setUpdatesEnabled(False)
-                except Exception:
-                    pass
-                rs = conn.execution_options(stream_results=True).execute(text(sql))
-                cols = [str(c) for c in rs.keys()]
-                if not cols:
+                if table:
+                    sql = f"SELECT * FROM {table}"
+                    if apply_limit and limit_eff:
+                        sql += f" LIMIT {int(limit_eff)}"
+                else:
+                    sql = query or ""
+                    if apply_limit and limit_eff:
+                        # If the query already includes a LIMIT, leave it alone.
+                        if re.search(r"\blimit\b", sql, flags=re.IGNORECASE) is None:
+                            sql = f"SELECT * FROM ({sql}) AS subq LIMIT {int(limit_eff)}"
+                perf = getattr(self, "_perf", None)
+                scope = perf.track if perf is not None else (lambda *_args, **_kwargs: nullcontext())
+                with scope("sql.load_rows"):
+                    try:
+                        self.table.setUpdatesEnabled(False)
+                    except Exception:
+                        pass
+                    rs = conn.execution_options(stream_results=True).execute(text(sql))
+                    cols = [str(c) for c in rs.keys()]
+                    if not cols:
+                        rs.close()
+                        raise RuntimeError("Query returned 0 rows.")
+
+                    if clear_first:
+                        self.clear_all()
+
+                    # Build headers: keep the app's first two columns.
+                    self.headers = ["ID_HIDDEN", "Structure"] + cols
+                    self.table.setSortingEnabled(False)
+                    self._table_model.clear_rows()
+                    self._table_model.set_headers(list(self.headers))
+                    self.table.setColumnHidden(0, True)
+
+                    smiles_col = next((c for c in cols if c.lower() == "smiles"), None)
+
+                    # Reset molecule store.
+                    self.mols = {}
+                    self._clear_filter_target_smiles_cache()
+                    self.global_bounds = {}
+                    self.next_oid = 0
+
+                    while True:
+                        chunk = rs.fetchmany(page_size)
+                        if not chunk:
+                            break
+                        batch: list[tuple[int, dict[str, str]]] = []
+                        for rec in chunk:
+                            oid = self.next_oid
+                            self.next_oid += 1
+                            row_cells: dict[str, str] = {}
+                            for c in cols:
+                                v = rec._mapping.get(c)
+                                row_cells[c] = "" if v is None else str(v)
+                            batch.append((oid, row_cells))
+                            if smiles_col is not None:
+                                smi = (row_cells.get(smiles_col, "") or "").strip()
+                                mol = Chem.MolFromSmiles(smi) if smi else None
+                                if mol is not None:
+                                    self.mols[oid] = mol
+                        if batch:
+                            self._table_model.append_rows_batch(batch, defer_color_cache=True)
+                            nrows += len(batch)
+                            if apply_limit and limit_eff and nrows >= limit_eff:
+                                rows_hit_limit = True
+                        app = QApplication.instance()
+                        if app is not None:
+                            app.processEvents(QEventLoop.ExcludeUserInputEvents)
                     rs.close()
-                    raise RuntimeError("Query returned 0 rows.")
-
-                if clear_first:
-                    self.clear_all()
-
-                # Build headers: keep the app's first two columns.
-                self.headers = ["ID_HIDDEN", "Structure"] + cols
-                self.table.setSortingEnabled(False)
-                self._table_model.clear_rows()
-                self._table_model.set_headers(list(self.headers))
-                self.table.setColumnHidden(0, True)
-
-                smiles_col = next((c for c in cols if c.lower() == "smiles"), None)
-
-                # Reset molecule store.
-                self.mols = {}
-                self._clear_filter_target_smiles_cache()
-                self.global_bounds = {}
-                self.next_oid = 0
-
-                while True:
-                    chunk = rs.fetchmany(page_size)
-                    if not chunk:
-                        break
-                    batch: list[tuple[int, dict[str, str]]] = []
-                    for rec in chunk:
-                        oid = self.next_oid
-                        self.next_oid += 1
-                        row_cells: dict[str, str] = {}
-                        for c in cols:
-                            v = rec._mapping.get(c)
-                            row_cells[c] = "" if v is None else str(v)
-                        batch.append((oid, row_cells))
-                        if smiles_col is not None:
-                            smi = (row_cells.get(smiles_col, "") or "").strip()
-                            mol = Chem.MolFromSmiles(smi) if smi else None
-                            if mol is not None:
-                                self.mols[oid] = mol
-                    if batch:
-                        self._table_model.append_rows_batch(batch, defer_color_cache=True)
-                        nrows += len(batch)
-                        if apply_limit and limit_eff and nrows >= limit_eff:
-                            rows_hit_limit = True
-                    app = QApplication.instance()
-                    if app is not None:
-                        app.processEvents(QEventLoop.ExcludeUserInputEvents)
-                rs.close()
-                try:
-                    self.table.setUpdatesEnabled(True)
-                except Exception:
-                    pass
+                    try:
+                        self.table.setUpdatesEnabled(True)
+                    except Exception:
+                        pass
+        finally:
+            eng.dispose()
 
         if nrows <= 0:
             raise RuntimeError("Query returned 0 rows.")

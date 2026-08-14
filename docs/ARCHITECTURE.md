@@ -112,7 +112,7 @@ Heavy chemistry jobs are split by concern (compat re-exports remain in `workers/
 | `workers/chemistry_calc.py` | Custom calculator (AST `safe_calc`) |
 | `workers/chemistry_worker_common.py` | Shared progress throttling |
 
-Pure column/structure policy helpers live under `molmanager/services/` (e.g. `chemistry_columns.py`).
+Pure helpers live under `molmanager/services/` (e.g. `chemistry_columns.py`, `sql_load_policy.py`, `table_scope.py`).
 
 ## Related docs
 

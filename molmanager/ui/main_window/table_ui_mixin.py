@@ -46,6 +46,7 @@ from ...services.chemistry_columns import (
     skip_chemistry_tool_column_dropdown,
     should_skip_chemical_scan_column,
 )
+from ...services.table_scope import collect_scoped_pairs, resolve_structure_row_for_oid
 from ...utils import (
     canonical_structure_key_from_smiles as canonical_structure_key_from_smiles_fn,
     looks_like_mol_block,
@@ -1097,16 +1098,11 @@ class TableUIMixin(TableSearchMixin, FilterPanelMixin):
             vis = self._visible_source_row_indices()
             visible_rows = None if vis is None else set(vis)
         is_pixmap_src = src != "Structure" and self._table_model.is_pixmap_data_column(src)
-        out: list[tuple[int, Chem.Mol]] = []
-        for r in range(self._table_model.rowCount()):
-            if visible_rows is not None and r not in visible_rows:
-                continue
-            oid = self._table_model.row_oid(r)
-            if allowed is not None and oid not in allowed:
-                continue
+
+        def _resolve(r: int, oid: int) -> Chem.Mol | None:
             if src == "Structure":
-                mol = self.mols.get(oid) or self._mol_for_structure_row(r)
-            elif is_pixmap_src:
+                return self.mols.get(oid) or self._mol_for_structure_row(r)
+            if is_pixmap_src:
                 mol = self.mols.get(oid)
                 if mol is None:
                     raw = self._table_model.backing_value_for_row_header(r, src)
@@ -1115,14 +1111,20 @@ class TableUIMixin(TableSearchMixin, FilterPanelMixin):
                     mol = self._mol_for_structure_row(r)
                 if mol is not None:
                     self.mols[oid] = mol
-            else:
-                raw = self._table_cell_text(r, col)
-                mol = self._mol_from_structure_text(raw)
-                if mol is not None:
-                    self.mols[oid] = mol
+                return mol
+            raw = self._table_cell_text(r, col)
+            mol = self._mol_from_structure_text(raw)
             if mol is not None:
-                out.append((oid, mol))
-        return out
+                self.mols[oid] = mol
+            return mol
+
+        return collect_scoped_pairs(
+            self._table_model.rowCount(),
+            row_oid=self._table_model.row_oid,
+            resolve=_resolve,
+            allowed_oids=allowed,
+            visible_rows=visible_rows,
+        )
 
     def collect_scoped_table_smiles(
         self,
@@ -1147,16 +1149,13 @@ class TableUIMixin(TableSearchMixin, FilterPanelMixin):
             visible_rows = None if vis is None else set(vis)
         is_pixmap_src = src != "Structure" and self._table_model.is_pixmap_data_column(src)
         smiles_h = self._canonical_smiles_header_for_updates()
-        out: list[tuple[int, str]] = []
-        nrows = self._table_model.rowCount()
-        for r in range(nrows):
-            if process_ui_every > 0 and r > 0 and r % process_ui_every == 0:
+        every = int(process_ui_every)
+
+        def _on_row(r: int) -> None:
+            if every > 0 and r > 0 and r % every == 0:
                 QApplication.processEvents()
-            if visible_rows is not None and r not in visible_rows:
-                continue
-            oid = self._table_model.row_oid(r)
-            if allowed is not None and oid not in allowed:
-                continue
+
+        def _resolve(r: int, oid: int) -> str | None:
             raw = ""
             if src == "Structure":
                 if smiles_h:
@@ -1188,9 +1187,16 @@ class TableUIMixin(TableSearchMixin, FilterPanelMixin):
                 if not raw:
                     raw = (self._table_model.backing_value_for_row_header(r, src) or "").strip()
             smi = raw.strip()
-            if smi:
-                out.append((oid, smi))
-        return out
+            return smi or None
+
+        return collect_scoped_pairs(
+            self._table_model.rowCount(),
+            row_oid=self._table_model.row_oid,
+            resolve=_resolve,
+            allowed_oids=allowed,
+            visible_rows=visible_rows,
+            on_row=_on_row,
+        )
 
     def _apply_structure_field_override(self, mol: Chem.Mol | None) -> Chem.Mol | None:
         field = getattr(self, "_structure_field_override", None)
@@ -1228,14 +1234,13 @@ class TableUIMixin(TableSearchMixin, FilterPanelMixin):
 
     def _resolve_structure_row_for_oid(self, oid: int) -> int:
         """Table row index for this molecule id (stable during a Render 2D batch)."""
-        rb = getattr(self, "_render2d_row_by_oid", None)
-        if rb and oid in rb:
-            row = rb[oid]
-            if 0 <= row < self._table_model.rowCount():
-                t0 = self._table_model.cell_text(row, 0)
-                if t0.isdigit() and int(t0) == oid:
-                    return row
-        return self.get_row_by_id(oid)
+        return resolve_structure_row_for_oid(
+            oid,
+            row_count=self._table_model.rowCount(),
+            cell_text_col0=lambda r: self._table_model.cell_text(r, 0),
+            logical_row_for_oid=self.get_row_by_id,
+            render2d_row_by_oid=getattr(self, "_render2d_row_by_oid", None),
+        )
     def show_header_menu(self, pos):
         col = self.table.horizontalHeader().logicalIndexAt(pos)
         if col < 0 or col >= len(self.headers):
