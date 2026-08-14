@@ -71,8 +71,9 @@ def test_filter_card_stylesheet_uses_palette_roles():
     qss_l = qss.lower()
     assert "palette(base)" in qss_l
     assert "QFrame#FilterCard" in qss
-    assert "border: 2px solid palette(mid)" in qss_l
-    assert "border-radius: 8px" in qss_l
+    assert "background-color: transparent" in qss_l
+    assert "border-bottom: 1px solid palette(mid)" in qss_l
+    assert "border-radius: 0px" in qss_l
     assert 'fcDragging="true"' in qss
     assert "QPushButton#fcToggle" in qss
     assert "QPushButton#fcToggle[fcActive=\"true\"]" in qss

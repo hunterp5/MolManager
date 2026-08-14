@@ -31,22 +31,23 @@ from PyQt5.QtWidgets import (
     QListWidget,
     QListWidgetItem,
     QPushButton,
-    QSlider,
     QSizePolicy,
     QVBoxLayout,
     QWidget,
 )
 
+from .range_slider import RangeSlider
+
 # --- Filter cards (compact; panel scrolls) -------------------------------------
 FILTER_CARD_MIME = "application/x-molmanager-filter-card"
-_FILTER_CARD_MIN_HEIGHT_RANGE = 144
+_FILTER_CARD_MIN_HEIGHT_RANGE = 122
 _FILTER_CARD_MIN_HEIGHT_SUBSTRUCTURE = 118
 _FILTER_CARD_MIN_HEIGHT_TEXT = 104
 _FILTER_CARD_MIN_HEIGHT_CATEGORY = 140
 _FC_PAD = 4
 _FC_GAP = 4
 _FC_CTRL_H = 20
-_FC_SLIDER_H = 14
+_FC_SLIDER_H = 16
 _FC_LIST_MAX = 96
 _FC_MINI_LABEL_W = 26
 _FC_TOOL_BTN_MIN_W = 48
@@ -59,6 +60,7 @@ _FC_DRAG_BLOCKERS = (
     QAbstractSlider,
     QComboBox,
     QLineEdit,
+    RangeSlider,
 )
 
 
@@ -467,7 +469,6 @@ class FilterCard(_FilterCardDragMixin, _FilterCardEnableInvertMixin, QFrame):
     def __init__(self, props, app, initial_property: str | None = None):
         super().__init__()
         self.app, self.scale = app, 100
-        self._active_slider = None  # "min" | "max" | None
         _fc_install_card_shell(self, _FILTER_CARD_MIN_HEIGHT_RANGE)
         l = _fc_card_layout(self)
         self._fc_add_title_row(l, "Slider")
@@ -481,39 +482,27 @@ class FilterCard(_FilterCardDragMixin, _FilterCardEnableInvertMixin, QFrame):
         self._fc_add_header_toolbar(l)
         l.addWidget(self.cb)
 
-        min_lyt = QHBoxLayout()
-        min_lyt.setSpacing(_FC_GAP)
-        min_lyt.addWidget(_fc_mini_label("Min"))
+        bounds_lyt = QHBoxLayout()
+        bounds_lyt.setSpacing(_FC_GAP)
+        bounds_lyt.addWidget(_fc_mini_label("Min"))
         self.min_edit = QLineEdit()
         self.min_edit.setMinimumWidth(40)
         self.min_edit.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         self.min_edit.editingFinished.connect(self.sync_from_text)
-        min_lyt.addWidget(self.min_edit, 1)
-        l.addLayout(min_lyt)
-        self.s_min = QSlider(Qt.Horizontal)
-        self.s_min.setFixedHeight(_FC_SLIDER_H)
-        self.s_min.sliderPressed.connect(lambda: setattr(self, "_active_slider", "min"))
-        self.s_min.sliderReleased.connect(lambda: setattr(self, "_active_slider", None))
-        self.s_min.valueChanged.connect(lambda: self._sync_slider_edits("min"))
-        self.s_min.sliderReleased.connect(self._commit_slider_filter)
-        l.addWidget(self.s_min)
-
-        max_lyt = QHBoxLayout()
-        max_lyt.setSpacing(_FC_GAP)
-        max_lyt.addWidget(_fc_mini_label("Max"))
+        bounds_lyt.addWidget(self.min_edit, 1)
+        bounds_lyt.addWidget(_fc_mini_label("Max"))
         self.max_edit = QLineEdit()
         self.max_edit.setMinimumWidth(40)
         self.max_edit.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         self.max_edit.editingFinished.connect(self.sync_from_text)
-        max_lyt.addWidget(self.max_edit, 1)
-        l.addLayout(max_lyt)
-        self.s_max = QSlider(Qt.Horizontal)
-        self.s_max.setFixedHeight(_FC_SLIDER_H)
-        self.s_max.sliderPressed.connect(lambda: setattr(self, "_active_slider", "max"))
-        self.s_max.sliderReleased.connect(lambda: setattr(self, "_active_slider", None))
-        self.s_max.valueChanged.connect(lambda: self._sync_slider_edits("max"))
-        self.s_max.sliderReleased.connect(self._commit_slider_filter)
-        l.addWidget(self.s_max)
+        bounds_lyt.addWidget(self.max_edit, 1)
+        l.addLayout(bounds_lyt)
+
+        self.range_slider = RangeSlider(self)
+        self.range_slider.setFixedHeight(_FC_SLIDER_H)
+        self.range_slider.rangeChanged.connect(self._sync_slider_edits)
+        self.range_slider.sliderReleased.connect(self._commit_slider_filter)
+        l.addWidget(self.range_slider)
         self.refresh_limits()
 
     def update_prop_list(self, new_props, old_n=None, new_n=None):
@@ -541,40 +530,33 @@ class FilterCard(_FilterCardDragMixin, _FilterCardEnableInvertMixin, QFrame):
         b_meta = self.app.global_bounds.get(prop, {"min": 0, "max": 100, "is_int": False})
         b_min, b_max = b_meta["min"], b_meta["max"]
         self.scale = 1 if b_meta["is_int"] else 100
-        self.s_min.setRange(int(b_min * self.scale), int(b_max * self.scale))
-        self.s_max.setRange(int(b_min * self.scale), int(b_max * self.scale))
-        self.s_min.setValue(int(b_min * self.scale))
-        self.s_max.setValue(int(b_max * self.scale))
+        lo = int(b_min * self.scale)
+        hi = int(b_max * self.scale)
+        self.range_slider.blockSignals(True)
+        self.range_slider.setRange(lo, hi)
+        self.range_slider.setValues(lo, hi)
+        self.range_slider.blockSignals(False)
         fmt = "{:.0f}" if b_meta["is_int"] else "{:.2f}"
         self.min_edit.setText(fmt.format(b_min))
         self.max_edit.setText(fmt.format(b_max))
         self.blockSignals(False)
         self.changed.emit()
 
-    def _sync_slider_edits(self, which: str | None = None) -> None:
+    def _sync_slider_edits(self, *_args) -> None:
         """Update min/max text while dragging without re-filtering the table."""
-        active = which or getattr(self, "_active_slider", None)
-        vmin = self.s_min.value()
-        vmax = self.s_max.value()
-        if vmin > vmax:
-            self.blockSignals(True)
-            if active == "max":
-                self.s_min.setValue(vmax)
-                vmin = vmax
-            else:
-                self.s_max.setValue(vmin)
-                vmax = vmin
-            self.blockSignals(False)
+        vmin = self.range_slider.lowerValue()
+        vmax = self.range_slider.upperValue()
         fmt = "{:.0f}" if self.scale == 1 else "{:.2f}"
         self.min_edit.setText(fmt.format(vmin / self.scale))
         self.max_edit.setText(fmt.format(vmax / self.scale))
 
     def _commit_slider_filter(self) -> None:
-        self._sync_slider_edits(None)
+        self._sync_slider_edits()
         self.changed.emit()
 
     def sync_from_slider(self, which: str | None = None):
-        self._sync_slider_edits(which)
+        del which
+        self._sync_slider_edits()
         self.changed.emit()
 
     def sync_from_text(self):
@@ -582,10 +564,10 @@ class FilterCard(_FilterCardDragMixin, _FilterCardEnableInvertMixin, QFrame):
             v_min, v_max = float(self.min_edit.text()), float(self.max_edit.text())
             if v_min > v_max:
                 v_min = v_max
-            self.blockSignals(True)
-            self.s_min.setValue(int(v_min * self.scale))
-            self.s_max.setValue(int(v_max * self.scale))
-            self.blockSignals(False)
+            self.range_slider.blockSignals(True)
+            self.range_slider.setValues(int(v_min * self.scale), int(v_max * self.scale))
+            self.range_slider.blockSignals(False)
+            self._sync_slider_edits()
             self.changed.emit()
         except Exception:
             self.sync_from_slider(None)
@@ -593,8 +575,8 @@ class FilterCard(_FilterCardDragMixin, _FilterCardEnableInvertMixin, QFrame):
     def get_cfg(self):
         return {
             "p": self.cb.currentText(),
-            "min": self.s_min.value() / self.scale,
-            "max": self.s_max.value() / self.scale,
+            "min": self.range_slider.lowerValue() / self.scale,
+            "max": self.range_slider.upperValue() / self.scale,
             "enabled": self._filter_enabled_on,
             "inverted": self._invert_on,
         }
@@ -606,15 +588,15 @@ class FilterCard(_FilterCardDragMixin, _FilterCardEnableInvertMixin, QFrame):
         b_meta = self.app.global_bounds.get(prop, {"min": 0, "max": 100, "is_int": False})
         self.scale = 1 if b_meta["is_int"] else 100
         lo, hi = float(b_meta["min"]), float(b_meta["max"])
-        self.s_min.setRange(int(lo * self.scale), int(hi * self.scale))
-        self.s_max.setRange(int(lo * self.scale), int(hi * self.scale))
+        self.range_slider.blockSignals(True)
+        self.range_slider.setRange(int(lo * self.scale), int(hi * self.scale))
         lo_v = max(min(min_val, max_val), lo)
         hi_v = min(max(max_val, min_val), hi)
-        self.s_min.setValue(int(lo_v * self.scale))
-        self.s_max.setValue(int(hi_v * self.scale))
+        self.range_slider.setValues(int(lo_v * self.scale), int(hi_v * self.scale))
+        self.range_slider.blockSignals(False)
         fmt = "{:.0f}" if self.scale == 1 else "{:.2f}"
-        self.min_edit.setText(fmt.format(self.s_min.value() / self.scale))
-        self.max_edit.setText(fmt.format(self.s_max.value() / self.scale))
+        self.min_edit.setText(fmt.format(self.range_slider.lowerValue() / self.scale))
+        self.max_edit.setText(fmt.format(self.range_slider.upperValue() / self.scale))
         self.blockSignals(False)
 
 

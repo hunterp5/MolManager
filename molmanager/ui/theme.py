@@ -371,19 +371,20 @@ def filter_panel_stylesheet() -> str:
 
 def filter_card_stylesheet(theme: str | None = None) -> str:
     """
-    Compact filter cards — palette-driven bordered cards for the side panel.
+    Filter entries flush in the side panel — palette-driven, no floated card chrome.
     """
     del theme
     h = _FC_CTRL_H
     return f"""
     QFrame#FilterCard {{
-        background-color: palette(base);
-        border: 2px solid palette(mid);
-        border-radius: 8px;
-        padding: 0px;
+        background-color: transparent;
+        border: none;
+        border-bottom: 1px solid palette(mid);
+        border-radius: 0px;
+        padding: 2px 0px 4px 0px;
     }}
     QFrame#FilterCard[fcDragging="true"] {{
-        border: 2px dashed palette(highlight);
+        border-bottom: 1px dashed palette(highlight);
         background-color: palette(alternatebase);
     }}
     QFrame#FilterCard QLabel {{
@@ -413,8 +414,8 @@ def filter_card_stylesheet(theme: str | None = None) -> str:
         max-height: {h}px;
         font-size: 11px;
         border: 1px solid palette(mid);
-        border-radius: 4px;
-        padding: 0px 6px;
+        border-radius: 2px;
+        padding: 0px 4px;
         background-color: palette(base);
         color: palette(text);
         selection-background-color: palette(highlight);
@@ -464,7 +465,7 @@ def filter_card_stylesheet(theme: str | None = None) -> str:
         max-height: {h}px;
         min-width: 44px;
         border: 1px solid palette(mid);
-        border-radius: 4px;
+        border-radius: 2px;
         background-color: palette(button);
         color: palette(buttontext);
     }}
@@ -485,7 +486,7 @@ def filter_card_stylesheet(theme: str | None = None) -> str:
         color: #c0392b;
         background-color: transparent;
         border: none;
-        border-radius: 4px;
+        border-radius: 2px;
         font-size: 15px;
         font-weight: bold;
         padding: 0px;
@@ -494,26 +495,10 @@ def filter_card_stylesheet(theme: str | None = None) -> str:
         color: #e74c3c;
         background-color: palette(alternatebase);
     }}
-    QFrame#FilterCard QSlider::groove:horizontal {{
-        height: 3px;
-        background: palette(mid);
-        border-radius: 2px;
-    }}
-    QFrame#FilterCard QSlider::handle:horizontal {{
-        width: 10px;
-        height: 10px;
-        margin: -4px 0;
-        background: palette(highlight);
-        border: 1px solid palette(dark);
-        border-radius: 5px;
-    }}
-    QFrame#FilterCard QSlider::handle:horizontal:hover {{
-        background: palette(light);
-    }}
     QFrame#FilterCard QListWidget {{
         font-size: 10px;
         border: 1px solid palette(mid);
-        border-radius: 4px;
+        border-radius: 2px;
         background-color: palette(base);
         color: palette(text);
         outline: 0;
