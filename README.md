@@ -420,6 +420,8 @@ Optional settings for power users and IT deployments:
 | `MOLMANAGER_FILTER_DEBOUNCE_DEFAULT_ROWS` / `MOLMANAGER_FILTER_DEBOUNCE_DEFAULT_MS` | Debounce for other filters |
 | `MOLMANAGER_PERF_METRICS` | Enable performance metric logging |
 | `MOLMANAGER_PERF_LOG_EVERY` | Perf log interval (default `25` samples) |
+| `MOLMANAGER_PLOT_SCATTERGL_MIN_POINTS` | Upgrade marker scatters to WebGL above this count (default `2000`) |
+| `MOLMANAGER_PLOT_SELECTION_OVERLAY_MAX` | Max points for SVG/3D selection overlay; larger sets use selectedpoints / skip 3D overlay (default `400`) |
 | `MOLMANAGER_CONFORMER_THREADS` | Parallel workers for conformer generation (`1`–`16`) |
 | `MOLMANAGER_DESCRIPTOR_THREADS` | Parallel workers for descriptors (`1`–`32`) |
 | `MOLMANAGER_PROTOMER_PROCESSES` | Parallel processes for protomer generation (`1`–`8`) |

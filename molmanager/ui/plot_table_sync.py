@@ -32,6 +32,26 @@ if TYPE_CHECKING:
 _PLOT_TABLE_SELECT_DEBOUNCE_MS = 60
 
 
+def selection_visual_push_key(indices: set[int] | frozenset[int]) -> tuple[int, int]:
+    """Cheap dedupe key for plot selection restyles (avoids sorting large index sets)."""
+    if not indices:
+        return (0, 0)
+    return (len(indices), hash(frozenset(indices)))
+
+
+def run_javascript_apply_figure(page, payload_json: str) -> None:
+    """Push a Plotly figure payload into the shell without double-encoding the JSON string."""
+    # ``payload_json`` is already serialized; embed as a JS value (object or parseable).
+    page.runJavaScript(f"window.molmanagerApply({payload_json});")
+
+
+def run_javascript_set_selection(page, point_indices: list[int] | set[int] | frozenset[int]) -> None:
+    """Push selection indices as a JS array (``parseSelectionIndices`` accepts arrays)."""
+    import json
+
+    page.runJavaScript(f"window.molmanagerSetSelection({json.dumps(list(point_indices))});")
+
+
 def selected_oids_for_plot(parent_app: ChemicalTableApp) -> set[int]:
     """
     OIDs that should drive plot highlighting — matches what the table shows as selected.

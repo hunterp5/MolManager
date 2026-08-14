@@ -36,3 +36,12 @@ def test_interactive_plot_shell_includes_bridge_handlers():
     assert "molmanager_selection_traces" in html
     assert "Plotly.Plots.resize" in html
     assert "addEventListener('resize'" in html
+    assert "SELECTION_OVERLAY_MAX" in html
+    assert "idxs.length > SELECTION_OVERLAY_MAX" in html
+    assert 'typeof payloadJson === "string"' in html
+
+
+def test_interactive_plot_shell_bakes_overlay_max_from_config(monkeypatch):
+    monkeypatch.setenv("MOLMANAGER_PLOT_SELECTION_OVERLAY_MAX", "250")
+    html = interactive_plot_shell_html()
+    assert "var SELECTION_OVERLAY_MAX = 250;" in html

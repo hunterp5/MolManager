@@ -131,7 +131,10 @@ from .plot_table_sync import (
     build_oid_point_index,
     clear_table_selection_from_plot,
     point_indices_for_oids,
+    run_javascript_apply_figure,
+    run_javascript_set_selection,
     selected_oids_for_plot,
+    selection_visual_push_key,
     source_rows_for_point_indices,
 )
 from ..utils import safe_float
@@ -339,7 +342,7 @@ class PlotWidget(QWidget):
         self._plotted_oids: list[int] = []
         self._oid_point_index: dict[int, list[int]] = {}
         self._selected_point_indices: set[int] = set()
-        self._last_pushed_selection_key: tuple[int, ...] | None = None
+        self._last_pushed_selection_key: tuple[int, int] | None = None
         self._web_ready = False
         self._pending_table_selection_sync = False
         self._pending_payload_json: str | None = None
@@ -996,19 +999,15 @@ class PlotWidget(QWidget):
                 "window.molmanagerClearHoverPin && molmanagerClearHoverPin();"
             )
             return
-        idxs = sorted(self._selected_point_indices)
-        if not idxs:
-            self.web.page().runJavaScript(
-                "window.molmanagerClearHoverPin && molmanagerClearHoverPin();"
-            )
-            return
         from .plot_hover import HOVER_MULTI_MAX_ITEMS
 
-        if len(idxs) > HOVER_MULTI_MAX_ITEMS:
+        n_sel = len(self._selected_point_indices)
+        if n_sel == 0 or n_sel > HOVER_MULTI_MAX_ITEMS:
             self.web.page().runJavaScript(
                 "window.molmanagerClearHoverPin && molmanagerClearHoverPin();"
             )
             return
+        idxs = sorted(self._selected_point_indices)
         js_idxs = json.dumps(idxs)
         self.web.page().runJavaScript(
             f"window.molmanagerPinHoverPoints && molmanagerPinHoverPoints({json.dumps(js_idxs)});"
@@ -1608,8 +1607,7 @@ class PlotWidget(QWidget):
     def _apply_pending_payload(self) -> None:
         if not self._web_ready or not self._pending_payload_json:
             return
-        js_arg = json.dumps(self._pending_payload_json)
-        self.web.page().runJavaScript(f"window.molmanagerApply({js_arg});")
+        run_javascript_apply_figure(self.web.page(), self._pending_payload_json)
         self._arm_ignore_plot_clear()
         QTimer.singleShot(300, self.sync_from_table_selection)
 
@@ -1638,14 +1636,11 @@ class PlotWidget(QWidget):
             self._pending_table_selection_sync = True
             return
         self._pending_table_selection_sync = False
-        idxs = sorted(self._selected_point_indices)
-        key = tuple(idxs)
+        key = selection_visual_push_key(self._selected_point_indices)
         if key == getattr(self, "_last_pushed_selection_key", None):
             return
         self._last_pushed_selection_key = key
-        # Pass a JSON string — Plotly bridge uses JSON.stringify; bare arrays break JSON.parse in JS.
-        js_payload = json.dumps(json.dumps(idxs))
-        self.web.page().runJavaScript(f"window.molmanagerSetSelection({js_payload});")
+        run_javascript_set_selection(self.web.page(), self._selected_point_indices)
         QTimer.singleShot(0, self._sync_hover_persist_visual)
 
     def _clear_plot_table_selection(self, *, update_plot: bool = True) -> None:
@@ -1790,6 +1785,11 @@ class PlotWidget(QWidget):
         self._plotted_oids = list(foids)
         self._selected_point_indices = {i for i in self._selected_point_indices if 0 <= i < len(self._plotted_oids)}
         selected_points = sorted(self._selected_point_indices) if self._selected_point_indices else []
+        from ..config import load_config
+
+        overlay_max = int(load_config().plot_selection_overlay_max_points)
+        # Large selections are applied after react via molmanagerSetSelection (avoids fat payloads).
+        bake_selection = bool(selected_points) and len(selected_points) <= overlay_max
         marker = self._scatter_marker_for_oids(foids, point_size=4 if is3d else 6)
 
         fig = go.Figure()
@@ -1810,7 +1810,7 @@ class PlotWidget(QWidget):
                     )
                 )
             )
-            if selected_points:
+            if bake_selection:
                 sx = [fx[i] for i in selected_points]
                 sy = [fy[i] for i in selected_points]
                 sz = [fz[i] for i in selected_points]
@@ -1850,7 +1850,7 @@ class PlotWidget(QWidget):
                             "mode": "markers",
                             "marker": marker,
                             "showlegend": False,
-                            "selectedpoints": selected_points if selected_points else None,
+                            "selectedpoints": selected_points if bake_selection else None,
                             "selected": {"marker": {"size": 9, "color": "#d62828", "opacity": 1.0}},
                             "unselected": {"marker": {"opacity": 0.35}},
                         },

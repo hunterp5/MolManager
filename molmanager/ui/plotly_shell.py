@@ -911,6 +911,13 @@ def interactive_plot_shell_html() -> str:
           var selTraces = selectionTracesFromLayout();
           var main = gd.data[0];
           if (main.type === "scatter3d") {{
+            var overlay3dIdx = findSelectedOverlayTraceIndex();
+            if (!idxs.length || idxs.length > SELECTION_OVERLAY_MAX) {{
+              if (overlay3dIdx >= 0) {{
+                try {{ Plotly.deleteTraces(gd, [overlay3dIdx]); }} catch (_del3d) {{}}
+              }}
+              return;
+            }}
             var sx = [], sy = [], sz = [];
             var x0 = main.x, y0 = main.y, z0 = main.z;
             for (var j = 0; j < idxs.length; j++) {{
@@ -919,11 +926,11 @@ def interactive_plot_shell_html() -> str:
                 sx.push(x0[ii]); sy.push(y0[ii]); sz.push(z0[ii]);
               }}
             }}
-            if (gd.data.length > 1) {{
+            if (overlay3dIdx >= 0) {{
               if (sx.length) {{
-                Plotly.restyle(gd, {{x: [sx], y: [sy], z: [sz]}}, [1]);
+                Plotly.restyle(gd, {{x: [sx], y: [sy], z: [sz]}}, [overlay3dIdx]);
               }} else {{
-                Plotly.deleteTraces(gd, [1]);
+                Plotly.deleteTraces(gd, [overlay3dIdx]);
               }}
             }} else if (sx.length) {{
               Plotly.addTraces(gd, {{
@@ -1034,7 +1041,9 @@ def interactive_plot_shell_html() -> str:
       }};
       window.molmanagerApply = function(payloadJson) {{
         try {{
-          var payload = JSON.parse(payloadJson);
+          var payload = (typeof payloadJson === "string")
+            ? JSON.parse(payloadJson)
+            : (payloadJson || {{}});
           var data = payload.data || [];
           var layout = payload.layout || {{}};
           var config = payload.config || {{}};

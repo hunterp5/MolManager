@@ -22,6 +22,7 @@ from molmanager.ui.plot_table_sync import (
     apply_table_selection_for_source_rows,
     point_indices_for_oids,
     selected_oids_for_plot,
+    selection_visual_push_key,
 )
 
 
@@ -30,6 +31,15 @@ def test_point_indices_for_oids() -> None:
     assert point_indices_for_oids(plotted, {20, 99}) == {1}
     assert point_indices_for_oids(plotted, frozenset()) == set()
     assert point_indices_for_oids([], {10}) == set()
+
+
+def test_selection_visual_push_key_stable_for_same_set() -> None:
+    assert selection_visual_push_key(set()) == (0, 0)
+    a = selection_visual_push_key({1, 2, 3})
+    b = selection_visual_push_key({3, 2, 1})
+    assert a == b
+    assert a[0] == 3
+    assert selection_visual_push_key({1, 2, 3, 4}) != a
 
 
 def test_point_indices_for_oids_uses_index_and_partners() -> None:
