@@ -22,7 +22,7 @@ from rdkit import Chem
 
 from molmanager.config import load_config
 from molmanager.rdkit_fingerprints import int_fns_include_fingerprints
-from molmanager.workers.chemistry_tools import (
+from molmanager.workers.chemistry_descriptors import (
     _descriptor_process_pool_min_rows,
     _mp_calc_descriptor_batch,
 )

@@ -49,15 +49,15 @@ def test_calc_worker_emits_partial_results_when_cancelled_during_pkasolver():
 
     with (
         patch(
-            "molmanager.workers.chemistry_tools.int_fns_need_pkasolver",
+            "molmanager.workers.chemistry_descriptors.int_fns_need_pkasolver",
             return_value=True,
         ),
         patch(
-            "molmanager.workers.chemistry_tools.build_microstates_cache_for_rows",
+            "molmanager.workers.chemistry_descriptors.build_microstates_cache_for_rows",
             return_value=partial_cache,
         ),
         patch(
-            "molmanager.workers.chemistry_tools._calc_descriptor_row_task",
+            "molmanager.workers.chemistry_descriptors._calc_descriptor_row_task",
             side_effect=lambda task: (task[0], {"LogD 7.4": f"val{task[0]}"}),
         ),
     ):

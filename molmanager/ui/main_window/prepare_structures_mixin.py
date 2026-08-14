@@ -29,7 +29,7 @@ from PyQt5.QtWidgets import (
 from rdkit import Chem
 
 from ...config import load_config
-from ...utils import mol_to_canonical_smiles
+from ...utils import mol_from_binary_blob, mol_to_canonical_smiles
 from ..strings import (
     TOOL_RENDER_2D,
 )
@@ -334,12 +334,7 @@ class PrepareStructuresMixin:
     @staticmethod
     def _fast_prepare_mol_from_blob(blob) -> Chem.Mol | None:
         """Rebuild a molecule from the worker's binary payload."""
-        if not blob:
-            return None
-        try:
-            return Chem.Mol(bytes(blob))
-        except Exception:
-            return None
+        return mol_from_binary_blob(blob)  # type: ignore[return-value]
 
     def run_disconnect_fragments(self) -> None:
         if not self.headers or not self.mols:

@@ -101,6 +101,19 @@ Progress: `WorkerSignals.tool_progress` + `ToolProgressState` polling → bottom
 5. Short threadpool jobs: `register_background_job` / `unregister_background_job`.
 6. Tests under `tests/` (unit tests avoid full GUI where possible).
 
+## Chemistry workers layout
+
+Heavy chemistry jobs are split by concern (compat re-exports remain in `workers/chemistry_tools.py`):
+
+| Module | Responsibility |
+|--------|----------------|
+| `workers/chemistry_descriptors.py` | Descriptor `CalcWorker` |
+| `workers/chemistry_conformers.py` | Conformers, superpose, RMSD, strain |
+| `workers/chemistry_calc.py` | Custom calculator (AST `safe_calc`) |
+| `workers/chemistry_worker_common.py` | Shared progress throttling |
+
+Pure column/structure policy helpers live under `molmanager/services/` (e.g. `chemistry_columns.py`).
+
 ## Related docs
 
 - [CONTRIBUTING.md](CONTRIBUTING.md) — coding standards, CI lint/headers, dependency audit

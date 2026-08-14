@@ -35,7 +35,17 @@ from ...confs_codec import (
     rehydrate_v1_confs_cell,
 )
 from ...config import load_config
+from ...services.chemistry_columns import (
+    canonical_smiles_header_for_updates,
+    cell_texts_have_parseable_molecule,
+    data_headers_confirmed_for_chemistry_tools,
+    is_smiles_named_header,
+    ordered_headers_for_molecule_lookup,
+    skip_chemistry_tool_column_dropdown,
+    should_skip_chemical_scan_column,
+)
 from ...utils import (
+    canonical_structure_key_from_smiles as canonical_structure_key_from_smiles_fn,
     looks_like_mol_block,
     mol_to_canonical_smiles,
     parse_molecule_from_cell_text,
@@ -917,16 +927,7 @@ class TableUIMixin(TableSearchMixin, FilterPanelMixin):
 
     def _skip_chemistry_tool_column_dropdown(self, h: str) -> bool:
         """Exclude non-molecular columns from chemistry-tool source dropdowns."""
-        if h in ("ID_HIDDEN", "Structure"):
-            return True
-        nl = (h or "").lower()
-        if nl == "pka":
-            return True
-        if nl == "cluster" or nl.startswith("cluster ("):
-            return True
-        if "inchikey" in nl and "smiles" not in nl and "inchi" not in nl and "mol" not in nl:
-            return True
-        return False
+        return skip_chemistry_tool_column_dropdown(h)
 
     def _column_has_parseable_molecule_sample(
         self,
@@ -938,108 +939,57 @@ class TableUIMixin(TableSearchMixin, FilterPanelMixin):
         """True if a sample of cells in this column parses as a molecule (SMILES, InChI, MolBlock, SMARTS, …)."""
         if header_name not in self.headers:
             return False
-        tries = 0
-        n = min(self._table_model.rowCount(), max_rows_scan)
-        for r in range(n):
-            raw = self._table_model.backing_value_for_row_header(r, header_name)
-            if not raw:
-                try:
-                    ci = self.headers.index(header_name)
-                except ValueError:
-                    continue
-                raw = (self._table_cell_text(r, ci) or "").strip()
-            if not raw:
-                continue
-            tries += 1
-            if tries > max_nonempty_samples:
-                break
-            if len(raw) > 20000 and not looks_like_mol_block(raw):
-                continue
-            if parse_molecule_from_cell_text(raw) is not None:
-                return True
-        return False
+
+        def _iter_texts():
+            n = min(self._table_model.rowCount(), max_rows_scan)
+            for r in range(n):
+                raw = self._table_model.backing_value_for_row_header(r, header_name)
+                if not raw:
+                    try:
+                        ci = self.headers.index(header_name)
+                    except ValueError:
+                        continue
+                    raw = (self._table_cell_text(r, ci) or "").strip()
+                yield raw
+
+        return cell_texts_have_parseable_molecule(
+            _iter_texts(),
+            max_nonempty_samples=max_nonempty_samples,
+        )
 
     def _data_headers_confirmed_for_chemistry_tools(self) -> list[str]:
         """
         Data columns suitable as chemistry-tool sources: structural-looking names,
         optional ``_structure_field_override``, or at least one parseable cell in a bounded scan.
         """
-        out: list[str] = []
-        seen: set[str] = set()
-
-        def add(name: str) -> None:
-            if not name or name in seen:
-                return
-            if name not in self.headers or self._skip_chemistry_tool_column_dropdown(name):
-                return
-            seen.add(name)
-            out.append(name)
-
         ov = getattr(self, "_structure_field_override", None)
-        if isinstance(ov, str) and ov.strip():
-            add(ov.strip())
-        for h in self.headers[2:]:
-            if self._skip_chemistry_tool_column_dropdown(h):
-                continue
-            if self._header_looks_structural(h):
-                add(h)
-                continue
-            if self._column_has_parseable_molecule_sample(h):
-                add(h)
-        return out
+        return data_headers_confirmed_for_chemistry_tools(
+            self.headers,
+            structure_field_override=ov if isinstance(ov, str) else None,
+            column_has_parseable_sample=self._column_has_parseable_molecule_sample,
+        )
 
     def _should_skip_chemical_scan_column(self, h: str) -> bool:
-        if h in ("ID_HIDDEN", "Structure"):
-            return True
-        if self._table_model.is_pixmap_data_column(h):
-            return True
-        nl = (h or "").lower()
-        if "inchikey" in nl:
-            return True
-        return False
+        return should_skip_chemical_scan_column(
+            h,
+            is_pixmap_column=self._table_model.is_pixmap_data_column,
+        )
 
     def _ordered_headers_for_molecule_lookup(self) -> list[str]:
         """Column names to probe for parseable chemistry (likely names first, then all other data columns)."""
-        seen: set[str] = set()
-        out: list[str] = []
-
-        def add(name: str | None) -> None:
-            if not name or name not in self.headers or self._should_skip_chemical_scan_column(name):
-                return
-            if name not in seen:
-                seen.add(name)
-                out.append(name)
-
         ov = getattr(self, "_structure_field_override", None)
-        if isinstance(ov, str) and ov.strip():
-            add(ov.strip())
-        for h in self.headers[2:]:
-            if self._should_skip_chemical_scan_column(h):
-                continue
-            lo = h.strip().lower()
-            if lo == "smiles" or (("smiles" in lo) and ("inchikey" not in lo)):
-                add(h)
-        for h in self.headers[2:]:
-            if self._header_looks_structural(h):
-                add(h)
-        for h in self.headers[2:]:
-            if not self._should_skip_chemical_scan_column(h):
-                add(h)
-        return out
+        return ordered_headers_for_molecule_lookup(
+            self.headers,
+            structure_field_override=ov if isinstance(ov, str) else None,
+            is_pixmap_column=self._table_model.is_pixmap_data_column,
+        )
 
     def _canonical_smiles_header_for_updates(self) -> str | None:
         """Column to store canonical SMILES after chemistry tools (prefer ``SMILES``)."""
-        if "SMILES" in self.headers:
-            return "SMILES"
-        for h in self.headers[2:]:
-            lo = h.strip().lower()
-            if lo == "smiles" or (("smiles" in lo) and ("inchikey" not in lo)):
-                return h
-        return None
+        return canonical_smiles_header_for_updates(self.headers)
 
     def _is_smiles_named_header(self, h: str) -> bool:
-        lo = (h or "").strip().lower()
-        return lo == "smiles" or (("smiles" in lo) and ("inchikey" not in lo))
+        return is_smiles_named_header(h)
 
     def _fill_row_data_columns_from_mol(self, row_idx: int, mol: Chem.Mol | None) -> None:
         """Populate data columns (from col 2 onward) from RDKit mol properties — same source as RenderWorker props."""
@@ -1934,17 +1884,7 @@ class TableUIMixin(TableSearchMixin, FilterPanelMixin):
 
     def canonical_structure_key_from_smiles(self, smiles: str) -> str | None:
         """Canonical isomeric SMILES key for duplicate detection; ``None`` if not parseable."""
-        smiles = (smiles or "").strip()
-        if not smiles:
-            return None
-        mol = parse_molecule_from_cell_text(smiles)
-        if mol is None:
-            return None
-        try:
-            k = mol_to_canonical_smiles(mol).strip()
-        except Exception:
-            return None
-        return k or None
+        return canonical_structure_key_from_smiles_fn(smiles)
 
     def existing_canonical_structure_keys(self) -> set[str]:
         """Canonical SMILES keys already present in the primary SMILES column (for de-duplication)."""

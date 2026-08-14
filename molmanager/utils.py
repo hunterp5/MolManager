@@ -179,3 +179,30 @@ def row_cells_from_mol(mol, data_headers: list[str]) -> dict[str, str]:
         values[name] = txt
     return values
 
+
+def canonical_structure_key_from_smiles(smiles: str) -> str | None:
+    """Canonical isomeric SMILES key for duplicate detection; ``None`` if not parseable."""
+    smiles = (smiles or "").strip()
+    if not smiles:
+        return None
+    mol = parse_molecule_from_cell_text(smiles)
+    if mol is None:
+        return None
+    try:
+        key = mol_to_canonical_smiles(mol).strip()
+    except Exception:
+        return None
+    return key or None
+
+
+def mol_from_binary_blob(blob) -> object | None:
+    """Rebuild an RDKit molecule from a worker binary payload (``Mol.ToBinary()``)."""
+    if not blob:
+        return None
+    from rdkit import Chem
+
+    try:
+        return Chem.Mol(bytes(blob))
+    except Exception:
+        return None
+

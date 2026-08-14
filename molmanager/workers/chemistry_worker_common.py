@@ -13,11 +13,31 @@
 #
 # You should have received a copy of the GNU General Public License
 # along with MolManager.  If not, see <https://www.gnu.org/licenses/>.
-"""
-Non-Qt domain helpers shared by the UI and workers.
 
-Modules here should stay free of PyQt imports. Prefer this package when extracting
-pure logic from main-window mixins (see ``docs/ARCHITECTURE.md``).
-"""
+"""Shared helpers for chemistry tool workers."""
 
 from __future__ import annotations
+
+from .signals import WorkerSignals
+
+
+def emit_tool_progress_throttled(
+    signals: WorkerSignals,
+    message: str,
+    done: int,
+    tot: int,
+    state: list,
+    *,
+    progress_state=None,
+) -> None:
+    """Limit ``tool_progress`` emissions; always refresh ``ToolProgressState`` when provided."""
+    from ..tool_progress import report_tool_progress
+
+    report_tool_progress(
+        message=message,
+        done=done,
+        total=tot,
+        progress_state=progress_state,
+        signals=signals,
+        throttle=state,
+    )
