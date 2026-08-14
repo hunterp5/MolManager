@@ -481,14 +481,16 @@ class DimensionReductionPanel(QWidget):
             return
         self._refresh_plot_colors()
 
-    def _size_encoding_for_oids(self, oids: list[int]) -> tuple[list[Any] | None, float, float]:
+    def _size_encoding_for_oids(
+        self, oids: list[int]
+    ) -> tuple[list[Any] | None, str | None, float, float]:
         size_col = self.size_combo.currentText()
         if size_col == "(none)":
             size_col = None
         size_vals = self._size_values_for_oids(oids, size_col)
-        size_vals, _ = normalize_size_column(size_vals, size_col)
+        size_vals, size_label = normalize_size_column(size_vals, size_col)
         size_min_px, size_max_px = self._current_size_bounds()
-        return size_vals, size_min_px, size_max_px
+        return size_vals, size_label, size_min_px, size_max_px
 
     def _refresh_plot_colors(self) -> None:
         if self._last_result is None or self._plot_view is None or self._job_running:
@@ -505,13 +507,16 @@ class DimensionReductionPanel(QWidget):
         )
         try:
             color_min, color_max = self._current_color_bounds()
-            size_vals, size_min_px, size_max_px = self._size_encoding_for_oids(updated.oids)
+            size_vals, size_label, size_min_px, size_max_px = self._size_encoding_for_oids(
+                updated.oids
+            )
             fig = build_dimension_reduction_figure(
                 updated,
                 colorscale=self._current_colorscale(),
                 color_min=color_min,
                 color_max=color_max,
                 size_values=size_vals,
+                size_label=size_label,
                 size_min_px=size_min_px,
                 size_max_px=size_max_px,
             )
@@ -701,13 +706,16 @@ class DimensionReductionPanel(QWidget):
         )
         try:
             color_min, color_max = self._current_color_bounds()
-            size_vals, size_min_px, size_max_px = self._size_encoding_for_oids(plotted.oids)
+            size_vals, size_label, size_min_px, size_max_px = self._size_encoding_for_oids(
+                plotted.oids
+            )
             fig = build_dimension_reduction_figure(
                 plotted,
                 colorscale=self._current_colorscale(),
                 color_min=color_min,
                 color_max=color_max,
                 size_values=size_vals,
+                size_label=size_label,
                 size_min_px=size_min_px,
                 size_max_px=size_max_px,
             )

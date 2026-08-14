@@ -89,11 +89,18 @@ class SaliMapPanel(DockableResultPlotPanel):
         self._root.addWidget(self._detail)
 
         actions = QHBoxLayout()
+        self._btn_browse = QPushButton("Browse pair")
+        self._btn_browse.setEnabled(False)
+        self._btn_browse.setToolTip(
+            "Open the SALI pair browser for the selected point (step through plot pairs)."
+        )
         self._btn_select = QPushButton("Select pair in table")
         self._btn_select.setEnabled(False)
+        actions.addWidget(self._btn_browse)
         actions.addWidget(self._btn_select)
         actions.addStretch()
         self._root.addLayout(actions)
+        self._btn_browse.clicked.connect(self._browse_current)
         self._btn_select.clicked.connect(self._select_current)
 
         self._finish_layout()
@@ -120,6 +127,7 @@ class SaliMapPanel(DockableResultPlotPanel):
         if metric is not None:
             self._metric = metric
         self._current_index = None
+        self._btn_browse.setEnabled(False)
         self._btn_select.setEnabled(False)
         fp_txt = self._fp_choice or "fingerprint"
         self._meta.setText(
@@ -152,12 +160,14 @@ class SaliMapPanel(DockableResultPlotPanel):
             **enc,
         )
         oids = [p.oid_a for p in self._points]
-        self._plot_view.push_figure(fig, oids)
+        partners = [p.oid_b for p in self._points]
+        self._plot_view.push_figure(fig, oids, partner_oids=partners)
         self._update_spectrum_controls()
 
     def _on_point_activated(self, point_index: int) -> None:
         if not (0 <= point_index < len(self._points)):
             self._current_index = None
+            self._btn_browse.setEnabled(False)
             self._btn_select.setEnabled(False)
             return
         self._current_index = int(point_index)
@@ -169,8 +179,9 @@ class SaliMapPanel(DockableResultPlotPanel):
             f"Δ{self._activity_column} = {sign}{point.signed_delta:.4g}  ·  "
             f"SALI={point.sali:.4g}"
         )
+        self._btn_browse.setEnabled(True)
         self._btn_select.setEnabled(True)
-        self._select_current()
+        # Table selection is applied by the plot view (both pair partners).
 
     def _select_current(self) -> None:
         if self._current_index is None or self.parent_app is None:
@@ -185,8 +196,28 @@ class SaliMapPanel(DockableResultPlotPanel):
         except Exception:
             pass
 
+    def _browse_current(self) -> None:
+        if self._current_index is None or self.parent_app is None:
+            return
+        if not (0 <= self._current_index < len(self._points)):
+            return
+        open_browser = getattr(self.parent_app, "_open_sali_browser", None)
+        if not callable(open_browser):
+            return
+        try:
+            open_browser(
+                self._points,
+                activity_column=self._activity_column,
+                fp_choice=self._fp_choice,
+                metric=self._metric,
+                start_index=self._current_index,
+            )
+        except Exception:
+            pass
+
     def _clear_selection(self) -> None:
         self._current_index = None
+        self._btn_browse.setEnabled(False)
         self._btn_select.setEnabled(False)
         self._detail.setText("Click a point to select the pair.")
         if self._plot_view is not None:

@@ -298,7 +298,7 @@ class MmpNeighborhoodMapPanel(DockableResultPlotPanel):
         )
         self._btn_browse.setEnabled(True)
         self._btn_select.setEnabled(True)
-        self._select_current()
+        # Table selection is applied by the plot view.
 
     def _select_current(self) -> None:
         app = self.parent_app

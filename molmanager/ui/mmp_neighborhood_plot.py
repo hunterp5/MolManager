@@ -26,6 +26,7 @@ from ..mmp_neighborhood_analysis import MmpNetworkGraph
 from ..plot_color import (
     DEFAULT_MARKER_SIZE_MAX_PX,
     DEFAULT_MARKER_SIZE_MIN_PX,
+    attach_marker_size_legend,
     marker_sizes_from_column_values,
     resolve_plot_colorscale,
     scatter_marker_from_column_values,
@@ -43,6 +44,7 @@ def build_mmp_neighborhood_figure(
     color_min: float | None = None,
     color_max: float | None = None,
     size_values: list[Any] | None = None,
+    size_label: str | None = None,
     size_min_px: float = DEFAULT_MARKER_SIZE_MIN_PX,
     size_max_px: float = DEFAULT_MARKER_SIZE_MAX_PX,
 ) -> go.Figure:
@@ -182,8 +184,16 @@ def build_mmp_neighborhood_figure(
         legend={"orientation": "h", "yanchor": "bottom", "y": 1.02},
         meta={
             "molmanager_selection_traces": [node_trace_index],
-            "molmanager_hover_persist": True,
+            "molmanager_hover_persist": False,
         },
     )
+    if size_values is not None:
+        attach_marker_size_legend(
+            fig,
+            size_label=size_label,
+            size_values=size_values,
+            size_min_px=size_min_px,
+            size_max_px=size_max_px,
+        )
     finalize_plot_legend(fig)
     return fig

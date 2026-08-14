@@ -25,7 +25,9 @@ from molmanager.plot_color import scatter_marker_from_column_values
 from molmanager.ui.plotly_html import (
     figure_payload_json,
     legend_name_is_utility,
+    prefer_scattergl_for_large_traces,
     suppress_utility_legend_entries,
+    upgrade_scatter_payload_to_gl,
     write_self_contained_plotly_html,
 )
 
@@ -73,6 +75,38 @@ def test_figure_payload_json_hides_utility_legend() -> None:
     payload = json.loads(figure_payload_json(fig))
     assert payload["data"][0]["showlegend"] is False
     assert payload["layout"].get("showlegend") is False
+
+
+def test_prefer_scattergl_for_large_marker_traces() -> None:
+    n = 50
+    fig = go.Figure(
+        data=[
+            go.Scatter(x=list(range(n)), y=list(range(n)), mode="markers", name="pts"),
+            go.Scatter(x=[0, 1], y=[0, 1], mode="lines", name="edge"),
+        ]
+    )
+    payload = fig.to_plotly_json()
+    upgrade_scatter_payload_to_gl(payload, min_points=40)
+    assert payload["data"][0]["type"] == "scattergl"
+    assert payload["data"][1]["type"] == "scatter"
+    prefer_scattergl_for_large_traces(fig, min_points=40)
+    assert fig.data[0].type == "scattergl"
+    assert fig.data[1].type == "scatter"
+
+
+def test_prefer_scattergl_skips_small_traces() -> None:
+    fig = go.Figure(data=[go.Scatter(x=[1, 2, 3], y=[1, 2, 3], mode="markers")])
+    payload = fig.to_plotly_json()
+    upgrade_scatter_payload_to_gl(payload, min_points=100)
+    assert payload["data"][0]["type"] == "scatter"
+
+
+def test_figure_payload_json_upgrades_large_scatter(monkeypatch) -> None:
+    monkeypatch.setenv("MOLMANAGER_PLOT_SCATTERGL_MIN_POINTS", "50")
+    n = 80
+    fig = go.Figure(data=[go.Scatter(x=list(range(n)), y=list(range(n)), mode="markers")])
+    payload = json.loads(figure_payload_json(fig))
+    assert payload["data"][0]["type"] == "scattergl"
 
 
 def test_write_self_contained_plotly_html_includes_plotly(tmp_path: Path):

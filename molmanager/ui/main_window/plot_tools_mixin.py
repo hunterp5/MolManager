@@ -148,7 +148,7 @@ class PlotToolsMixin:
         new_table = max(200, total - new_plot)
         splitter.setSizes([new_table, new_plot])
 
-    def _sync_dialog_only_selected_scope(self, dialog: QDialog) -> None:
+    def _sync_dialog_only_selected_scope(self, dialog: QDialog, *, selected_count: int | None = None) -> None:
         """Refresh a tool dialog's scope checkbox label/count from the current table selection."""
         cb = getattr(dialog, "only_selected_cb", None)
         if cb is None:
@@ -161,7 +161,11 @@ class PlotToolsMixin:
         except Exception:
             pass
         prefix = getattr(dialog, "_only_selected_scope_prefix", "Selected Rows Only")
-        n = len(self._selected_logical_rows())
+        if selected_count is None:
+            count_fn = getattr(self, "_selected_row_count_fast", None)
+            n = int(count_fn()) if callable(count_fn) else len(self._selected_logical_rows())
+        else:
+            n = int(selected_count)
         try:
             if n > 0:
                 cb.setEnabled(True)
@@ -188,12 +192,24 @@ class PlotToolsMixin:
         from ..dockable_plot import iter_plot_selection_views
 
         views: list = []
+        seen: set[int] = set()
+
+        def add_from(root) -> None:
+            for view in iter_plot_selection_views(root):
+                key = id(view)
+                if key in seen:
+                    continue
+                seen.add(key)
+                views.append(view)
+
         for docked in self.iter_docked_plot_widgets():
-            views.extend(iter_plot_selection_views(docked))
+            add_from(docked)
         for plot_dlg in self._iter_plot_dialogs():
             pw = getattr(plot_dlg, "_plot_widget", None)
             if pw is not None:
-                views.extend(iter_plot_selection_views(pw))
+                add_from(pw)
+            else:
+                add_from(plot_dlg)
         for attr in (
             "_pca_dialog",
             "_tsne_dialog",
@@ -201,15 +217,31 @@ class PlotToolsMixin:
             "_som_dialog",
             "_boiled_egg_dialog",
             "_golden_triangle_dialog",
+            "_sali_map_dialog",
+            "_activity_cliff_map_dialog",
+            "_mmp_neighborhood_map_dialog",
         ):
             dlg = getattr(self, attr, None)
             if dlg is None:
                 continue
             panel = getattr(dlg, "_panel", None)
             if panel is not None:
-                views.extend(iter_plot_selection_views(panel))
+                add_from(panel)
                 continue
-            views.extend(iter_plot_selection_views(dlg))
+            add_from(dlg)
+        for dlg in list(getattr(self, "_floating_result_dialogs", [])):
+            try:
+                from PyQt5 import sip
+
+                if sip.isdeleted(dlg):
+                    continue
+            except Exception:
+                pass
+            panel = getattr(dlg, "_panel", None)
+            if panel is not None:
+                add_from(panel)
+            else:
+                add_from(dlg)
         return views
 
     def _refresh_active_plot_axis_columns(self) -> None:
@@ -224,14 +256,44 @@ class PlotToolsMixin:
                 except RuntimeError:
                     pass
 
-    def _sync_active_plots_from_table_selection(self) -> None:
-        for view in self._iter_active_plot_selection_views():
+    def _refresh_attached_tool_scope_labels(self) -> None:
+        """Update all open tool/plot scope checkboxes once per selection fan-out."""
+        count_fn = getattr(self, "_selected_row_count_fast", None)
+        n = int(count_fn()) if callable(count_fn) else len(self._selected_logical_rows())
+        alive: list = []
+        for target in list(getattr(self, "_scope_sync_targets", [])):
             try:
-                sync = getattr(view, "sync_from_table_selection", None)
-                if callable(sync):
-                    sync()
-            except RuntimeError:
+                from PyQt5 import sip
+
+                if sip.isdeleted(target):
+                    continue
+            except Exception:
                 pass
+            alive.append(target)
+            self._sync_dialog_only_selected_scope(target, selected_count=n)
+        self._scope_sync_targets = alive
+
+    def _sync_active_plots_from_table_selection(self) -> None:
+        from ..plot_table_sync import selected_oids_for_plot
+
+        self._refresh_attached_tool_scope_labels()
+        selected = selected_oids_for_plot(self)
+        # Share one OID set across every open plot for this fan-out tick.
+        self._cached_plot_selected_oids = frozenset(selected)
+        try:
+            for view in self._iter_active_plot_selection_views():
+                try:
+                    sync = getattr(view, "sync_from_table_selection", None)
+                    if not callable(sync):
+                        continue
+                    try:
+                        sync(selected_oids=selected)
+                    except TypeError:
+                        sync()
+                except RuntimeError:
+                    pass
+        finally:
+            self._cached_plot_selected_oids = None
 
     def _schedule_sync_active_plots_from_table_selection(self) -> None:
         timer = getattr(self, "_plot_table_sync_timer", None)
@@ -302,13 +364,17 @@ class PlotToolsMixin:
         prior = getattr(target, "_scope_sync_disconnect", None)
         if callable(prior):
             prior()
+        if not hasattr(self, "_scope_sync_targets"):
+            self._scope_sync_targets = []
+        if target not in self._scope_sync_targets:
+            self._scope_sync_targets.append(target)
         self._sync_dialog_only_selected_scope(target)
         sm = self.table.selectionModel()
         if sm is None:
             return
 
         def on_sel_changed(*_args):
-            self._sync_dialog_only_selected_scope(target)
+            # Scope labels refresh once in the coalesced plot fan-out (avoids N× row scans).
             self._schedule_sync_active_plots_from_table_selection()
 
         sm.selectionChanged.connect(on_sel_changed)
@@ -320,6 +386,10 @@ class PlotToolsMixin:
                 if sm is not None and not sip.isdeleted(sm):
                     sm.selectionChanged.disconnect(on_sel_changed)
             except (TypeError, RuntimeError):
+                pass
+            try:
+                self._scope_sync_targets.remove(target)
+            except (ValueError, AttributeError):
                 pass
             target._scope_sync_disconnect = None
 
@@ -410,6 +480,8 @@ class PlotToolsMixin:
 
                 if isinstance(dlg, PlotDialog):
                     self._register_plot_dialog(dlg)
+                else:
+                    self._register_floating_result_dialog(dlg)
                 dlg.show()
                 dlg.raise_()
                 dlg.activateWindow()
@@ -420,6 +492,34 @@ class PlotToolsMixin:
             plot_widget.setParent(None)
             plot_widget.deleteLater()
         except RuntimeError:
+            pass
+
+    def _register_floating_result_dialog(self, dlg) -> None:
+        """Track undocked SALI/cliff/MMP/etc. windows for table↔plot selection sync."""
+        if not hasattr(self, "_floating_result_dialogs"):
+            self._floating_result_dialogs = []
+        alive: list = []
+        for existing in self._floating_result_dialogs:
+            try:
+                from PyQt5 import sip
+
+                if sip.isdeleted(existing):
+                    continue
+            except Exception:
+                pass
+            alive.append(existing)
+        if dlg not in alive:
+            alive.append(dlg)
+            try:
+                dlg.destroyed.connect(lambda *_a, d=dlg: self._unregister_floating_result_dialog(d))
+            except Exception:
+                pass
+        self._floating_result_dialogs = alive
+
+    def _unregister_floating_result_dialog(self, dlg) -> None:
+        try:
+            self._floating_result_dialogs.remove(dlg)
+        except (ValueError, AttributeError):
             pass
 
     def _sync_plot_panel_bottom_visibility(self) -> None:

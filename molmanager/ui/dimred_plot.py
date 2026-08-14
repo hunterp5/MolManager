@@ -24,7 +24,7 @@ from typing import Any
 from plotly import graph_objects as go
 
 from ..dimensionality_reduction import DimensionReductionResult
-from ..plot_color import DEFAULT_PLOT_COLORSCALE, scatter_marker_from_column_values
+from ..plot_color import DEFAULT_PLOT_COLORSCALE, attach_marker_size_legend, scatter_marker_from_column_values
 from ..ui.plotly_html import finalize_plot_legend
 
 
@@ -56,6 +56,7 @@ def build_dimension_reduction_figure(
     color_min: float | None = None,
     color_max: float | None = None,
     size_values: list[Any] | None = None,
+    size_label: str | None = None,
     size_min_px: float | None = None,
     size_max_px: float | None = None,
 ) -> go.Figure:
@@ -108,7 +109,14 @@ def build_dimension_reduction_figure(
         margin=dict(l=48, r=24, t=48, b=48),
         meta={
             "molmanager_selection_traces": [0],
-            "molmanager_hover_persist": True,
+            "molmanager_hover_persist": False,
         },
+    )
+    attach_marker_size_legend(
+        fig,
+        size_label=size_label,
+        size_values=size_values,
+        size_min_px=float(size_min_px) if size_min_px is not None else 4.0,
+        size_max_px=float(size_max_px) if size_max_px is not None else 16.0,
     )
     return finalize_plot_legend(fig)

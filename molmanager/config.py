@@ -134,6 +134,8 @@ class MolManagerConfig:
     status_memory_poll_ms: int
     table_selection_oid_override_min: int
     table_selection_chunk_rows: int
+    plot_scattergl_min_points: int
+    plot_selection_overlay_max_points: int
     table_delete_batch_min: int
     table_delete_chunk_rows: int
     table_undo_limit: int
@@ -264,6 +266,14 @@ def load_config() -> MolManagerConfig:
         ),
         table_selection_chunk_rows=_env_int(
             "MOLMANAGER_TABLE_SELECTION_CHUNK_ROWS", 2000, lo=64, hi=100_000
+        ),
+        # WebGL scatter above this count (pan/zoom/select stay responsive on large sets).
+        plot_scattergl_min_points=_env_int(
+            "MOLMANAGER_PLOT_SCATTERGL_MIN_POINTS", 2000, lo=0, hi=10_000_000
+        ),
+        # SVG overlay highlight is nicer for small lassos; above this use selectedpoints.
+        plot_selection_overlay_max_points=_env_int(
+            "MOLMANAGER_PLOT_SELECTION_OVERLAY_MAX", 400, lo=0, hi=100_000
         ),
         table_delete_batch_min=_env_int(
             "MOLMANAGER_TABLE_DELETE_BATCH_MIN", 50, lo=1, hi=10_000_000

@@ -896,7 +896,7 @@ class MedChemPlotPanel(QWidget):
         if size_col == "(none)":
             size_col = None
         size_vals = self._color_values_for_oids(self._plot_dataset.oids, size_col)
-        size_vals, _ = normalize_size_column(size_vals, size_col)
+        size_vals, size_label = normalize_size_column(size_vals, size_col)
         size_min_px, size_max_px = self._current_size_bounds()
         try:
             if self._plot_kind == "golden_triangle":
@@ -908,6 +908,7 @@ class MedChemPlotPanel(QWidget):
                     color_min=color_min,
                     color_max=color_max,
                     size_values=size_vals,
+                    size_label=size_label,
                     size_min_px=size_min_px,
                     size_max_px=size_max_px,
                 )
@@ -920,6 +921,7 @@ class MedChemPlotPanel(QWidget):
                     color_min=color_min,
                     color_max=color_max,
                     size_values=size_vals,
+                    size_label=size_label,
                     size_min_px=size_min_px,
                     size_max_px=size_max_px,
                 )

@@ -235,6 +235,9 @@ class ChemicalTableApp(
         self._processing_batches = False
         self._last_batch_received = False
         self._plot_dialogs: list = []
+        self._floating_result_dialogs: list = []
+        self._scope_sync_targets: list = []
+        self._cached_plot_selected_oids: frozenset[int] | None = None
         self._selected_oids_override: frozenset[int] | None = None
         self._in_programmatic_table_selection = False
         self._table_selection_job_gen = 0
@@ -248,6 +251,7 @@ class ChemicalTableApp(
         self._activity_cliff_map_dialog = None
         self._mmp_neighborhood_map_dialog = None
         self._sali_map_dialog = None
+        self._sali_browser_dialog = None
         self._sketcher_dialog = None
         self._calculator_dialog = None
         self._data_analysis_dialog = None
@@ -1284,6 +1288,7 @@ class ChemicalTableApp(
             "_activity_cliff_map_dialog",
             "_mmp_neighborhood_map_dialog",
             "_sali_map_dialog",
+            "_sali_browser_dialog",
             "_sketcher_dialog",
             "_calculator_dialog",
             "_data_analysis_dialog",

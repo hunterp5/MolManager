@@ -33,6 +33,7 @@ from plotly import graph_objects as go
 from .plot_hover import hover_cards_payload, resolve_default_hover_columns
 from .plot_table_sync import (
     apply_table_selection_for_source_rows,
+    build_oid_point_index,
     clear_table_selection_from_plot,
     point_indices_for_oids as _point_indices_for_oids,
     selected_oids_for_plot,
@@ -81,13 +82,16 @@ class PlotlyInteractiveView(QWidget):
         self._plot_shell_path = Path(tempfile.gettempdir()) / f"MOLMANAGER_plot_shell_{id(self)}.html"
         self._last_browser_opened_path: str | None = None
         self.plotted_oids: list[int] = []
+        self._partner_oids: list[int] | None = None
+        self._oid_point_index: dict[int, list[int]] = {}
         self._selected_point_indices: set[int] = set()
+        self._last_pushed_selection_key: tuple[int, ...] | None = None
         self._web_ready = False
         self._pending_table_selection_sync = False
         self._pending_payload_json: str | None = None
         self._ignore_plot_clear_until: float = 0.0
-        # Match Plotter hover cards: structure + default columns, persist on select.
-        self._hover_persist = True
+        # Match Plotter: hover cards are transient unless the user enables persist.
+        self._hover_persist = False
         self._hover_show_structure = True
 
         layout = QVBoxLayout(self)
@@ -106,9 +110,22 @@ class PlotlyInteractiveView(QWidget):
         self.web.loadFinished.connect(self._on_web_load_finished)
         self._load_plot_shell()
 
-    def push_figure(self, fig: go.Figure, oids: list[int]) -> None:
-        """Display a figure and map point indices to table OIDs."""
+    def push_figure(
+        self,
+        fig: go.Figure,
+        oids: list[int],
+        *,
+        partner_oids: list[int] | None = None,
+    ) -> None:
+        """Display a figure and map point indices to table OIDs.
+
+        ``partner_oids`` (same length as ``oids``) marks the second molecule in
+        pair plots so table selection of either partner highlights the point.
+        """
         self.plotted_oids = list(oids)
+        self._partner_oids = list(partner_oids) if partner_oids is not None else None
+        self._oid_point_index = build_oid_point_index(self.plotted_oids, self._partner_oids)
+        self._last_pushed_selection_key = None
         self._selected_point_indices = {
             i for i in self._selected_point_indices if 0 <= i < len(self.plotted_oids)
         }
@@ -164,7 +181,7 @@ class PlotlyInteractiveView(QWidget):
 
     def point_indices_for_oids(self, oids: set[int] | frozenset[int]) -> set[int]:
         """Map table OIDs to scatter point indices in the current figure."""
-        return _point_indices_for_oids(self.plotted_oids, oids)
+        return _point_indices_for_oids(self.plotted_oids, oids, oid_index=self._oid_point_index)
 
     def select_oids(self, oids: set[int] | frozenset[int] | list[int]) -> int:
         """Select table rows (and plot points) for the given OIDs. Returns rows selected."""
@@ -178,12 +195,23 @@ class PlotlyInteractiveView(QWidget):
         self.sync_selection_visual()
         return len(indices)
 
-    def sync_from_table_selection(self) -> None:
+    def sync_from_table_selection(self, selected_oids: set[int] | frozenset[int] | None = None) -> None:
         """Highlight plot points for the current table row selection."""
         if not self.plotted_oids or self.parent_app is None:
             return
-        selected = selected_oids_for_plot(self.parent_app)
-        self._selected_point_indices = _point_indices_for_oids(self.plotted_oids, selected)
+        selected = (
+            {int(x) for x in selected_oids}
+            if selected_oids is not None
+            else selected_oids_for_plot(self.parent_app)
+        )
+        new_idxs = _point_indices_for_oids(
+            self.plotted_oids, selected, oid_index=self._oid_point_index
+        )
+        if new_idxs == self._selected_point_indices:
+            # Still push visual if we never painted (e.g. after replot).
+            if self._last_pushed_selection_key is not None:
+                return
+        self._selected_point_indices = new_idxs
         self._arm_ignore_plot_clear()
         self.sync_selection_visual()
 
@@ -193,6 +221,10 @@ class PlotlyInteractiveView(QWidget):
             return
         self._pending_table_selection_sync = False
         idxs = sorted(self._selected_point_indices)
+        key = tuple(idxs)
+        if key == self._last_pushed_selection_key:
+            return
+        self._last_pushed_selection_key = key
         js_payload = json.dumps(json.dumps(idxs))
         self.web.page().runJavaScript(f"window.molmanagerSetSelection({js_payload});")
         QTimer.singleShot(0, self._sync_hover_persist_visual)
@@ -205,6 +237,7 @@ class PlotlyInteractiveView(QWidget):
         if update_plot:
             self.sync_selection_visual()
         else:
+            self._last_pushed_selection_key = None
             self._sync_hover_persist_visual()
 
     def _default_hover_columns(self) -> list[str]:
@@ -258,6 +291,13 @@ class PlotlyInteractiveView(QWidget):
             return
         idxs = sorted(self._selected_point_indices)
         if not idxs:
+            self.web.page().runJavaScript(
+                "window.molmanagerClearHoverPin && molmanagerClearHoverPin();"
+            )
+            return
+        from .plot_hover import HOVER_MULTI_MAX_ITEMS
+
+        if len(idxs) > HOVER_MULTI_MAX_ITEMS:
             self.web.page().runJavaScript(
                 "window.molmanagerClearHoverPin && molmanagerClearHoverPin();"
             )
@@ -320,9 +360,19 @@ class PlotlyInteractiveView(QWidget):
     def _select_rows_for_point_indices(self, point_indices: list[int]) -> None:
         if self.parent_app is None:
             return
-        source_rows = source_rows_for_point_indices(self.parent_app, self.plotted_oids, point_indices)
+        source_rows = source_rows_for_point_indices(
+            self.parent_app,
+            self.plotted_oids,
+            point_indices,
+            partner_oids=self._partner_oids,
+        )
         # Avoid focus-stealing into the main table (breaks Shift+select in floating plots).
-        apply_table_selection_for_source_rows(self.parent_app, source_rows, scroll=False)
+        apply_table_selection_for_source_rows(
+            self.parent_app,
+            source_rows,
+            scroll=False,
+            debounce=len(source_rows) > 1,
+        )
 
     def _on_plot_point_clicked(self, point_index: int, *, additive: bool = False) -> None:
         if point_index < 0 or self.parent_app is None:

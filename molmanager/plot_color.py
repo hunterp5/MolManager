@@ -149,6 +149,190 @@ def clamp_marker_size_bounds(
     return lo, hi
 
 
+def _format_size_legend_tick(value: float) -> str:
+    """Compact tick label for the size scale."""
+    if value != value:  # NaN
+        return "—"
+    text = f"{value:.4g}"
+    return text
+
+
+def size_legend_levels(
+    raw_values: list[Any] | None,
+    *,
+    size_min_px: float = DEFAULT_MARKER_SIZE_MIN_PX,
+    size_max_px: float = DEFAULT_MARKER_SIZE_MAX_PX,
+    max_categorical: int = 6,
+    n_numeric: int = 5,
+) -> list[tuple[str, float]] | None:
+    """
+    Return ``(label, marker_px)`` levels for a right-side size legend.
+
+    Numeric columns: ``n_numeric`` evenly spaced ticks (high → low).
+    Categorical: up to ``max_categorical`` classes.
+    """
+    if not raw_values or not column_values_have_color_data(raw_values):
+        return None
+    lo_px, hi_px = clamp_marker_size_bounds(size_min_px, size_max_px)
+
+    numeric: list[float] = []
+    for value in raw_values:
+        parsed = _try_float(value)
+        if parsed is None:
+            numeric.clear()
+            break
+        numeric.append(parsed)
+
+    if numeric:
+        finite = [v for v in numeric if v == v]
+        if not finite:
+            return None
+        data_lo, data_hi = min(finite), max(finite)
+        n = max(2, int(n_numeric))
+        if abs(data_hi - data_lo) < 1e-12:
+            mid_px = (lo_px + hi_px) * 0.5
+            return [(_format_size_legend_tick(data_lo), mid_px)]
+        levels: list[tuple[str, float]] = []
+        for i in range(n):
+            # High → low (colorbar-style: top is largest).
+            t = i / (n - 1)
+            val = data_hi - t * (data_hi - data_lo)
+            px = hi_px - t * (hi_px - lo_px)
+            levels.append((_format_size_legend_tick(val), float(px)))
+        return levels
+
+    categories: list[str] = []
+    for value in raw_values:
+        if _is_missing(value):
+            categories.append("(missing)")
+        else:
+            text = str(value).strip()
+            categories.append(text if text else "(missing)")
+    uniq = sorted(set(categories), key=lambda x: (x == "(missing)", x.lower()))
+    if not uniq:
+        return None
+    if len(uniq) == 1:
+        px = lo_px if uniq[0] == "(missing)" else (lo_px + hi_px) * 0.5
+        return [(uniq[0], px)]
+    shown = uniq[: max(1, int(max_categorical))]
+    span = len(uniq) - 1
+    levels = []
+    for cat in shown:
+        i = uniq.index(cat)
+        px = lo_px + (i / span) * (hi_px - lo_px)
+        levels.append((cat, float(px)))
+    # High → low in the legend (match colorbar top=high).
+    levels.sort(key=lambda t: -t[1])
+    return levels
+
+
+def _colorbar_as_dict(colorbar: Any) -> dict[str, Any]:
+    """Convert a Plotly ColorBar / mapping to a plain dict for updates."""
+    if colorbar is None:
+        return {}
+    if isinstance(colorbar, dict):
+        return dict(colorbar)
+    to_json = getattr(colorbar, "to_plotly_json", None)
+    if callable(to_json):
+        try:
+            raw = to_json()
+            if isinstance(raw, dict):
+                return dict(raw)
+        except Exception:
+            pass
+    try:
+        return {k: getattr(colorbar, k) for k in colorbar}
+    except Exception:
+        return {}
+
+
+def attach_marker_size_legend(
+    fig: Any,
+    *,
+    size_label: str | None,
+    size_values: list[Any] | None,
+    size_min_px: float = DEFAULT_MARKER_SIZE_MIN_PX,
+    size_max_px: float = DEFAULT_MARKER_SIZE_MAX_PX,
+) -> None:
+    """Add a vertical size scale on the right of the plot (analogous to Color by's colorbar)."""
+    from plotly import graph_objects as go
+
+    label = (size_label or "").strip()
+    if not label or label == "(none)":
+        return
+    levels = size_legend_levels(
+        size_values, size_min_px=size_min_px, size_max_px=size_max_px
+    )
+    if not levels:
+        return
+
+    has_cbar = False
+    for tr in fig.data:
+        marker = getattr(tr, "marker", None)
+        if marker is not None and bool(getattr(marker, "showscale", False)):
+            has_cbar = True
+            cbar = _colorbar_as_dict(getattr(marker, "colorbar", None))
+            # Leave room below the colorbar for the size legend.
+            cbar.setdefault("x", 1.02)
+            cbar.setdefault("xanchor", "left")
+            cbar["len"] = min(float(cbar.get("len") or 1.0), 0.48)
+            cbar["y"] = 1.0
+            cbar["yanchor"] = "top"
+            try:
+                tr.marker.colorbar = cbar
+            except Exception:
+                pass
+
+    for tick_label, px in levels:
+        fig.add_trace(
+            go.Scatter(
+                x=[None],
+                y=[None],
+                mode="markers",
+                marker={
+                    "size": float(px),
+                    "color": "#4a4a4a",
+                    "line": {"width": 0.5, "color": "#222"},
+                    "opacity": 1.0,
+                },
+                name=str(tick_label),
+                legendgroup="molmanager_size",
+                showlegend=True,
+                hoverinfo="skip",
+            )
+        )
+
+    margin = {}
+    try:
+        raw_margin = fig.layout.margin
+        if raw_margin is not None:
+            margin = dict(raw_margin.to_plotly_json())
+    except Exception:
+        margin = {}
+    margin["r"] = max(int(margin.get("r") or 0), 118 if has_cbar else 96)
+
+    legend: dict[str, Any] = {
+        "title": {"text": label},
+        "itemsizing": "trace",
+        "tracegroupgap": 10,
+        "bgcolor": "rgba(255,255,255,0.92)",
+        "bordercolor": "rgba(0,0,0,0.18)",
+        "borderwidth": 1,
+        "x": 1.02,
+        "xanchor": "left",
+        "orientation": "v",
+        "font": {"size": 11},
+    }
+    if has_cbar:
+        legend["y"] = 0.0
+        legend["yanchor"] = "bottom"
+    else:
+        legend["y"] = 0.5
+        legend["yanchor"] = "middle"
+
+    fig.update_layout(showlegend=True, legend=legend, margin=margin)
+
+
 def marker_sizes_from_column_values(
     raw_values: list[Any] | None,
     *,

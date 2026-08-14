@@ -30,7 +30,10 @@ def sanitized_plotly_js() -> str:
 
 def interactive_plot_shell_html() -> str:
     """HTML document with Plotly, QWebChannel bridge, selection, and Plotter-specific click handlers."""
+    from ..config import load_config
+
     plotly_js = sanitized_plotly_js()
+    overlay_max = int(load_config().plot_selection_overlay_max_points)
     return f"""<!doctype html>
 <html>
 <head>
@@ -123,10 +126,13 @@ def interactive_plot_shell_html() -> str:
       var lastNonemptyPlotSelection = 0;
       var applyInFlight = false;
       var pendingSelectionJson = null;
+      var selectionApplyRaf = null;
       var hoverPersist = false;
       var hoverPinned = false;
       var hoverReqGen = 0;
       var pinnedHoverIndices = [];
+      var SELECTION_OVERLAY_MAX = {overlay_max};
+      var HOVER_PIN_MAX = 10;
       var shiftHeld = false;
       var lastHoverAnchor = {{x: 16, y: 16}};
       var SVG_NS = "http://www.w3.org/2000/svg";
@@ -154,66 +160,286 @@ def interactive_plot_shell_html() -> str:
       }}, true);
       window.addEventListener('mouseup', function(e) {{ refreshShiftHeld(e); }}, true);
       // Do not clear shiftHeld on blur — Qt focus steals otherwise break Shift+lasso.
-      // Middle-mouse pan (LMB stays lasso/select via dragmode).
+      // Middle-mouse pan + wheel zoom for 2D cartesian plots.
+      // Pan: update axis ranges (rAF + in-flight coalesce) so the data view moves in-place.
+      // Zoom: coalesce wheel deltas to one Plotly.relayout per animation frame.
       var middlePan = null;
-      function endMiddlePan() {{
-        middlePan = null;
-        try {{ document.body.style.cursor = ''; }} catch (_c0) {{}}
+      var panRafPending = false;
+      var panLastClient = null;
+      var panRelayoutInFlight = false;
+      var panNeedsAnother = false;
+      var zoomRafPending = false;
+      var zoomPending = null; // {{x, y, factor}}
+      var viewNavBusy = false;
+
+      function isCartesian2dNavigable() {{
+        try {{
+          if (!gd || !gd.data || !gd.data.length || !gd._fullLayout) return false;
+          var t = (gd.data[0] && gd.data[0].type) || "scatter";
+          if (t === "scatter3d" || t === "surface" || t === "mesh3d") return false;
+          if (t === "scatterpolar" || t === "barpolar" || t === "pie" || t === "sunburst") return false;
+          var xa = gd._fullLayout.xaxis;
+          var ya = gd._fullLayout.yaxis;
+          if (!xa || !ya || !xa.range || !ya.range) return false;
+          if (xa.type === "category" || ya.type === "category") return false;
+          if (!xa._length || !ya._length) return false;
+          return true;
+        }} catch (_nav) {{
+          return false;
+        }}
       }}
-      function onMiddlePanMove(ev) {{
-        if (!middlePan || !gd || !gd._fullLayout) return;
+
+      function setViewNavBusy(on) {{
+        viewNavBusy = !!on;
+        try {{
+          if (viewNavBusy && hoverLayer) hoverLayer.style.visibility = "hidden";
+          if (!viewNavBusy && hoverLayer) hoverLayer.style.visibility = "";
+        }} catch (_vb) {{}}
+      }}
+
+      function axisValueAtPixel(axis, pixelAlongAxis) {{
+        var r0 = Number(axis.range[0]);
+        var r1 = Number(axis.range[1]);
+        var len = axis._length || 1;
+        var t = pixelAlongAxis / len;
+        if (axis.type === "log") {{
+          var l0 = Math.log(r0) / Math.LN10;
+          var l1 = Math.log(r1) / Math.LN10;
+          return Math.pow(10, l0 + t * (l1 - l0));
+        }}
+        return r0 + t * (r1 - r0);
+      }}
+
+      function zoomRangeAround(axis, center, factor) {{
+        var r0 = Number(axis.range[0]);
+        var r1 = Number(axis.range[1]);
+        var f = factor;
+        if (!(f > 0) || !isFinite(f)) f = 1;
+        if (axis.type === "log") {{
+          var c = Math.log(center) / Math.LN10;
+          var a = Math.log(r0) / Math.LN10;
+          var b = Math.log(r1) / Math.LN10;
+          return [
+            Math.pow(10, c - (c - a) * f),
+            Math.pow(10, c + (b - c) * f)
+          ];
+        }}
+        return [center - (center - r0) * f, center + (r1 - center) * f];
+      }}
+
+      function endMiddlePan() {{
+        var wasPanning = !!middlePan;
+        middlePan = null;
+        panLastClient = null;
+        panRafPending = false;
+        panNeedsAnother = false;
+        try {{ document.body.style.cursor = ""; }} catch (_c0) {{}}
+        setViewNavBusy(false);
+        if (wasPanning) schedulePinnedHoverReposition(80);
+      }}
+
+      function applyMiddlePanFrame() {{
+        panRafPending = false;
+        if (!middlePan || !panLastClient || !gd || !gd._fullLayout) return;
+        if (panRelayoutInFlight) {{
+          panNeedsAnother = true;
+          return;
+        }}
         try {{
           var xa = gd._fullLayout.xaxis;
           var ya = gd._fullLayout.yaxis;
           if (!xa || !ya || !xa._length || !ya._length) return;
-          var dx = ev.clientX - middlePan.x0;
-          var dy = ev.clientY - middlePan.y0;
+          var dx = panLastClient.x - middlePan.x0;
+          var dy = panLastClient.y - middlePan.y0;
           var xspan = middlePan.xr1 - middlePan.xr0;
           var yspan = middlePan.yr1 - middlePan.yr0;
           var dxData = -(dx / xa._length) * xspan;
           var dyData = (dy / ya._length) * yspan;
+          panRelayoutInFlight = true;
           Plotly.relayout(gd, {{
-            'xaxis.range': [middlePan.xr0 + dxData, middlePan.xr1 + dxData],
-            'yaxis.range': [middlePan.yr0 + dyData, middlePan.yr1 + dyData]
+            "xaxis.range": [middlePan.xr0 + dxData, middlePan.xr1 + dxData],
+            "yaxis.range": [middlePan.yr0 + dyData, middlePan.yr1 + dyData]
+          }}).then(function() {{
+            panRelayoutInFlight = false;
+            if (panNeedsAnother && middlePan) {{
+              panNeedsAnother = false;
+              panRafPending = true;
+              try {{ requestAnimationFrame(applyMiddlePanFrame); }}
+              catch (_r2) {{ applyMiddlePanFrame(); }}
+            }}
+          }}).catch(function() {{
+            panRelayoutInFlight = false;
+            panNeedsAnother = false;
           }});
-        }} catch (_panMove) {{}}
+        }} catch (_panMove) {{
+          panRelayoutInFlight = false;
+        }}
       }}
+
+      function onMiddlePanMove(ev) {{
+        if (!middlePan) return;
+        panLastClient = {{ x: ev.clientX, y: ev.clientY }};
+        if (panRafPending) return;
+        panRafPending = true;
+        try {{
+          requestAnimationFrame(applyMiddlePanFrame);
+        }} catch (_rafPan) {{
+          applyMiddlePanFrame();
+        }}
+      }}
+
       function onMiddlePanUp(ev) {{
         if (ev.button === 1 || middlePan) endMiddlePan();
       }}
+
+      function applyPendingZoom() {{
+        zoomRafPending = false;
+        var pending = zoomPending;
+        zoomPending = null;
+        if (!pending || !gd || !gd._fullLayout || !isCartesian2dNavigable()) {{
+          if (!middlePan && !zoomPending && !zoomRafPending) {{
+            setViewNavBusy(false);
+            schedulePinnedHoverReposition(120);
+          }}
+          return;
+        }}
+        try {{
+          var xa = gd._fullLayout.xaxis;
+          var ya = gd._fullLayout.yaxis;
+          var rect = gd.getBoundingClientRect();
+          var xPix = pending.x - rect.left - (xa._offset || 0);
+          var yPix = pending.y - rect.top - (ya._offset || 0);
+          xPix = Math.min(Math.max(0, xPix), xa._length);
+          yPix = Math.min(Math.max(0, yPix), ya._length);
+          var xCenter = (typeof xa.p2l === "function")
+            ? xa.p2l(xPix)
+            : axisValueAtPixel(xa, xPix);
+          var yCenter = (typeof ya.p2l === "function")
+            ? ya.p2l(yPix)
+            : axisValueAtPixel(ya, ya._length - yPix);
+          var xr = zoomRangeAround(xa, xCenter, pending.factor);
+          var yr = zoomRangeAround(ya, yCenter, pending.factor);
+          Plotly.relayout(gd, {{
+            "xaxis.range": xr,
+            "yaxis.range": yr
+          }}).then(function() {{
+            if (zoomPending && !zoomRafPending) {{
+              zoomRafPending = true;
+              try {{ requestAnimationFrame(applyPendingZoom); }} catch (_c) {{ applyPendingZoom(); }}
+              return;
+            }}
+            if (!middlePan) {{
+              setViewNavBusy(false);
+              schedulePinnedHoverReposition(140);
+            }}
+          }}).catch(function() {{
+            if (!middlePan && !zoomPending) setViewNavBusy(false);
+          }});
+        }} catch (_z) {{
+          if (!middlePan && !zoomPending) {{
+            setViewNavBusy(false);
+            schedulePinnedHoverReposition(140);
+          }}
+        }}
+      }}
+
+      function onWheelZoom(ev) {{
+        if (!isCartesian2dNavigable()) return;
+        if (middlePan) {{
+          try {{ ev.preventDefault(); }} catch (_p0) {{}}
+          return;
+        }}
+        try {{
+          ev.preventDefault();
+          ev.stopPropagation();
+        }} catch (_pw) {{}}
+        setViewNavBusy(true);
+        var step = Math.exp(Math.max(-80, Math.min(80, ev.deltaY)) * 0.0016);
+        if (!zoomPending) {{
+          zoomPending = {{ x: ev.clientX, y: ev.clientY, factor: step }};
+        }} else {{
+          zoomPending.factor *= step;
+          zoomPending.x = ev.clientX;
+          zoomPending.y = ev.clientY;
+        }}
+        zoomPending.factor = Math.max(0.5, Math.min(2.0, zoomPending.factor));
+        if (zoomRafPending) return;
+        zoomRafPending = true;
+        try {{
+          requestAnimationFrame(applyPendingZoom);
+        }} catch (_rafZ) {{
+          applyPendingZoom();
+        }}
+      }}
+
       function installMiddleMousePan() {{
         if (gd._molmanagerMiddlePan) return;
         gd._molmanagerMiddlePan = true;
-        gd.addEventListener('mousedown', function(ev) {{
+        gd.addEventListener("mousedown", function(ev) {{
           if (ev.button !== 1) return;
+          if (!isCartesian2dNavigable()) return;
           try {{
             ev.preventDefault();
             ev.stopPropagation();
           }} catch (_pd) {{}}
           try {{
-            var xa = gd._fullLayout && gd._fullLayout.xaxis;
-            var ya = gd._fullLayout && gd._fullLayout.yaxis;
-            if (!xa || !ya || !xa.range || !ya.range) return;
+            var xa = gd._fullLayout.xaxis;
+            var ya = gd._fullLayout.yaxis;
             middlePan = {{
               x0: ev.clientX,
               y0: ev.clientY,
-              xr0: xa.range[0],
-              xr1: xa.range[1],
-              yr0: ya.range[0],
-              yr1: ya.range[1]
+              xr0: Number(xa.range[0]),
+              xr1: Number(xa.range[1]),
+              yr0: Number(ya.range[0]),
+              yr1: Number(ya.range[1])
             }};
-            document.body.style.cursor = 'grabbing';
+            panLastClient = {{ x: ev.clientX, y: ev.clientY }};
+            document.body.style.cursor = "grabbing";
+            setViewNavBusy(true);
           }} catch (_panDown) {{
             middlePan = null;
+            setViewNavBusy(false);
           }}
         }}, true);
-        gd.addEventListener('auxclick', function(ev) {{
+        gd.addEventListener("auxclick", function(ev) {{
           if (ev.button === 1) {{
             try {{ ev.preventDefault(); }} catch (_ax) {{}}
           }}
         }}, true);
-        window.addEventListener('mousemove', onMiddlePanMove, true);
-        window.addEventListener('mouseup', onMiddlePanUp, true);
+        gd.addEventListener("wheel", onWheelZoom, {{ passive: false, capture: true }});
+        window.addEventListener("mousemove", onMiddlePanMove, true);
+        window.addEventListener("mouseup", onMiddlePanUp, true);
+      }}
+      function installEmptySpaceClear() {{
+        if (!gd || gd._molmanagerEmptyClear) return;
+        gd._molmanagerEmptyClear = true;
+        var down = null;
+        gd.addEventListener("mousedown", function(ev) {{
+          if (!ev || ev.button !== 0) return;
+          down = {{ x: ev.clientX, y: ev.clientY, t: Date.now() }};
+        }}, true);
+        gd.addEventListener("mouseup", function(ev) {{
+          try {{
+            if (!down || !ev || ev.button !== 0) {{ down = null; return; }}
+            var dx = Math.abs(ev.clientX - down.x);
+            var dy = Math.abs(ev.clientY - down.y);
+            var dt = Date.now() - down.t;
+            down = null;
+            // Drag / lasso / long press — leave selection alone.
+            if (dx > 5 || dy > 5 || dt > 450) return;
+            if (middlePan || viewNavBusy || suppressPlotBridge) return;
+            if (shiftHeld) return;
+            var t = ev.target;
+            if (!t) return;
+            if (t.closest) {{
+              if (t.closest(".hoverlayer, .mol-hover-card, .mol-hover-overflow, .legend, .modebar, .colorbar")) return;
+              if (t.closest(".points, .point")) return;
+            }}
+            if (bridge && bridge.pointsSelected) {{
+              bridge.pointsSelected("[]", false);
+            }}
+          }} catch (_emptyClr) {{}}
+        }}, true);
       }}
       function clearSelectionShapes() {{
         try {{
@@ -326,15 +552,23 @@ def interactive_plot_shell_html() -> str:
           return null;
         }}
       }}
-      function schedulePinnedHoverReposition() {{
+      function schedulePinnedHoverReposition(delayMs) {{
+        // Skip while navigating; settle handlers schedule a follow-up update.
+        if (middlePan || viewNavBusy) return;
         if (hoverReposTimer) clearTimeout(hoverReposTimer);
+        var wait = (typeof delayMs === "number" && delayMs >= 0) ? delayMs : 160;
         hoverReposTimer = setTimeout(function() {{
           try {{
+            if (middlePan || viewNavBusy) return;
+            try {{
+              if (hoverLayer) hoverLayer.style.visibility = '';
+            }} catch (_vis) {{}}
             repositionPinnedHoverCards();
           }} catch (_rp) {{}}
-        }}, 60);
+        }}, wait);
       }}
       function repositionPinnedHoverCards() {{
+        if (middlePan || viewNavBusy) return;
         if (!hoverPinned || !hoverPersist) return;
         if (!pinnedHoverIndices || !pinnedHoverIndices.length) return;
         if (!gd || !gd.data || !gd.data.length) return;
@@ -649,6 +883,11 @@ def interactive_plot_shell_html() -> str:
           window.molmanagerClearHoverPin();
           return;
         }}
+        // Large selections: skip structure cards (selectedpoints already highlight).
+        if (idxs.length > HOVER_PIN_MAX) {{
+          window.molmanagerClearHoverPin();
+          return;
+        }}
         hoverPinned = true;
         pinnedHoverIndices = idxs.slice();
         var anchors = idxs.map(function(i) {{
@@ -696,16 +935,19 @@ def interactive_plot_shell_html() -> str:
             return;
           }}
           if (main.type === "scatter" || main.type === "scattergl") {{
-            var sx = [], sy = [];
-            var x0 = main.x || [], y0 = main.y || [];
-            for (var j = 0; j < idxs.length; j++) {{
-              var ii = idxs[j];
-              if (ii >= 0 && ii < x0.length) {{
-                sx.push(x0[ii]); sy.push(y0[ii]);
-              }}
-            }}
             var overlayIdx = findSelectedOverlayTraceIndex();
-            if (sx.length) {{
+            var useOverlay = main.type === "scatter"
+              && idxs.length > 0
+              && idxs.length <= SELECTION_OVERLAY_MAX;
+            if (useOverlay) {{
+              var sx = [], sy = [];
+              var x0 = main.x || [], y0 = main.y || [];
+              for (var j = 0; j < idxs.length; j++) {{
+                var ii = idxs[j];
+                if (ii >= 0 && ii < x0.length) {{
+                  sx.push(x0[ii]); sy.push(y0[ii]);
+                }}
+              }}
               var overlay = {{
                 type: main.type,
                 x: sx,
@@ -728,13 +970,24 @@ def interactive_plot_shell_html() -> str:
               }}
               Plotly.restyle(gd, dimPatch, selTraces);
             }} else {{
-              if (overlayIdx >= 0) Plotly.deleteTraces(gd, [overlayIdx]);
-              var clearPatch = {{selectedpoints: [], "unselected.marker.opacity": []}};
-              for (var ci = 0; ci < selTraces.length; ci++) {{
-                clearPatch.selectedpoints.push(null);
-                clearPatch["unselected.marker.opacity"].push(0.85);
+              if (overlayIdx >= 0) {{
+                try {{ Plotly.deleteTraces(gd, [overlayIdx]); }} catch (_delOv) {{}}
               }}
-              Plotly.restyle(gd, clearPatch, selTraces);
+              if (!idxs.length) {{
+                var clearPatchSc = {{selectedpoints: [], "unselected.marker.opacity": []}};
+                for (var ciSc = 0; ciSc < selTraces.length; ciSc++) {{
+                  clearPatchSc.selectedpoints.push(null);
+                  clearPatchSc["unselected.marker.opacity"].push(0.85);
+                }}
+                Plotly.restyle(gd, clearPatchSc, selTraces);
+              }} else {{
+                var selPatchSc = {{selectedpoints: [], "unselected.marker.opacity": []}};
+                for (var siSc = 0; siSc < selTraces.length; siSc++) {{
+                  selPatchSc.selectedpoints.push(idxs);
+                  selPatchSc["unselected.marker.opacity"].push(0.35);
+                }}
+                Plotly.restyle(gd, selPatchSc, selTraces);
+              }}
             }}
             clearSelectionShapes();
             return;
@@ -765,11 +1018,19 @@ def interactive_plot_shell_html() -> str:
         applySelectionIndices(ps);
       }}
       window.molmanagerSetSelection = function(indicesJson) {{
-        if (applyInFlight) {{
-          pendingSelectionJson = indicesJson;
-          return;
+        pendingSelectionJson = indicesJson;
+        if (applyInFlight) return;
+        if (selectionApplyRaf != null) return;
+        try {{
+          selectionApplyRaf = requestAnimationFrame(function() {{
+            selectionApplyRaf = null;
+            if (applyInFlight) return;
+            flushPendingSelection();
+          }});
+        }} catch (_rafSel) {{
+          selectionApplyRaf = null;
+          flushPendingSelection();
         }}
-        applySelectionIndices(indicesJson);
       }};
       window.molmanagerApply = function(payloadJson) {{
         try {{
@@ -777,12 +1038,18 @@ def interactive_plot_shell_html() -> str:
           var data = payload.data || [];
           var layout = payload.layout || {{}};
           var config = payload.config || {{}};
-          if (config.scrollZoom === undefined) config.scrollZoom = true;
+          if (config.scrollZoom === undefined) config.scrollZoom = false;
           beginSuppressPlotBridge(800);
           applyInFlight = true;
           pendingSelectionJson = null;
           hoverPinned = false;
           pinnedHoverIndices = [];
+          zoomPending = null;
+          zoomRafPending = false;
+          middlePan = null;
+          panRelayoutInFlight = false;
+          panNeedsAnother = false;
+          setViewNavBusy(false);
           hideHoverCard(true);
           try {{
             hoverPersist = !!(layout.meta && layout.meta.molmanager_hover_persist);
@@ -792,6 +1059,7 @@ def interactive_plot_shell_html() -> str:
           Plotly.react(gd, data, layout, config).then(function() {{
             try {{
               installMiddleMousePan();
+              installEmptySpaceClear();
             }} catch (_mid) {{}}
             try {{
               gd.removeAllListeners('plotly_click');
@@ -892,6 +1160,7 @@ def interactive_plot_shell_html() -> str:
             }});
             gd.on('plotly_hover', function(ev) {{
               try {{
+                if (middlePan || viewNavBusy) return;
                 if (!ev || !ev.points || !ev.points.length) return;
                 var pt = ev.points[0];
                 if (!traceSelectable(pt.curveNumber)) return;
@@ -909,13 +1178,15 @@ def interactive_plot_shell_html() -> str:
             }});
             gd.on('plotly_unhover', function() {{
               try {{
+                if (middlePan || viewNavBusy) return;
                 if (hoverPinned && hoverPersist) return;
                 hideHoverCard(false);
               }} catch (_unhovErr) {{}}
             }});
             gd.on('plotly_relayout', function() {{
               try {{
-                schedulePinnedHoverReposition();
+                if (middlePan || viewNavBusy) return;
+                schedulePinnedHoverReposition(180);
               }} catch (_rl) {{}}
             }});
             applyInFlight = false;

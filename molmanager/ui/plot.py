@@ -97,6 +97,7 @@ from ..plot_analysis import (
 )
 from ..plot_color import (
     PLOT_COLORSCALE_CHOICES,
+    attach_marker_size_legend,
     color_values_are_numeric,
     normalize_color_column,
     normalize_size_column,
@@ -127,6 +128,7 @@ from .plot_hover import (
 )
 from .plot_table_sync import (
     apply_table_selection_for_source_rows,
+    build_oid_point_index,
     clear_table_selection_from_plot,
     point_indices_for_oids,
     selected_oids_for_plot,
@@ -335,7 +337,9 @@ class PlotWidget(QWidget):
         self._plot_shell_path = Path(tempfile.gettempdir()) / f"MOLMANAGER_plot_shell_{id(self)}.html"
         self._last_browser_opened_path: str | None = None
         self._plotted_oids: list[int] = []
+        self._oid_point_index: dict[int, list[int]] = {}
         self._selected_point_indices: set[int] = set()
+        self._last_pushed_selection_key: tuple[int, ...] | None = None
         self._web_ready = False
         self._pending_table_selection_sync = False
         self._pending_payload_json: str | None = None
@@ -475,6 +479,7 @@ class PlotWidget(QWidget):
             hover_l.addWidget(cb)
             self._hover_combos.append(cb)
         self.hover_persist_cb = QCheckBox("Persistent on Select")
+        self.hover_persist_cb.setChecked(False)
         self.hover_persist_cb.setToolTip(
             "Keep the hover card near selected point(s); multiple selections are shown together."
         )
@@ -997,6 +1002,13 @@ class PlotWidget(QWidget):
                 "window.molmanagerClearHoverPin && molmanagerClearHoverPin();"
             )
             return
+        from .plot_hover import HOVER_MULTI_MAX_ITEMS
+
+        if len(idxs) > HOVER_MULTI_MAX_ITEMS:
+            self.web.page().runJavaScript(
+                "window.molmanagerClearHoverPin && molmanagerClearHoverPin();"
+            )
+            return
         js_idxs = json.dumps(idxs)
         self.web.page().runJavaScript(
             f"window.molmanagerPinHoverPoints && molmanagerPinHoverPoints({json.dumps(js_idxs)});"
@@ -1059,6 +1071,20 @@ class PlotWidget(QWidget):
             size_min_px=size_min_px,
             size_max_px=size_max_px,
             point_size=point_size,
+        )
+
+    def _attach_size_legend_for_oids(self, fig: go.Figure, oids: list[int]) -> None:
+        size_vals, size_label = self._size_values_for_oids(oids)
+        size_vals, size_label = normalize_size_column(size_vals, size_label)
+        if not size_vals or not size_label:
+            return
+        size_min_px, size_max_px = self.size_range.parse_bounds()
+        attach_marker_size_legend(
+            fig,
+            size_label=size_label,
+            size_values=size_vals,
+            size_min_px=size_min_px,
+            size_max_px=size_max_px,
         )
 
     def _on_color_column_changed(self, _index: int = 0) -> None:
@@ -1553,7 +1579,7 @@ class PlotWidget(QWidget):
             for i, tr in enumerate(fig.data):
                 t = getattr(tr, "type", None)
                 mode = str(getattr(tr, "mode", "") or "")
-                if t in ("scatter", "scattergl") and "markers" in mode:
+                if t in ("scatter", "scattergl") and ("markers" in mode or mode == ""):
                     indices.append(i)
                 elif t == "scatter3d" and i == 0:
                     indices.append(i)
@@ -1569,6 +1595,8 @@ class PlotWidget(QWidget):
     def _push_plotly_figure(self, fig: go.Figure) -> None:
         from .plotly_html import figure_payload_json
 
+        self._oid_point_index = build_oid_point_index(self._plotted_oids)
+        self._last_pushed_selection_key = None
         self._annotate_scatter_selection_meta(fig)
         self._pending_payload_json = figure_payload_json(fig)
         self._last_browser_opened_path = None
@@ -1585,14 +1613,23 @@ class PlotWidget(QWidget):
         self._arm_ignore_plot_clear()
         QTimer.singleShot(300, self.sync_from_table_selection)
 
-    def sync_from_table_selection(self) -> None:
+    def sync_from_table_selection(self, selected_oids: set[int] | frozenset[int] | None = None) -> None:
         """Highlight plot points for the current table row selection."""
         if not self._plotted_oids or self.parent_app is None:
             return
         if not self._supports_table_linked_selection():
             return
-        selected = selected_oids_for_plot(self.parent_app)
-        self._selected_point_indices = point_indices_for_oids(self._plotted_oids, selected)
+        selected = (
+            {int(x) for x in selected_oids}
+            if selected_oids is not None
+            else selected_oids_for_plot(self.parent_app)
+        )
+        new_idxs = point_indices_for_oids(
+            self._plotted_oids, selected, oid_index=getattr(self, "_oid_point_index", None)
+        )
+        if new_idxs == self._selected_point_indices and self._last_pushed_selection_key is not None:
+            return
+        self._selected_point_indices = new_idxs
         self._arm_ignore_plot_clear()
         self._sync_plot_selection_visual()
 
@@ -1602,6 +1639,10 @@ class PlotWidget(QWidget):
             return
         self._pending_table_selection_sync = False
         idxs = sorted(self._selected_point_indices)
+        key = tuple(idxs)
+        if key == getattr(self, "_last_pushed_selection_key", None):
+            return
+        self._last_pushed_selection_key = key
         # Pass a JSON string — Plotly bridge uses JSON.stringify; bare arrays break JSON.parse in JS.
         js_payload = json.dumps(json.dumps(idxs))
         self.web.page().runJavaScript(f"window.molmanagerSetSelection({js_payload});")
@@ -1614,6 +1655,7 @@ class PlotWidget(QWidget):
         if update_plot:
             self._sync_plot_selection_visual()
         else:
+            self._last_pushed_selection_key = None
             self._sync_hover_persist_visual()
 
     def _arm_ignore_plot_clear(self, ms: int = 500) -> None:
@@ -1828,6 +1870,7 @@ class PlotWidget(QWidget):
                 fit_summary,
             )
 
+        self._attach_size_legend_for_oids(fig, foids)
         self._push_plotly_figure(fig)
         self.parent_app.status_label.setText(f"Plot: rendered {len(fx):,} point(s).")
 
@@ -1890,6 +1933,7 @@ class PlotWidget(QWidget):
             summarize_xy(fx, fy, x_label=xname, y_label=yname),
             fit_summary,
         )
+        self._attach_size_legend_for_oids(fig, foids)
         self._push_plotly_figure(fig)
         self.parent_app.status_label.setText(f"Line plot: {len(fx):,} point(s).")
 
@@ -2228,10 +2272,20 @@ class PlotWidget(QWidget):
     def _select_rows_for_point_indices(self, point_indices: list[int]) -> None:
         source_rows = source_rows_for_point_indices(self.parent_app, self._plotted_oids, point_indices)
         # Do not scroll the table — keeps docked-plot clicks from flashing scrollbars.
-        apply_table_selection_for_source_rows(self.parent_app, source_rows, scroll=False)
+        apply_table_selection_for_source_rows(
+            self.parent_app,
+            source_rows,
+            scroll=False,
+            debounce=len(source_rows) > 1,
+        )
 
     def _select_rows_for_source_rows(self, source_rows: list[int]) -> None:
-        apply_table_selection_for_source_rows(self.parent_app, source_rows, scroll=False)
+        apply_table_selection_for_source_rows(
+            self.parent_app,
+            source_rows,
+            scroll=False,
+            debounce=len(source_rows) > 1,
+        )
 
     def _on_plot_point_clicked(self, point_index: int, *, additive: bool = False) -> None:
         if point_index < 0:

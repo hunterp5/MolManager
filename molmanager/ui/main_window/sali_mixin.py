@@ -117,20 +117,6 @@ class SaliMixin:
             self.status_label.setText("Ready.")
             return
 
-        if len(records) > 2500:
-            reply = QMessageBox.question(
-                self,
-                TOOL_SALI_MAP,
-                f"{len(records):,} molecules will generate up to "
-                f"{len(records) * (len(records) - 1) // 2:,} pairwise comparisons.\n\n"
-                "This may take a while. Continue?",
-                QMessageBox.Yes | QMessageBox.No,
-                QMessageBox.No,
-            )
-            if reply != QMessageBox.Yes:
-                self.status_label.setText("Ready.")
-                return
-
         ps = self._tool_progress_state
         self._begin_tool_progress(TOOL_SALI_MAP, len(records))
         self.process_queue.enqueue(
@@ -215,3 +201,47 @@ class SaliMixin:
 
     def _on_sali_map_dialog_destroyed(self, *_args) -> None:
         self._sali_map_dialog = None
+
+    def _open_sali_browser(
+        self,
+        points,
+        *,
+        activity_column: str,
+        fp_choice: str = "",
+        metric: str = "Tanimoto",
+        start_index: int = 0,
+    ) -> None:
+        from ..sali_browser import SaliBrowserDialog
+
+        def _factory():
+            dlg = SaliBrowserDialog(
+                self,
+                points,
+                activity_column=activity_column,
+                fp_choice=fp_choice,
+                metric=metric,
+                start_index=start_index,
+            )
+            dlg.setModal(False)
+            dlg.setWindowModality(Qt.NonModal)
+            return dlg
+
+        def _on_reused(dlg):
+            dlg.set_points(
+                points,
+                activity_column=activity_column,
+                fp_choice=fp_choice,
+                metric=metric,
+                start_index=start_index,
+            )
+
+        reuse_or_show_modeless_singleton(
+            self,
+            "_sali_browser_dialog",
+            _factory,
+            self._on_sali_browser_dialog_destroyed,
+            on_reused_visible=_on_reused,
+        )
+
+    def _on_sali_browser_dialog_destroyed(self, *_args) -> None:
+        self._sali_browser_dialog = None

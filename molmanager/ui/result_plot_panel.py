@@ -370,7 +370,7 @@ class DockableResultPlotPanel(QWidget):
             size_vals = self._column_values_for_oids(list(oids or []), size_col)
 
         color_vals, color_col = normalize_color_column(color_vals, color_col)
-        size_vals, _ = normalize_size_column(size_vals, size_col)
+        size_vals, size_col = normalize_size_column(size_vals, size_col)
         size_min_px, size_max_px = self._current_size_bounds()
         color_min, color_max = self._current_color_bounds()
         return {
@@ -380,6 +380,7 @@ class DockableResultPlotPanel(QWidget):
             "color_min": color_min,
             "color_max": color_max,
             "size_values": size_vals,
+            "size_label": size_col,
             "size_min_px": size_min_px,
             "size_max_px": size_max_px,
         }

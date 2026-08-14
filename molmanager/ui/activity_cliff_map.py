@@ -166,7 +166,8 @@ class ActivityCliffMapPanel(DockableResultPlotPanel):
             **enc,
         )
         oids = [p.oid_a for p in self._points]
-        self._plot_view.push_figure(fig, oids)
+        partners = [p.oid_b for p in self._points]
+        self._plot_view.push_figure(fig, oids, partner_oids=partners)
         self._update_spectrum_controls()
 
     def _on_point_activated(self, point_index: int) -> None:
@@ -187,7 +188,7 @@ class ActivityCliffMapPanel(DockableResultPlotPanel):
         )
         self._btn_browse.setEnabled(True)
         self._btn_select.setEnabled(True)
-        self._select_current()
+        # Table selection is applied by the plot view (both pair partners).
 
     def _current_pair(self) -> MmpPair | None:
         if self._current_index is None:

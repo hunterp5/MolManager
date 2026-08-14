@@ -28,7 +28,7 @@ from ..medchem_space import (
     gia_polygon,
     golden_triangle_polygon,
 )
-from ..plot_color import DEFAULT_PLOT_COLORSCALE
+from ..plot_color import DEFAULT_PLOT_COLORSCALE, attach_marker_size_legend
 from ..ui.plotly_html import finalize_plot_legend
 
 
@@ -110,6 +110,7 @@ def build_boiled_egg_figure(
     color_min: float | None = None,
     color_max: float | None = None,
     size_values: list[Any] | None = None,
+    size_label: str | None = None,
     size_min_px: float | None = None,
     size_max_px: float | None = None,
 ) -> go.Figure:
@@ -143,7 +144,7 @@ def build_boiled_egg_figure(
         margin=dict(l=56, r=24, t=24, b=48),
         meta={
             "molmanager_selection_traces": [0],
-            "molmanager_hover_persist": True,
+            "molmanager_hover_persist": False,
         },
         shapes=[
             dict(
@@ -172,6 +173,13 @@ def build_boiled_egg_figure(
     )
     fig.update_xaxes(title_text="TPSA (Ų)", range=[-20, 220])
     fig.update_yaxes(title_text="LogP", range=[-3, 8])
+    attach_marker_size_legend(
+        fig,
+        size_label=size_label,
+        size_values=size_values,
+        size_min_px=float(size_min_px) if size_min_px is not None else 4.0,
+        size_max_px=float(size_max_px) if size_max_px is not None else 16.0,
+    )
     return finalize_plot_legend(fig)
 
 
@@ -184,6 +192,7 @@ def build_golden_triangle_figure(
     color_min: float | None = None,
     color_max: float | None = None,
     size_values: list[Any] | None = None,
+    size_label: str | None = None,
     size_min_px: float | None = None,
     size_max_px: float | None = None,
 ) -> go.Figure:
@@ -217,7 +226,7 @@ def build_golden_triangle_figure(
         margin=dict(l=56, r=24, t=24, b=48),
         meta={
             "molmanager_selection_traces": [0],
-            "molmanager_hover_persist": True,
+            "molmanager_hover_persist": False,
         },
         shapes=[
             _path_shape(
@@ -229,4 +238,11 @@ def build_golden_triangle_figure(
     )
     fig.update_xaxes(title_text="LogP", range=[-3, 6])
     fig.update_yaxes(title_text="Molecular weight (Da)", range=[150, 520])
+    attach_marker_size_legend(
+        fig,
+        size_label=size_label,
+        size_values=size_values,
+        size_min_px=float(size_min_px) if size_min_px is not None else 4.0,
+        size_max_px=float(size_max_px) if size_max_px is not None else 16.0,
+    )
     return finalize_plot_legend(fig)

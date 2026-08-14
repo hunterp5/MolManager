@@ -32,6 +32,16 @@ def test_point_indices_for_oids() -> None:
     assert point_indices_for_oids([], {10}) == set()
 
 
+def test_point_indices_for_oids_uses_index_and_partners() -> None:
+    from molmanager.ui.plot_table_sync import build_oid_point_index
+
+    plotted = [10, 20, 30]
+    partners = [11, 21, 31]
+    index = build_oid_point_index(plotted, partners)
+    assert point_indices_for_oids(plotted, {21}, oid_index=index) == {1}
+    assert point_indices_for_oids(plotted, {10, 31}, oid_index=index) == {0, 2}
+
+
 class _FakeModel:
     def __init__(self, oids_by_row: dict[int, int], highlighted: frozenset[int] | None = None) -> None:
         self._oids_by_row = oids_by_row
@@ -94,8 +104,31 @@ def test_apply_table_selection_skips_identical_selection() -> None:
     app.table = table
     app._source_rows_to_view_rows.return_value = [0, 2]
     app._in_programmatic_table_selection = False
+    app._selected_oids_override = None
 
     apply_table_selection_for_source_rows(app, [0, 2], scroll=True)
 
     sm.select.assert_not_called()
     table.scrollTo.assert_not_called()
+    app.select_table_rows.assert_not_called()
+
+
+def test_apply_table_selection_uses_select_table_rows() -> None:
+    """Plot→table should use the app chunked/OID path when available."""
+    from unittest.mock import MagicMock
+
+    sm = MagicMock()
+    sm.selectedRows.return_value = []
+    table = MagicMock()
+    table.selectionModel.return_value = sm
+    table.model.return_value = MagicMock()
+
+    app = MagicMock()
+    app.table = table
+    app._source_rows_to_view_rows.return_value = [0, 1]
+    app._selected_oids_override = None
+
+    apply_table_selection_for_source_rows(app, [0, 1], scroll=False)
+
+    app.select_table_rows.assert_called_once_with([0, 1])
+    sm.select.assert_not_called()

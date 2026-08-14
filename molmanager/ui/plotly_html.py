@@ -29,8 +29,8 @@ from plotly.offline import get_plotlyjs
 _DEFAULT_WEB_CONFIG = {
     "displaylogo": False,
     "responsive": True,
-    # Wheel zoom; middle-mouse pan is handled in plotly_shell.js (keeps lasso on LMB).
-    "scrollZoom": True,
+    # Wheel zoom / middle-mouse pan are handled in plotly_shell (keeps lasso on LMB).
+    "scrollZoom": False,
 }
 
 
@@ -68,6 +68,11 @@ def suppress_utility_legend_entries(fig: go.Figure) -> None:
     """Hide generic / internal trace names from the Plotly legend (Fit, Trace 0, Compounds, …)."""
     any_visible = False
     for tr in fig.data:
+        # Size-scale legend entries must stay visible.
+        if getattr(tr, "legendgroup", None) == "molmanager_size":
+            tr.showlegend = True
+            any_visible = True
+            continue
         if legend_name_is_utility(getattr(tr, "name", None)):
             tr.showlegend = False
         elif getattr(tr, "showlegend", True) is not False:
@@ -82,6 +87,65 @@ def finalize_plot_legend(fig: go.Figure) -> go.Figure:
     return fig
 
 
+def _scatter_point_count(tr: dict) -> int:
+    x = tr.get("x")
+    try:
+        return len(x) if x is not None else 0
+    except TypeError:
+        return 0
+
+
+def upgrade_scatter_payload_to_gl(payload: dict, *, min_points: int | None = None) -> None:
+    """In serialized Plotly JSON, upgrade large marker scatters to ``scattergl``."""
+    if min_points is None:
+        from ..config import load_config
+
+        min_points = int(load_config().plot_scattergl_min_points)
+    if min_points <= 0:
+        return
+    data = payload.get("data")
+    if not isinstance(data, list):
+        return
+    for tr in data:
+        if not isinstance(tr, dict):
+            continue
+        if tr.get("type") != "scatter":
+            continue
+        mode = str(tr.get("mode") or "markers")
+        if "markers" not in mode:
+            continue
+        if _scatter_point_count(tr) < min_points:
+            continue
+        tr["type"] = "scattergl"
+
+
+def prefer_scattergl_for_large_traces(fig: go.Figure, *, min_points: int | None = None) -> None:
+    """Upgrade marker ``scatter`` traces to ``scattergl`` when point count is large.
+
+    Mutates ``fig`` by rebuilding data (Plotly forbids assigning replacement traces
+    of a different type onto ``fig.data`` directly).
+    """
+    if min_points is None:
+        from ..config import load_config
+
+        min_points = int(load_config().plot_scattergl_min_points)
+    if min_points <= 0:
+        return
+    payload = fig.to_plotly_json()
+    upgrade_scatter_payload_to_gl(payload, min_points=min_points)
+    if not any(
+        isinstance(tr, dict) and tr.get("type") == "scattergl"
+        for tr in (payload.get("data") or [])
+    ):
+        return
+    # Rebuild in place so callers keep the same Figure object.
+    rebuilt = go.Figure(payload)
+    while len(fig.data):
+        fig.data = fig.data[:-1]
+    for tr in rebuilt.data:
+        fig.add_trace(tr)
+
+
 def figure_payload_json(fig: go.Figure, *, config: dict | None = None) -> str:
     """
     Serialize a figure for ``JSON.parse`` in Qt WebEngine.
@@ -91,6 +155,7 @@ def figure_payload_json(fig: go.Figure, *, config: dict | None = None) -> str:
     """
     suppress_utility_legend_entries(fig)
     payload = json.loads(plotly_to_json(fig, validate=False))
+    upgrade_scatter_payload_to_gl(payload)
     merged = dict(_DEFAULT_WEB_CONFIG)
     if config:
         merged.update(config)

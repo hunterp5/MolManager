@@ -113,3 +113,44 @@ def test_scatter_marker_applies_size_values():
     )
     assert m["size"][0] == 2.0
     assert m["size"][2] == 8.0
+
+
+def test_attach_marker_size_legend_adds_right_scale():
+    from plotly import graph_objects as go
+
+    from molmanager.plot_color import attach_marker_size_legend
+
+    fig = go.Figure(data=[go.Scatter(x=[1, 2], y=[1, 2], mode="markers", showlegend=False)])
+    attach_marker_size_legend(
+        fig,
+        size_label="MW",
+        size_values=[100.0, 200.0, 300.0],
+        size_min_px=4.0,
+        size_max_px=14.0,
+    )
+    assert fig.layout.showlegend is True
+    assert fig.layout.legend.title.text == "MW"
+    size_traces = [tr for tr in fig.data if getattr(tr, "legendgroup", None) == "molmanager_size"]
+    assert len(size_traces) == 5
+
+
+def test_attach_marker_size_legend_with_colorbar():
+    from plotly import graph_objects as go
+
+    from molmanager.plot_color import attach_marker_size_legend, scatter_marker_from_column_values
+
+    vals = [1.0, 2.0, 3.0, 4.0, 5.0]
+    marker = scatter_marker_from_column_values(
+        vals, color_label="Color", size_values=vals, size_min_px=4.0, size_max_px=16.0
+    )
+    fig = go.Figure(data=[go.Scatter(x=vals, y=vals, mode="markers", marker=marker, showlegend=False)])
+    attach_marker_size_legend(
+        fig,
+        size_label="Size",
+        size_values=vals,
+        size_min_px=4.0,
+        size_max_px=16.0,
+    )
+    assert fig.layout.showlegend is True
+    assert any(getattr(tr, "legendgroup", None) == "molmanager_size" for tr in fig.data)
+    assert fig.data[0].marker.showscale is True

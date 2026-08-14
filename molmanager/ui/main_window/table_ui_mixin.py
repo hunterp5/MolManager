@@ -808,7 +808,8 @@ class TableUIMixin(TableSearchMixin, FilterPanelMixin):
         view_model = self.table.model()
         proxy = getattr(self, "_filter_proxy_model", None)
         use_proxy = proxy is not None and view_model is proxy
-        view_rows = sorted({ix.row() for ix in sm.selectedIndexes() if ix.isValid() and ix.row() >= 0})
+        # selectedRows() is O(rows); selectedIndexes() is O(rows × columns) and freezes wide tables.
+        view_rows = sorted({ix.row() for ix in sm.selectedRows() if ix.isValid() and ix.row() >= 0})
         if not use_proxy:
             return view_rows
         source_rows: list[int] = []
@@ -817,6 +818,16 @@ class TableUIMixin(TableSearchMixin, FilterPanelMixin):
             if sidx.isValid():
                 source_rows.append(int(sidx.row()))
         return sorted(set(source_rows))
+
+    def _selected_row_count_fast(self) -> int:
+        """Row count for scope labels — avoids materializing every logical row when possible."""
+        override = getattr(self, "_selected_oids_override", None)
+        if override is not None:
+            return len(override)
+        sm = self.table.selectionModel()
+        if sm is None:
+            return 0
+        return len(sm.selectedRows())
 
     def _selected_oids_set(self) -> set[int]:
         from ..plot_table_sync import selected_oids_for_plot
