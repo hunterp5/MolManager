@@ -50,6 +50,8 @@ CI currently gates on Ruff correctness / undefined-name rules plus unused import
   (best-effort UI/progress/shutdown helpers).
 - Large sketcher/RDKit call sites still contain many defensive catches; convert them as those
   modules are touched.
+- File logging is on by default (`molmanager/app_logging.py`); override with `MOLMANAGER_LOG_DIR`,
+  disable with `MOLMANAGER_LOG_TO_FILE=0`. Uncaught exceptions show a crash dialog with the log path.
 
 ### Git commits
 

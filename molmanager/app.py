@@ -23,23 +23,15 @@ from PyQt5.QtWidgets import QApplication
 
 logger = logging.getLogger(__name__)
 
-from .config import load_config
+from .app_logging import configure_app_logging, install_crash_excepthook
 from .rdkit_env import configure_rdkit_for_desktop_app
 from .ui.main_window import ChemicalTableApp
 
 
 def _configure_logging() -> None:
-    """Console logging; level from MOLMANAGER_LOG_LEVEL (default INFO)."""
-    level_name = load_config().log_level.strip()
-    level = getattr(logging, level_name, logging.INFO)
-    root = logging.getLogger()
-    if not root.handlers:
-        logging.basicConfig(
-            level=level,
-            format="%(asctime)s %(levelname)s %(name)s: %(message)s",
-            datefmt="%Y-%m-%d %H:%M:%S",
-        )
-    root.setLevel(level)
+    """Console + rotating file logging; install crash dialog with log path."""
+    log_path = configure_app_logging()
+    install_crash_excepthook(log_path=log_path)
 
 
 def _preload_qt_webengine() -> None:

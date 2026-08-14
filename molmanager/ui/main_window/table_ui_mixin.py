@@ -16,6 +16,7 @@
 
 from __future__ import annotations
 
+import logging
 
 from PyQt5.QtCore import QEventLoop, QItemSelection, QItemSelectionModel, Qt, QTimer
 from PyQt5.QtWidgets import (
@@ -35,6 +36,7 @@ from ...confs_codec import (
     rehydrate_v1_confs_cell,
 )
 from ...config import load_config
+from ...exception_policy import log_swallowed_exception
 from ...services.chemistry_columns import (
     canonical_smiles_header_for_updates,
     cell_texts_have_parseable_molecule,
@@ -77,6 +79,8 @@ from .table_undo_commands import (
     UndoPasteCellCommand,
     UndoPrecisionColumnCommand,
 )
+
+logger = logging.getLogger(__name__)
 
 
 class TableUIMixin(TableSearchMixin, FilterPanelMixin):
@@ -1909,13 +1913,13 @@ class TableUIMixin(TableSearchMixin, FilterPanelMixin):
 
             clear_fingerprint_cache()
         except Exception:
-            pass
+            log_swallowed_exception(logger, "fingerprint_cache.clear failed during clear_all")
         try:
             from ...microstate_cache import clear as clear_microstate_cache
 
             clear_microstate_cache()
         except Exception:
-            pass
+            log_swallowed_exception(logger, "microstate_cache.clear failed during clear_all")
         self._table_model.clear()
         if getattr(self, "_table_stack", None) is not None:
             self._table_stack.setCurrentIndex(1)
@@ -1953,7 +1957,7 @@ class TableUIMixin(TableSearchMixin, FilterPanelMixin):
                 self._sqlite_store.rebuild(["ID_HIDDEN", "Structure"], [])
                 self._sqlite_store_dirty = False
             except Exception:
-                pass
+                log_swallowed_exception(logger, "sqlite_store.rebuild failed during clear_all")
             finally:
                 self._sqlite_rebuild_in_progress = False
         self._structures_queued = 0
@@ -1963,6 +1967,7 @@ class TableUIMixin(TableSearchMixin, FilterPanelMixin):
         self._import_building_progress_shown = False
         self._clear_tool_progress()
         self._session_sort = None
+        self._selected_oids_override = None
 
     def _migrate_legacy_confs_cells_to_sidecar(self) -> None:
         """Move embedded v1 conformer payloads out of ``confs`` / ``superpose`` cells into ``_confs_blocks_sidecar``."""
