@@ -8,7 +8,7 @@ See which small structural changes produce large activity shifts (cliffs) versus
 
 ## When to use
 
-Use after running **Tools → MMP → Transform Ledger** when you want a landscape view of the same MMP evidence.
+Use after running **Tools → MMP** when you want a landscape view of the same MMP evidence.
 
 ## Inputs / scope
 
@@ -16,14 +16,16 @@ Pairs come from the open Transform Ledger (same activity column). Reference filt
 
 ## Options (in the map)
 
-- **X axis** - changing heavy atoms (default) or fragment fingerprint distance (1 − Tanimoto).
+- **X axis** - changing heavy atoms (default) or fragment fingerprint distance (1 − Tanimoto); set under **Plot Options**.
+- **Color by** / **Size by** - optional table columns (**Plot Options**). Default color is signed Δ. For pair points, numeric columns use the mean of both molecules.
 
 ## Workflow
 
-1. Run Transform Ledger with the desired cuts, variable-atom cap, and min/max activity difference.
+1. Run **Tools → MMP** with the desired cuts, variable-atom cap, and min/max activity difference.
 2. Optionally set a reference molecule on the ledger.
 3. Click **Activity Cliffs**. Results open in an interactive cliff map (color = signed Δ).
-4. Click a point to select both molecules in the table; **Browse pair** opens the MMP pair browser for that cliff.
+4. Click a point to select both molecules in the table; **Browse pair** opens the MMP pair browser for that cliff. **Clear Selection** clears plot and table selection.
+5. Optional: **Add to Main Window** docks the plot beside the table.
 
 ## Use cases
 

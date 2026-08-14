@@ -1,6 +1,6 @@
 # MMP Transform Ledger
 
-Matched Molecular Pair (MMP) analysis finds pairs related by small transformations, with controls for cuts, variable heavy atoms, and optional activity differences. Open from **Tools → MMP → Transform Ledger**.
+Matched Molecular Pair (MMP) analysis finds pairs related by small transformations, with controls for cuts, variable heavy atoms, and optional activity differences. Open from **Tools → MMP**.
 
 ## Goal
 
@@ -18,6 +18,7 @@ Structures from **Molecules from**; optional **Activity column**. Scope via **Se
 
 - **Molecules from** - structure source.
 - **Activity column** - property for deltas.
+- **Core / MCS** - optional SMARTS or SMILES constant core; use **MCS from selection** to fill from selected molecules. When set, only matching molecules are analyzed and only fragmentations whose constant core still contains the pattern are kept.
 - **Max cuts** - fragmentation aggressiveness.
 - **Max variable heavy atoms** - size of the changing fragment.
 - **Minimum activity difference** - filter weak deltas (0 = no floor).

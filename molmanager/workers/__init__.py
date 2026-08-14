@@ -95,6 +95,7 @@ from .pdbqt_generator import PdbqtGenSignals, PdbqtGenRequest, PdbqtGeneratorWor
 from .fragment_decomposition import FragmentDecompositionWorker
 from .fragment_recomposition import FragmentRecompositionWorker
 from .mmp_worker import MmpAnalysisWorker
+from .sali_worker import SaliAnalysisWorker
 from .reaction_enumeration import ReactionEnumerationWorker
 from .rgroup_decomposition import RGroupDecompositionWorker
 from .signals import (
@@ -133,6 +134,7 @@ __all__ = [
     "FragmentDecompositionWorker",
     "FragmentRecompositionWorker",
     "MmpAnalysisWorker",
+    "SaliAnalysisWorker",
     "ReactionEnumerationWorker",
     "FPSimilaritySignals",
     "FPSimilarityWorker",

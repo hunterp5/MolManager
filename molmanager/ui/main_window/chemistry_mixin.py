@@ -27,6 +27,7 @@ from .mmp_neighborhood_mixin import MmpNeighborhoodMixin
 from .plot_tools_mixin import PlotToolsMixin
 from .prepare_structures_mixin import PrepareStructuresMixin
 from .reaction_tools_mixin import ReactionToolsMixin
+from .sali_mixin import SaliMixin
 from .tools_sql_predict_mixin import ToolsSqlPredictMixin
 
 
@@ -39,6 +40,7 @@ class ChemistryMixin(
     MmpMixin,
     ActivityCliffMixin,
     MmpNeighborhoodMixin,
+    SaliMixin,
     ReactionToolsMixin,
     ToolsSqlPredictMixin,
 ):

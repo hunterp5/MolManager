@@ -27,7 +27,8 @@ from ..plot_color import (
     clamp_marker_size_bounds,
 )
 
-_SIZE_RANGE_CONTROLS_WIDTH = 240
+# Match Color by Min/Max footprint so labels and spins never overlap.
+_SIZE_RANGE_CONTROLS_WIDTH = 220
 
 
 class PlotSizeRangeControls(QWidget):
@@ -42,7 +43,7 @@ class PlotSizeRangeControls(QWidget):
         row.setContentsMargins(0, 0, 0, 0)
         row.setSpacing(6)
 
-        self._min_label = QLabel("Min size:")
+        self._min_label = QLabel("Min:")
         self._min_label.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
         row.addWidget(self._min_label)
         self.size_min = QDoubleSpinBox()
@@ -54,7 +55,7 @@ class PlotSizeRangeControls(QWidget):
         self.size_min.setToolTip("Smallest marker size in pixels (maps to the low end of Size by).")
         row.addWidget(self.size_min)
 
-        self._max_label = QLabel("Max size:")
+        self._max_label = QLabel("Max:")
         self._max_label.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
         row.addWidget(self._max_label)
         self.size_max = QDoubleSpinBox()

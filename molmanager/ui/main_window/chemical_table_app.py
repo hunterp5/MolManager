@@ -180,6 +180,8 @@ class ChemicalTableApp(
         self.signals.activity_cliff_failed.connect(self.on_activity_cliff_failed, _qc)
         self.signals.mmp_neighborhood_finished.connect(self.on_mmp_neighborhood_finished, _qc)
         self.signals.mmp_neighborhood_failed.connect(self.on_mmp_neighborhood_failed, _qc)
+        self.signals.sali_finished.connect(self.on_sali_finished, _qc)
+        self.signals.sali_failed.connect(self.on_sali_failed, _qc)
         self.signals.cluster_failed.connect(self.on_cluster_failed, _qc)
         self.signals.cluster_explore_finished.connect(self.on_cluster_explore_finished, _qc)
         self.signals.export_finished.connect(self._on_export_finished_message, _qc)
@@ -245,6 +247,7 @@ class ChemicalTableApp(
         self._mmp_ledger_dialog = None
         self._activity_cliff_map_dialog = None
         self._mmp_neighborhood_map_dialog = None
+        self._sali_map_dialog = None
         self._sketcher_dialog = None
         self._calculator_dialog = None
         self._data_analysis_dialog = None
@@ -917,13 +920,12 @@ class ChemicalTableApp(
             act.setToolTip(tip)
             decomp_menu.addAction(act)
 
-        mmp_menu = tools.addMenu("&MMP")
-        act_mmp = QAction("Transform Ledger…", self, triggered=self.open_mmp_dialog)
+        act_mmp = QAction("&MMP…", self, triggered=self.open_mmp_dialog)
         act_mmp.setToolTip(
-            "Find matched molecular pairs (RDKit MMPA) and rank transforms by "
-            "support and activity effect."
+            "Find matched molecular pairs (RDKit MMPA) and open the transform ledger "
+            "ranked by support and activity effect."
         )
-        mmp_menu.addAction(act_mmp)
+        tools.addAction(act_mmp)
 
         act_reaction_enum = QAction(
             "Reaction Based Enumeration…",
@@ -1044,6 +1046,12 @@ class ChemicalTableApp(
         data_menu.addAction(
             QAction("Golden Triangle plot…", self, triggered=self.open_golden_triangle_plot)
         )
+        act_sali = QAction("SALI…", self, triggered=self.open_sali_dialog)
+        act_sali.setToolTip(
+            "Plot fingerprint similarity vs |Δactivity| colored by SALI "
+            "(|Δ| / (1 − similarity)). Click a point to select the pair."
+        )
+        data_menu.addAction(act_sali)
 
         data_menu.addSeparator()
         act_plot = self._bind_hotkey(
@@ -1275,6 +1283,7 @@ class ChemicalTableApp(
             "_mmp_ledger_dialog",
             "_activity_cliff_map_dialog",
             "_mmp_neighborhood_map_dialog",
+            "_sali_map_dialog",
             "_sketcher_dialog",
             "_calculator_dialog",
             "_data_analysis_dialog",

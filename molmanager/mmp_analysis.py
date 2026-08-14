@@ -39,6 +39,101 @@ CoreSideKey = tuple[str, tuple[str, ...]]
 _FLAT_DELTA_EPS = 1e-12
 
 
+def parse_mmp_core_query(text: str | None) -> Chem.Mol | None:
+    """
+    Parse an optional core / MCS pattern from SMARTS or SMILES.
+
+    Empty / whitespace returns ``None`` (no core constraint).
+    """
+    raw = (text or "").strip()
+    if not raw:
+        return None
+    query = Chem.MolFromSmarts(raw)
+    if query is not None and query.GetNumAtoms() > 0:
+        return query
+    mol = Chem.MolFromSmiles(raw)
+    if mol is None or mol.GetNumAtoms() < 1:
+        return None
+    try:
+        smarts = Chem.MolToSmarts(mol)
+    except Exception:
+        return None
+    if not smarts:
+        return None
+    query = Chem.MolFromSmarts(smarts)
+    if query is None or query.GetNumAtoms() < 1:
+        return None
+    return query
+
+
+def mol_contains_core_query(mol: Chem.Mol | None, query: Chem.Mol | None) -> bool:
+    """True when *mol* contains *query* (or when *query* is unset)."""
+    if query is None:
+        return True
+    if mol is None:
+        return False
+    try:
+        return bool(mol.HasSubstructMatch(query))
+    except Exception:
+        return False
+
+
+def core_smiles_contains_query(core_smiles: str, query: Chem.Mol | None) -> bool:
+    """True when the MMP constant-core SMILES contains *query* as a substructure."""
+    if query is None:
+        return True
+    smi = (core_smiles or "").strip()
+    if not smi:
+        return False
+    core = Chem.MolFromSmiles(smi)
+    if core is None:
+        return False
+    try:
+        return bool(core.HasSubstructMatch(query))
+    except Exception:
+        return False
+
+
+def filter_fragment_keys_by_core_query(
+    keys: Sequence[CoreSideKey],
+    query: Chem.Mol | None,
+) -> list[CoreSideKey]:
+    """Keep only ``(core, sides)`` keys whose constant core contains *query*."""
+    if query is None:
+        return list(keys)
+    return [(core, sides) for core, sides in keys if core_smiles_contains_query(core, query)]
+
+
+def compute_mcs_smarts(
+    mols: Sequence[Chem.Mol],
+    *,
+    timeout: int = 12,
+) -> str:
+    """
+    Compute an MCS SMARTS for *mols* (RDKit ``FindMCS``).
+
+    Returns an empty string when MCS cannot be found.
+    """
+    usable = [m for m in mols if m is not None and m.GetNumAtoms() > 0]
+    if len(usable) < 2:
+        return ""
+    try:
+        res = rdFMCS.FindMCS(
+            usable,
+            timeout=max(1, int(timeout)),
+            matchValences=True,
+            ringMatchesRingOnly=True,
+            completeRingsOnly=False,
+        )
+    except Exception:
+        return ""
+    if res is None or getattr(res, "canceled", False):
+        return ""
+    if int(getattr(res, "numAtoms", 0) or 0) < 1:
+        return ""
+    return str(getattr(res, "smartsString", "") or "").strip()
+
+
 @dataclass(frozen=True)
 class MmpPair:
     """One matched molecular pair linking two table molecules."""
@@ -378,9 +473,11 @@ def fragment_keys_for_mol(
     *,
     max_cuts: int = 1,
     max_cut_bonds: int = 20,
+    core_query: Chem.Mol | None = None,
 ) -> list[CoreSideKey]:
     """Return unique ``(core, sidechains)`` keys for *mol* (list form for pickling)."""
-    return list(iter_core_sidechain_keys(mol, max_cuts=max_cuts, max_cut_bonds=max_cut_bonds))
+    keys = list(iter_core_sidechain_keys(mol, max_cuts=max_cuts, max_cut_bonds=max_cut_bonds))
+    return filter_fragment_keys_by_core_query(keys, core_query)
 
 
 def iter_core_sidechain_keys(
@@ -559,6 +656,7 @@ def find_matched_molecular_pairs(
     max_variable_heavy_atoms: int | None = 13,
     min_activity_difference: float = 0.0,
     max_activity_difference: float = 0.0,
+    core_smarts: str | None = None,
     cancel_check: Callable[[], bool] | None = None,
 ) -> list[MmpPair]:
     """
@@ -569,13 +667,18 @@ def find_matched_molecular_pairs(
     whose absolute Δactivity is at least that threshold (0 disables the filter).
     ``max_activity_difference`` keeps only pairs whose absolute Δactivity is at
     most that threshold (0 disables the upper bound).
+    When ``core_smarts`` is set, only molecules containing that core/MCS are
+    kept, and only fragmentations whose constant core still contains the query.
     Pairs are sorted by absolute Δactivity descending, then by transform.
     """
+    core_query = parse_mmp_core_query(core_smarts)
     frag_records: list[tuple[int, str, float, list[CoreSideKey]]] = []
     for i, (oid, mol, activity) in enumerate(records):
         if cancel_check is not None and i % 16 == 0 and cancel_check():
             return []
         if mol is None:
+            continue
+        if not mol_contains_core_query(mol, core_query):
             continue
         try:
             smiles = Chem.MolToSmiles(mol, isomericSmiles=True)
@@ -583,7 +686,12 @@ def find_matched_molecular_pairs(
             continue
         if not smiles:
             continue
-        keys = fragment_keys_for_mol(mol, max_cuts=max_cuts, max_cut_bonds=max_cut_bonds)
+        keys = fragment_keys_for_mol(
+            mol,
+            max_cuts=max_cuts,
+            max_cut_bonds=max_cut_bonds,
+            core_query=core_query,
+        )
         frag_records.append((int(oid), smiles, float(activity), keys))
     return pairs_from_fragment_records(
         frag_records,

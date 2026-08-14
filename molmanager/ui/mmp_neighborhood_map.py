@@ -36,6 +36,7 @@ from ..mmp_neighborhood_analysis import MmpNetworkGraph, build_mmp_network_graph
 from .mmp_neighborhood_plot import build_mmp_neighborhood_figure
 from .plotly_interactive_view import PlotlyInteractiveView
 from .qt_widget_utils import make_window_minimizable
+from .result_plot_panel import DockableResultPlotPanel
 
 logger = logging.getLogger(__name__)
 
@@ -85,21 +86,27 @@ class _LayoutWorker(QRunnable):
             self._signals.failed.emit(self._generation, str(exc) or "Layout failed.")
 
 
-class MmpNeighborhoodMapDialog(QDialog):
+class MmpNeighborhoodMapPanel(DockableResultPlotPanel):
     """Interactive MMP pair network; click a node to select it in the table."""
 
     def __init__(
         self,
-        parent: Any,
-        pairs: list[MmpPair],
+        parent_app: Any,
+        pairs: list[MmpPair] | None = None,
         *,
-        activity_column: str,
+        activity_column: str = "",
+        parent=None,
     ):
-        super().__init__(parent)
-        self._app = parent
+        super().__init__(
+            parent_app,
+            window_title="MMP Pair Network",
+            floating_dialog_cls=MmpNeighborhoodMapDialog,
+            default_color_hint=activity_column or "activity",
+            parent=parent,
+        )
         self._pairs: list[MmpPair] = []
         self._graph: MmpNetworkGraph | None = None
-        self._activity_column = activity_column
+        self._activity_column = activity_column or ""
         self._current_oid: int | None = None
         self._layout_generation = 0
         self._layout_signals = _LayoutSignals(self)
@@ -107,16 +114,9 @@ class MmpNeighborhoodMapDialog(QDialog):
         self._layout_signals.failed.connect(self._on_layout_failed)
         self._pending_focus: list[int] | None = None
 
-        self.setWindowTitle("MMP Pair Network")
-        self.resize(980, 700)
-        self.setMinimumSize(640, 480)
-        self.setModal(False)
-        self.setWindowModality(Qt.NonModal)
-
-        root = QVBoxLayout(self)
         self._meta = QLabel()
         self._meta.setWordWrap(True)
-        root.addWidget(self._meta)
+        self._root.addWidget(self._meta)
 
         controls = QHBoxLayout()
         controls.addWidget(QLabel("Neighborhood hops:"))
@@ -135,22 +135,22 @@ class MmpNeighborhoodMapDialog(QDialog):
         )
         controls.addWidget(self._btn_rebuild)
         controls.addStretch()
-        root.addLayout(controls)
+        self._root.addLayout(controls)
 
         self._plot_view: PlotlyInteractiveView | None = None
-        if _HAS_WEB and parent is not None:
-            self._plot_view = _NetworkPlotView(parent, self)
+        if _HAS_WEB and parent_app is not None:
+            self._plot_view = _NetworkPlotView(parent_app, self)
             self._plot_view.pointActivated.connect(self._on_point_activated)
-            root.addWidget(self._plot_view, 1)
+            self._root.addWidget(self._plot_view, 1)
         else:
             missing = QLabel("Plotly WebEngine view is unavailable in this build.")
             missing.setAlignment(Qt.AlignCenter)
-            root.addWidget(missing, 1)
+            self._root.addWidget(missing, 1)
 
         self._detail = QLabel("Click a node to select that molecule.")
         self._detail.setWordWrap(True)
         self._detail.setTextInteractionFlags(Qt.TextSelectableByMouse)
-        root.addWidget(self._detail)
+        self._root.addWidget(self._detail)
 
         actions = QHBoxLayout()
         self._btn_browse = QPushButton("Browse pairs for node")
@@ -160,35 +160,37 @@ class MmpNeighborhoodMapDialog(QDialog):
         )
         self._btn_select = QPushButton("Select node in table")
         self._btn_select.setEnabled(False)
-        self._btn_clear_sel = QPushButton("Clear Selection")
-        self._btn_clear_sel.setToolTip("Clear the plot and table selection.")
         actions.addWidget(self._btn_browse)
         actions.addWidget(self._btn_select)
-        actions.addWidget(self._btn_clear_sel)
         actions.addStretch()
-        root.addLayout(actions)
+        self._root.addLayout(actions)
 
         self._btn_rebuild.clicked.connect(self._rebuild_from_table_selection)
         self._btn_browse.clicked.connect(self._browse_current)
         self._btn_select.clicked.connect(self._select_current)
-        self._btn_clear_sel.clicked.connect(self._clear_selection)
 
-        make_window_minimizable(self)
-        self.setModal(False)
-        self.setWindowModality(Qt.NonModal)
-        self.set_pairs(pairs, activity_column=activity_column)
+        self._finish_layout()
+        self.set_pairs(pairs or [], activity_column=activity_column)
 
     def set_pairs(self, pairs: list[MmpPair], *, activity_column: str | None = None) -> None:
         self._pairs = list(pairs or [])
         if activity_column is not None:
             self._activity_column = activity_column
+            self._default_color_hint = activity_column
         self._current_oid = None
         self._btn_browse.setEnabled(False)
         self._btn_select.setEnabled(False)
+        self._reload_color_columns()
         self._rebuild_graph(focus_oids=None)
 
+    def _encoding_sample_values(self):
+        color_col = self.color_combo.currentText()
+        if color_col == "(none)" or self._graph is None:
+            return None
+        return self._column_values_for_oids(list(self._graph.node_oids[:64]), color_col)
+
     def _focus_oids_from_table(self) -> list[int]:
-        app = self._app
+        app = self.parent_app
         if app is None:
             return []
         try:
@@ -215,7 +217,7 @@ class MmpNeighborhoodMapDialog(QDialog):
         n_pairs = len(self._pairs)
         self._meta.setText(
             f"Laying out network ({n_pairs} pair(s))…  ·  "
-            f"node color = {self._activity_column}"
+            f"default node color = {self._activity_column}"
         )
         self._detail.setText("Computing layout in the background…")
         self._set_busy(True)
@@ -245,19 +247,28 @@ class MmpNeighborhoodMapDialog(QDialog):
             focus_txt = f"  ·  focus {len(focus_oids)} seed(s), {hops} hop(s)"
         self._meta.setText(
             f"{n_nodes} molecule(s), {n_edges} MMP edge(s)  ·  "
-            f"node color = {self._activity_column}, size = degree  ·  "
+            f"default node color = {self._activity_column}, size = degree  ·  "
             f"edge color = signed Δ{focus_txt}"
         )
         self._detail.setText("Click a node to select that molecule.")
-        if self._plot_view is None:
+        self._rebuild_figure()
+
+    def _rebuild_figure(self) -> None:
+        if self._plot_view is None or self._graph is None:
             return
         try:
+            enc = self._resolved_encoding(oids=list(self._graph.node_oids))
             fig = build_mmp_neighborhood_figure(
-                self._graph, activity_column=self._activity_column
+                self._graph,
+                activity_column=self._activity_column,
+                **enc,
             )
             self._plot_view.push_figure(fig, list(self._graph.node_oids))
+            self._update_spectrum_controls()
         except Exception:
             logger.exception("Failed to render MMP neighborhood figure")
+            n_nodes = len(self._graph.node_oids)
+            n_edges = len(self._graph.edges)
             self._meta.setText(
                 f"{n_nodes} molecule(s), {n_edges} MMP edge(s)  ·  plot render failed"
             )
@@ -290,7 +301,7 @@ class MmpNeighborhoodMapDialog(QDialog):
         self._select_current()
 
     def _select_current(self) -> None:
-        app = self._app
+        app = self.parent_app
         if app is None or self._current_oid is None:
             return
         try:
@@ -308,14 +319,14 @@ class MmpNeighborhoodMapDialog(QDialog):
                 self._plot_view.clear_table_selection(update_plot=True)
             except Exception:
                 pass
-        elif self._app is not None:
+        elif self.parent_app is not None:
             try:
-                self._app.clear_table_selection()
+                self.parent_app.clear_table_selection()
             except Exception:
                 pass
 
     def _browse_current(self) -> None:
-        app = self._app
+        app = self.parent_app
         if app is None or self._current_oid is None:
             return
         subset = pairs_involving_oid(self._pairs, self._current_oid)
@@ -325,6 +336,52 @@ class MmpNeighborhoodMapDialog(QDialog):
             app._open_mmp_browser(subset, activity_column=self._activity_column)
         except Exception:
             pass
+
+
+class MmpNeighborhoodMapDialog(QDialog):
+    """Floating window hosting a :class:`MmpNeighborhoodMapPanel`."""
+
+    def __init__(
+        self,
+        parent: Any,
+        pairs: list[MmpPair] | None = None,
+        *,
+        activity_column: str = "",
+        panel: MmpNeighborhoodMapPanel | None = None,
+    ):
+        super().__init__(parent)
+        self.parent_app = parent
+        if panel is not None:
+            self._panel = panel
+            self._panel.setParent(self)
+            self._panel.parent_app = parent
+        else:
+            self._panel = MmpNeighborhoodMapPanel(
+                parent, pairs or [], activity_column=activity_column
+            )
+
+        self.setWindowTitle("MMP Pair Network")
+        self.resize(980, 700)
+        self.setMinimumSize(640, 480)
+        self.setModal(False)
+        self.setWindowModality(Qt.NonModal)
+        self.setAttribute(Qt.WA_DeleteOnClose, True)
+        self._force_close = False
+
+        root = QVBoxLayout(self)
+        root.setContentsMargins(0, 0, 0, 0)
+        root.addWidget(self._panel, 1)
+        self._panel._sync_footer_chrome()
+        make_window_minimizable(self)
+
+    def set_pairs(self, *args, **kwargs) -> None:
+        if self._panel is not None:
+            self._panel.set_pairs(*args, **kwargs)
+
+    def closeEvent(self, event) -> None:  # noqa: N802 — Qt API name
+        if self._force_close:
+            self._force_close = False
+        event.accept()
 
 
 class _NetworkPlotView(PlotlyInteractiveView):

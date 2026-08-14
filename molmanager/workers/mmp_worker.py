@@ -29,8 +29,11 @@ from rdkit import Chem
 from ..mmp_analysis import (
     CoreSideKey,
     MmpPair,
+    filter_fragment_keys_by_core_query,
     fragment_keys_for_mol,
+    mol_contains_core_query,
     pairs_from_fragment_records,
+    parse_mmp_core_query,
 )
 from .process_pool_utils import (
     register_process_pool,
@@ -73,6 +76,7 @@ class MmpAnalysisWorker(QRunnable):
         max_variable_heavy_atoms: int | None = 13,
         min_activity_difference: float = 0.0,
         max_activity_difference: float = 0.0,
+        core_smarts: str = "",
         write_to_table: bool = False,
         purpose: str = "mmp",
         x_mode: str = "heavy_atoms",
@@ -88,6 +92,7 @@ class MmpAnalysisWorker(QRunnable):
         self.max_variable_heavy_atoms = max_variable_heavy_atoms
         self.min_activity_difference = float(min_activity_difference)
         self.max_activity_difference = float(max_activity_difference)
+        self.core_smarts = (core_smarts or "").strip()
         self.write_to_table = bool(write_to_table)
         self.purpose = (purpose or "mmp").strip().lower()
         self.x_mode = x_mode or "heavy_atoms"
@@ -119,8 +124,19 @@ class MmpAnalysisWorker(QRunnable):
         )
 
         try:
+            core_query = parse_mmp_core_query(self.core_smarts)
+            if self.core_smarts and core_query is None:
+                self._emit_failed(
+                    "Core / MCS pattern could not be parsed as SMARTS or SMILES."
+                )
+                return
+
             activity_by_oid = {int(oid): float(act) for oid, _mol, act in self.records}
-            mol_rows = [(int(oid), mol) for oid, mol, _act in self.records if mol is not None]
+            mol_rows = [
+                (int(oid), mol)
+                for oid, mol, _act in self.records
+                if mol is not None and mol_contains_core_query(mol, core_query)
+            ]
             order, rep, oids_map = group_rows_by_structure(mol_rows)
             if not order:
                 self._emit_finished([])
@@ -212,6 +228,10 @@ class MmpAnalysisWorker(QRunnable):
 
             if ev is not None and ev.is_set():
                 return
+
+            if core_query is not None:
+                for key, keys in list(frag_by_key.items()):
+                    frag_by_key[key] = filter_fragment_keys_by_core_query(keys, core_query)
 
             frag_records: list[tuple[int, str, float, list[CoreSideKey]]] = []
             for key in order:

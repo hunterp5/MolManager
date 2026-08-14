@@ -14,7 +14,7 @@
 # You should have received a copy of the GNU General Public License
 # along with MolManager.  If not, see <https://www.gnu.org/licenses/>.
 
-"""Matched molecular pair (MMP) analysis dialog (Tools → MMP → Transform Ledger)."""
+"""Matched molecular pair (MMP) analysis dialog (Tools → MMP)."""
 
 from __future__ import annotations
 
@@ -27,6 +27,10 @@ from PyQt5.QtWidgets import (
     QDialogButtonBox,
     QDoubleSpinBox,
     QFormLayout,
+    QHBoxLayout,
+    QLineEdit,
+    QMessageBox,
+    QPushButton,
     QSpinBox,
     QVBoxLayout,
 )
@@ -46,6 +50,7 @@ class MmpDialogParams:
     max_variable_heavy_atoms: int
     min_activity_difference: float
     max_activity_difference: float
+    core_smarts: str
     write_to_table: bool
 
 
@@ -63,8 +68,8 @@ class MmpDialog(QDialog):
         super().__init__(parent)
         self.parent_app = parent
         self.setWindowTitle("Matched Molecular Pairs (MMP)")
-        self.setMinimumWidth(440)
-        self.resize(500, 0)
+        self.setMinimumWidth(480)
+        self.resize(540, 0)
         self._have_selection = selected_row_count > 0
 
         root = QVBoxLayout(self)
@@ -87,6 +92,26 @@ class MmpDialog(QDialog):
             "Biological activity (or other numeric property) used to compute Δactivity for each pair."
         )
         form.addRow("Activity column:", self.activity_combo)
+
+        core_row = QHBoxLayout()
+        core_row.setSpacing(6)
+        self.core_edit = QLineEdit()
+        self.core_edit.setPlaceholderText("Optional SMARTS or SMILES (constant core / MCS)")
+        self.core_edit.setToolTip(
+            "When set, only molecules containing this substructure are analyzed, and only "
+            "MMP fragmentations whose constant core still contains it are kept. "
+            "Use SMARTS or SMILES (for example an MCS)."
+        )
+        core_row.addWidget(self.core_edit, 1)
+        self.core_mcs_btn = QPushButton("MCS from selection")
+        self.core_mcs_btn.setToolTip(
+            "Compute a maximum common substructure SMARTS from the currently selected "
+            "table molecules (at least two) and fill this field."
+        )
+        self.core_mcs_btn.setEnabled(self._have_selection and selected_row_count >= 2)
+        self.core_mcs_btn.clicked.connect(self._fill_core_from_selection_mcs)
+        core_row.addWidget(self.core_mcs_btn)
+        form.addRow("Core / MCS:", core_row)
 
         self.max_cuts_sb = QSpinBox()
         self.max_cuts_sb.setRange(1, 3)
@@ -154,6 +179,45 @@ class MmpDialog(QDialog):
         root.addWidget(box)
         make_window_minimizable(self)
 
+    def _fill_core_from_selection_mcs(self) -> None:
+        app = self.parent_app
+        if app is None:
+            return
+        try:
+            oids = sorted(int(o) for o in app._selected_oids_set())
+        except Exception:
+            oids = []
+        if len(oids) < 2:
+            QMessageBox.information(
+                self,
+                "MMP",
+                "Select at least two table molecules to compute an MCS.",
+            )
+            return
+        mols = []
+        for oid in oids:
+            mol = getattr(app, "mols", {}).get(int(oid))
+            if mol is not None:
+                mols.append(mol)
+        if len(mols) < 2:
+            QMessageBox.information(
+                self,
+                "MMP",
+                "Need at least two selected molecules with valid structures.",
+            )
+            return
+        from ...mmp_analysis import compute_mcs_smarts
+
+        smarts = compute_mcs_smarts(mols)
+        if not smarts:
+            QMessageBox.information(
+                self,
+                "MMP",
+                "Could not find a maximum common substructure for the selection.",
+            )
+            return
+        self.core_edit.setText(smarts)
+
     def only_selected_rows(self) -> bool:
         return selection_scope_checked(self)
 
@@ -165,6 +229,7 @@ class MmpDialog(QDialog):
             max_variable_heavy_atoms=int(self.max_var_atoms_sb.value()),
             min_activity_difference=float(self.min_dact_sb.value()),
             max_activity_difference=float(self.max_dact_sb.value()),
+            core_smarts=self.core_edit.text().strip(),
             write_to_table=bool(self.write_table_cb.isChecked()),
         )
 

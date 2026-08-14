@@ -23,11 +23,13 @@ from molmanager.mmp_analysis import (
     aggregate_transforms,
     assemble_mmp_table_annotations,
     canonicalize_pair_direction,
+    compute_mcs_smarts,
     find_matched_molecular_pairs,
     highlight_atoms_for_pair,
     iter_core_sidechain_keys,
     pairs_for_summary,
     pairs_for_transform,
+    parse_mmp_core_query,
 )
 
 
@@ -112,6 +114,37 @@ def test_max_activity_difference_filters():
     # Large phenol–anisole cliff excluded; small anisole–phenetole kept.
     assert not any({p.oid_a, p.oid_b} == {1, 2} for p in capped)
     assert any({p.oid_a, p.oid_b} == {2, 3} for p in capped)
+
+
+def test_parse_mmp_core_query_and_mcs():
+    assert parse_mmp_core_query("") is None
+    assert parse_mmp_core_query("not a pattern !!!") is None
+    q = parse_mmp_core_query("c1ccccc1")
+    assert q is not None and q.GetNumAtoms() == 6
+    mols = [
+        Chem.MolFromSmiles("Oc1ccccc1"),
+        Chem.MolFromSmiles("COc1ccccc1"),
+        Chem.MolFromSmiles("CCOc1ccccc1"),
+    ]
+    smarts = compute_mcs_smarts(mols)
+    assert smarts
+    assert parse_mmp_core_query(smarts) is not None
+
+
+def test_core_smarts_filters_molecules_and_pairs():
+    records = [
+        _rec(1, "Oc1ccccc1", 1.0),
+        _rec(2, "COc1ccccc1", 2.5),
+        _rec(3, "CCOc1ccccc1", 3.0),
+        _rec(4, "CCCC", 0.5),  # no phenyl — excluded by core
+    ]
+    unconstrained = find_matched_molecular_pairs(records, max_cuts=1)
+    with_core = find_matched_molecular_pairs(records, max_cuts=1, core_smarts="c1ccccc1")
+    assert unconstrained
+    assert with_core
+    assert all(4 not in (p.oid_a, p.oid_b) for p in with_core)
+    # Phenyl ethers still form MMP pairs under a benzene core constraint.
+    assert any({p.oid_a, p.oid_b} == {1, 2} for p in with_core)
 
 
 def test_no_duplicate_molecule_pairs():

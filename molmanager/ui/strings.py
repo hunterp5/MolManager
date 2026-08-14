@@ -31,6 +31,7 @@ TOOL_REACTION_ENUMERATION = "Reaction Based Enumeration"
 TOOL_MMP = "Matched Molecular Pairs"
 TOOL_ACTIVITY_CLIFF_MAP = "Activity Cliffs"
 TOOL_MMP_PAIR_NETWORK = "Pair Network"
+TOOL_SALI_MAP = "SALI"
 TOOL_RANDOM_NUMBER = "Random Number"
 TOOL_RANDOM_MOLECULE = "Random Molecule"
 

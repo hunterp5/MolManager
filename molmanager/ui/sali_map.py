@@ -14,7 +14,7 @@
 # You should have received a copy of the GNU General Public License
 # along with MolManager.  If not, see <https://www.gnu.org/licenses/>.
 
-"""Modeless Activity Cliff Map: scatter of MMP change size vs |Δactivity|."""
+"""Modeless SALI map: fingerprint similarity vs |Δactivity|."""
 
 from __future__ import annotations
 
@@ -22,7 +22,6 @@ from typing import Any
 
 from PyQt5.QtCore import Qt, pyqtSignal
 from PyQt5.QtWidgets import (
-    QComboBox,
     QDialog,
     QHBoxLayout,
     QLabel,
@@ -30,12 +29,11 @@ from PyQt5.QtWidgets import (
     QVBoxLayout,
 )
 
-from ..activity_cliff_analysis import ActivityCliffPoint, build_activity_cliff_points
-from ..mmp_analysis import MmpPair
-from .activity_cliff_plot import build_activity_cliff_figure
+from ..sali_analysis import SaliPoint
 from .plotly_interactive_view import PlotlyInteractiveView
 from .qt_widget_utils import make_window_minimizable
 from .result_plot_panel import DockableResultPlotPanel
+from .sali_plot import build_sali_figure
 
 try:
     from PyQt5.QtWebEngineWidgets import QWebEngineView  # noqa: F401
@@ -45,42 +43,31 @@ except Exception:
     _HAS_WEB = False
 
 
-class ActivityCliffMapPanel(DockableResultPlotPanel):
-    """Interactive cliff scatter; click a point to select the pair and browse evidence."""
+class SaliMapPanel(DockableResultPlotPanel):
+    """Interactive SALI scatter; click a point to select both molecules."""
 
     def __init__(
         self,
         parent_app: Any,
-        pairs: list[MmpPair] | None = None,
+        points: list[SaliPoint] | None = None,
         *,
         activity_column: str = "",
-        x_mode: str = "heavy_atoms",
+        fp_choice: str = "",
+        metric: str = "Tanimoto",
         parent=None,
     ):
         super().__init__(
             parent_app,
-            window_title="Activity Cliff Map",
-            floating_dialog_cls=ActivityCliffMapDialog,
-            default_color_hint="signed Δactivity",
+            window_title="SALI",
+            floating_dialog_cls=SaliMapDialog,
+            default_color_hint="SALI index",
             parent=parent,
         )
-        self._pairs: list[MmpPair] = []
-        self._points: list[ActivityCliffPoint] = []
+        self._points: list[SaliPoint] = []
         self._activity_column = activity_column or ""
-        self._x_mode = x_mode or "heavy_atoms"
+        self._fp_choice = fp_choice or ""
+        self._metric = metric or "Tanimoto"
         self._current_index: int | None = None
-
-        x_row = QHBoxLayout()
-        x_row.addWidget(QLabel("X axis:"))
-        self._x_combo = QComboBox()
-        self._x_combo.addItem("Changing heavy atoms", "heavy_atoms")
-        self._x_combo.addItem("Fragment distance (1 − Tanimoto)", "frag_distance")
-        idx = self._x_combo.findData(self._x_mode)
-        if idx >= 0:
-            self._x_combo.setCurrentIndex(idx)
-        self._x_combo.currentIndexChanged.connect(lambda _i: self._rebuild_figure())
-        x_row.addWidget(self._x_combo, 1)
-        self._extra_opts_layout.addLayout(x_row)
 
         self._meta = QLabel()
         self._meta.setWordWrap(True)
@@ -88,7 +75,7 @@ class ActivityCliffMapPanel(DockableResultPlotPanel):
 
         self._plot_view: PlotlyInteractiveView | None = None
         if _HAS_WEB and parent_app is not None:
-            self._plot_view = _CliffPlotView(parent_app, self)
+            self._plot_view = _SaliPlotView(parent_app, self)
             self._plot_view.pointActivated.connect(self._on_point_activated)
             self._root.addWidget(self._plot_view, 1)
         else:
@@ -96,53 +83,50 @@ class ActivityCliffMapPanel(DockableResultPlotPanel):
             missing.setAlignment(Qt.AlignCenter)
             self._root.addWidget(missing, 1)
 
-        self._detail = QLabel("Click a point to inspect the cliff pair.")
+        self._detail = QLabel("Click a point to select the pair.")
         self._detail.setWordWrap(True)
         self._detail.setTextInteractionFlags(Qt.TextSelectableByMouse)
         self._root.addWidget(self._detail)
 
         actions = QHBoxLayout()
-        self._btn_browse = QPushButton("Browse pair")
-        self._btn_browse.setEnabled(False)
-        self._btn_browse.setToolTip("Open the MMP pair browser for the selected cliff point")
         self._btn_select = QPushButton("Select pair in table")
         self._btn_select.setEnabled(False)
-        actions.addWidget(self._btn_browse)
         actions.addWidget(self._btn_select)
         actions.addStretch()
         self._root.addLayout(actions)
-        self._btn_browse.clicked.connect(self._browse_current)
         self._btn_select.clicked.connect(self._select_current)
 
         self._finish_layout()
-        self.set_pairs(pairs or [], activity_column=activity_column, x_mode=self._x_mode)
+        self.set_points(
+            points or [],
+            activity_column=activity_column,
+            fp_choice=self._fp_choice,
+            metric=self._metric,
+        )
 
-    def set_pairs(
+    def set_points(
         self,
-        pairs: list[MmpPair],
+        points: list[SaliPoint],
         *,
         activity_column: str | None = None,
-        x_mode: str | None = None,
+        fp_choice: str | None = None,
+        metric: str | None = None,
     ) -> None:
-        self._pairs = list(pairs or [])
+        self._points = list(points or [])
         if activity_column is not None:
             self._activity_column = activity_column
-        if x_mode is not None:
-            self._x_mode = x_mode
-            idx = self._x_combo.findData(self._x_mode)
-            if idx >= 0:
-                self._x_combo.blockSignals(True)
-                self._x_combo.setCurrentIndex(idx)
-                self._x_combo.blockSignals(False)
-        self._points = build_activity_cliff_points(self._pairs)
+        if fp_choice is not None:
+            self._fp_choice = fp_choice
+        if metric is not None:
+            self._metric = metric
         self._current_index = None
-        self._meta.setText(
-            f"{len(self._points)} matched pair(s)  ·  Δ relative to {self._activity_column}  ·  "
-            "default color = signed Δ (red/blue)"
-        )
-        self._detail.setText("Click a point to inspect the cliff pair.")
-        self._btn_browse.setEnabled(False)
         self._btn_select.setEnabled(False)
+        fp_txt = self._fp_choice or "fingerprint"
+        self._meta.setText(
+            f"{len(self._points)} pair(s)  ·  {fp_txt} / {self._metric}  ·  "
+            f"default color = SALI = |Δ| / (1 − similarity)  ·  Δ relative to {self._activity_column}"
+        )
+        self._detail.setText("Click a point to select the pair.")
         self._reload_color_columns()
         self._rebuild_figure()
 
@@ -156,13 +140,15 @@ class ActivityCliffMapPanel(DockableResultPlotPanel):
     def _rebuild_figure(self) -> None:
         if self._plot_view is None:
             return
-        self._x_mode = str(self._x_combo.currentData() or "heavy_atoms")
+        sim_label = f"{self._metric} similarity"
+        if self._fp_choice:
+            sim_label = f"{self._fp_choice} ({self._metric})"
         pairs = [(p.oid_a, p.oid_b) for p in self._points]
         enc = self._resolved_encoding(oid_pairs=pairs)
-        fig = build_activity_cliff_figure(
+        fig = build_sali_figure(
             self._points,
             activity_column=self._activity_column,
-            x_mode=self._x_mode,
+            similarity_label=sim_label,
             **enc,
         )
         oids = [p.oid_a for p in self._points]
@@ -172,7 +158,6 @@ class ActivityCliffMapPanel(DockableResultPlotPanel):
     def _on_point_activated(self, point_index: int) -> None:
         if not (0 <= point_index < len(self._points)):
             self._current_index = None
-            self._btn_browse.setEnabled(False)
             self._btn_select.setEnabled(False)
             return
         self._current_index = int(point_index)
@@ -180,50 +165,30 @@ class ActivityCliffMapPanel(DockableResultPlotPanel):
         sign = "+" if point.signed_delta >= 0 else ""
         self._detail.setText(
             f"IDs {point.oid_a} ↔ {point.oid_b}  ·  "
+            f"similarity={point.similarity:.3f}  ·  "
             f"Δ{self._activity_column} = {sign}{point.signed_delta:.4g}  ·  "
-            f"change HA={point.change_heavy_atoms}  ·  "
-            f"frag distance={point.frag_distance:.3f}\n"
-            f"{point.transform}"
+            f"SALI={point.sali:.4g}"
         )
-        self._btn_browse.setEnabled(True)
         self._btn_select.setEnabled(True)
         self._select_current()
 
-    def _current_pair(self) -> MmpPair | None:
-        if self._current_index is None:
-            return None
-        if not (0 <= self._current_index < len(self._points)):
-            return None
-        pair_index = self._points[self._current_index].pair_index
-        if not (0 <= pair_index < len(self._pairs)):
-            return None
-        return self._pairs[pair_index]
-
     def _select_current(self) -> None:
-        pair = self._current_pair()
-        app = self.parent_app
-        if pair is None or app is None:
+        if self._current_index is None or self.parent_app is None:
             return
-        try:
-            app.select_table_oids([pair.oid_a, pair.oid_b], extra_status="Activity cliff")
-        except Exception:
-            pass
-
-    def _browse_current(self) -> None:
-        pair = self._current_pair()
-        app = self.parent_app
-        if pair is None or app is None:
+        if not (0 <= self._current_index < len(self._points)):
             return
+        point = self._points[self._current_index]
         try:
-            app._open_mmp_browser([pair], activity_column=self._activity_column)
+            self.parent_app.select_table_oids(
+                [point.oid_a, point.oid_b], extra_status="SALI"
+            )
         except Exception:
             pass
 
     def _clear_selection(self) -> None:
         self._current_index = None
-        self._btn_browse.setEnabled(False)
         self._btn_select.setEnabled(False)
-        self._detail.setText("Click a point to inspect the cliff pair.")
+        self._detail.setText("Click a point to select the pair.")
         if self._plot_view is not None:
             try:
                 self._plot_view.clear_table_selection(update_plot=True)
@@ -236,17 +201,18 @@ class ActivityCliffMapPanel(DockableResultPlotPanel):
                 pass
 
 
-class ActivityCliffMapDialog(QDialog):
-    """Floating window hosting a :class:`ActivityCliffMapPanel`."""
+class SaliMapDialog(QDialog):
+    """Floating window hosting a :class:`SaliMapPanel`."""
 
     def __init__(
         self,
         parent: Any,
-        pairs: list[MmpPair] | None = None,
+        points: list[SaliPoint] | None = None,
         *,
         activity_column: str = "",
-        x_mode: str = "heavy_atoms",
-        panel: ActivityCliffMapPanel | None = None,
+        fp_choice: str = "",
+        metric: str = "Tanimoto",
+        panel: SaliMapPanel | None = None,
     ):
         super().__init__(parent)
         self.parent_app = parent
@@ -255,14 +221,15 @@ class ActivityCliffMapDialog(QDialog):
             self._panel.setParent(self)
             self._panel.parent_app = parent
         else:
-            self._panel = ActivityCliffMapPanel(
+            self._panel = SaliMapPanel(
                 parent,
-                pairs or [],
+                points or [],
                 activity_column=activity_column,
-                x_mode=x_mode,
+                fp_choice=fp_choice,
+                metric=metric,
             )
 
-        self.setWindowTitle("Activity Cliff Map")
+        self.setWindowTitle("SALI")
         self.resize(960, 680)
         self.setMinimumSize(640, 480)
         self.setModal(False)
@@ -276,9 +243,9 @@ class ActivityCliffMapDialog(QDialog):
         self._panel._sync_footer_chrome()
         make_window_minimizable(self)
 
-    def set_pairs(self, *args, **kwargs) -> None:
+    def set_points(self, *args, **kwargs) -> None:
         if self._panel is not None:
-            self._panel.set_pairs(*args, **kwargs)
+            self._panel.set_points(*args, **kwargs)
 
     def closeEvent(self, event) -> None:  # noqa: N802 — Qt API name
         if self._force_close:
@@ -286,8 +253,8 @@ class ActivityCliffMapDialog(QDialog):
         event.accept()
 
 
-class _CliffPlotView(PlotlyInteractiveView):
-    """Plotly view that notifies the cliff dialog when a point is activated."""
+class _SaliPlotView(PlotlyInteractiveView):
+    """Plotly view that notifies when a SALI point is activated."""
 
     pointActivated = pyqtSignal(int)
 

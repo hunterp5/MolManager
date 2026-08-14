@@ -139,7 +139,7 @@ GUIDE_SECTIONS: tuple[GuideSection, ...] = (
             _e(
                 "tools_mmp",
                 "MMP Transform Ledger",
-                "Transform Ledger",
+                "MMP",
                 "Matched molecular pair transform ledger.",
             ),
             _e(
@@ -177,6 +177,12 @@ GUIDE_SECTIONS: tuple[GuideSection, ...] = (
             _e("data_som", "SOM", "Self-Organizing Map", "Self-organizing map visualization."),
             _e("data_boiled_egg", "BOILED-Egg", "BOILED-Egg", "Brain/intestinal absorption style plot."),
             _e("data_golden_triangle", "Golden Triangle", "Golden Triangle", "Medchem golden-triangle plot."),
+            _e(
+                "data_sali",
+                "SALI",
+                "SALI",
+                "Fingerprint similarity vs |Δactivity| colored by SALI.",
+            ),
         ),
     ),
     GuideSection(

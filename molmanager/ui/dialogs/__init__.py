@@ -47,6 +47,7 @@ from .mol_tools import (
 from .mmp import MmpDialog, MmpDialogParams
 from .activity_cliff import ActivityCliffDialog, ActivityCliffDialogParams
 from .mmp_neighborhood import MmpNeighborhoodDialog, MmpNeighborhoodDialogParams
+from .sali import SaliDialog, SaliDialogParams
 from .random_molecule import RandomMoleculeDialog, RandomMoleculeDialogParams
 from .random_number import RandomNumberDialog, RandomNumberDialogParams
 from .permeability import PermeabilityPredictorDialog
@@ -66,6 +67,8 @@ __all__ = [
     "ActivityCliffDialogParams",
     "MmpNeighborhoodDialog",
     "MmpNeighborhoodDialogParams",
+    "SaliDialog",
+    "SaliDialogParams",
     "BulkSimilarityDialog",
     "CalculatorDialog",
     "ClusterDialog",

@@ -78,6 +78,16 @@ class MmpMixin:
                 f"Activity column “{p.activity_column}” is not in the table.",
             )
             return
+        if p.core_smarts:
+            from ...mmp_analysis import parse_mmp_core_query
+
+            if parse_mmp_core_query(p.core_smarts) is None:
+                QMessageBox.information(
+                    self,
+                    TOOL_MMP,
+                    "Core / MCS could not be parsed as SMARTS or SMILES.",
+                )
+                return
 
         mol_data = self.collect_scoped_table_mols(p.structure_source, only_selected=only_selected)
         if not mol_data:
@@ -124,6 +134,7 @@ class MmpMixin:
                 max_variable_heavy_atoms=pp.max_variable_heavy_atoms,
                 min_activity_difference=pp.min_activity_difference,
                 max_activity_difference=pp.max_activity_difference,
+                core_smarts=pp.core_smarts,
                 write_to_table=pp.write_to_table,
                 signals=sigs,
                 cancel_event=ev,

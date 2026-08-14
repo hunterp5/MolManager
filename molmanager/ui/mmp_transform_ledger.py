@@ -48,7 +48,6 @@ from ..mmp_analysis import (
     assemble_mmp_table_annotations,
     pairs_for_summary,
     pairs_involving_oid,
-    reference_oids_in_pairs,
 )
 from .qt_widget_utils import make_window_minimizable
 from .widgets import NumericTableWidgetItem
@@ -281,11 +280,7 @@ class MmpTransformLedgerDialog(QDialog):
         self._pairs = list(pairs or [])
         if activity_column is not None:
             self._activity_column = activity_column
-        # Drop reference if it no longer appears in the new pair set.
-        if self._reference_oid is not None:
-            present = set(reference_oids_in_pairs(self._pairs))
-            if self._reference_oid not in present:
-                self._reference_oid = None
+        # Keep the active reference even when it has no pairs (empty table).
         self._preview_cache.clear()
         self._transform_icon_cache.clear()
         self._core_icon_cache.clear()
@@ -305,11 +300,18 @@ class MmpTransformLedgerDialog(QDialog):
         n_tx = len(self._summaries)
         act = self._activity_column or "activity"
         if self._reference_oid is not None:
-            self._meta.setText(
-                f"Reference ID {self._reference_oid}  ·  "
-                f"{n_tx} transform(s) from {n_pairs} pair(s)  ·  "
-                f"Δ = partner − reference ({act})"
-            )
+            if n_pairs == 0:
+                self._meta.setText(
+                    f"Reference ID {self._reference_oid}  ·  "
+                    f"no matched pairs for this molecule  ·  "
+                    f"Δ = partner − reference ({act})"
+                )
+            else:
+                self._meta.setText(
+                    f"Reference ID {self._reference_oid}  ·  "
+                    f"{n_tx} transform(s) from {n_pairs} pair(s)  ·  "
+                    f"Δ = partner − reference ({act})"
+                )
             self._ref_status.setText(f"Reference: ID {self._reference_oid}")
         else:
             self._meta.setText(
@@ -321,6 +323,8 @@ class MmpTransformLedgerDialog(QDialog):
         self._populate_table()
         self._btn_browse_all.setEnabled(n_pairs > 0)
         self._btn_write.setEnabled(len(self._pairs) > 0)
+        self._btn_cliffs.setEnabled(n_pairs > 0)
+        self._btn_network.setEnabled(n_pairs > 0)
         self._btn_apply.setEnabled(self._table.rowCount() > 0)
         if self._table.rowCount() > 0:
             self._table.selectRow(0)
@@ -345,17 +349,15 @@ class MmpTransformLedgerDialog(QDialog):
                 pass
             return
         oid = oids[0]
-        present = set(reference_oids_in_pairs(self._pairs))
-        if oid not in present:
+        self._reference_oid = oid
+        self._rebuild_summaries()
+        if not pairs_involving_oid(self._pairs, oid):
             try:
                 app.status_label.setText(
-                    f"MMP ledger: ID {oid} has no matched pairs in this result set."
+                    f"MMP ledger: ID {oid} has no matched pairs (showing empty table)."
                 )
             except Exception:
                 pass
-            return
-        self._reference_oid = oid
-        self._rebuild_summaries()
 
     def _clear_reference(self) -> None:
         if self._reference_oid is None:

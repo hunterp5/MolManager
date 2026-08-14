@@ -14,7 +14,7 @@
 # You should have received a copy of the GNU General Public License
 # along with MolManager.  If not, see <https://www.gnu.org/licenses/>.
 
-"""MMP Pair Network configuration dialog (legacy; network opens from Transform Ledger)."""
+"""SALI configuration dialog (Data → SALI)."""
 
 from __future__ import annotations
 
@@ -31,25 +31,27 @@ from PyQt5.QtWidgets import (
     QVBoxLayout,
 )
 
+from ...workers import SIMILARITY_FP_TYPE_LABELS, SIMILARITY_METRIC_LABELS
 from ..qt_widget_utils import make_window_minimizable
 from .mmp import activity_columns_for_mmp
 from .scope import selection_scope_checked
 
 
 @dataclass(frozen=True)
-class MmpNeighborhoodDialogParams:
-    """Arguments for the MMP pair-network worker."""
+class SaliDialogParams:
+    """Arguments for the SALI analysis worker."""
 
     structure_source: str
     activity_column: str
-    max_cuts: int
-    max_variable_heavy_atoms: int
+    fp_choice: str
+    metric: str
+    min_similarity: float
     min_activity_difference: float
-    max_activity_difference: float
+    max_pairs: int
 
 
-class MmpNeighborhoodDialog(QDialog):
-    """Configure MMP fragmentation for the pair neighborhood network."""
+class SaliDialog(QDialog):
+    """Configure fingerprint-based SALI landscape on a numeric activity column."""
 
     def __init__(
         self,
@@ -61,9 +63,9 @@ class MmpNeighborhoodDialog(QDialog):
     ):
         super().__init__(parent)
         self.parent_app = parent
-        self.setWindowTitle("MMP Pair Network")
-        self.setMinimumWidth(440)
-        self.resize(500, 0)
+        self.setWindowTitle("SALI")
+        self.setMinimumWidth(460)
+        self.resize(520, 0)
         self._have_selection = selected_row_count > 0
 
         root = QVBoxLayout(self)
@@ -82,20 +84,28 @@ class MmpNeighborhoodDialog(QDialog):
         else:
             self.activity_combo.addItem("(no numeric columns)")
             self.activity_combo.setEnabled(False)
-        self.activity_combo.setToolTip(
-            "Numeric activity used to color nodes and sign edge Δ values."
-        )
+        self.activity_combo.setToolTip("Numeric activity used for Δactivity and SALI.")
         form.addRow("Activity column:", self.activity_combo)
 
-        self.max_cuts_sb = QSpinBox()
-        self.max_cuts_sb.setRange(1, 3)
-        self.max_cuts_sb.setValue(1)
-        form.addRow("Max cuts:", self.max_cuts_sb)
+        self.fp_combo = QComboBox()
+        self.fp_combo.addItems(SIMILARITY_FP_TYPE_LABELS)
+        self.fp_combo.setToolTip("Fingerprint type for pairwise chemical similarity.")
+        form.addRow("Fingerprint:", self.fp_combo)
 
-        self.max_var_atoms_sb = QSpinBox()
-        self.max_var_atoms_sb.setRange(1, 50)
-        self.max_var_atoms_sb.setValue(13)
-        form.addRow("Max variable heavy atoms:", self.max_var_atoms_sb)
+        self.metric_combo = QComboBox()
+        self.metric_combo.addItems(SIMILARITY_METRIC_LABELS)
+        self.metric_combo.setToolTip("Similarity metric (Tanimoto recommended for SALI).")
+        form.addRow("Similarity metric:", self.metric_combo)
+
+        self.min_sim_sb = QDoubleSpinBox()
+        self.min_sim_sb.setDecimals(3)
+        self.min_sim_sb.setRange(0.0, 1.0)
+        self.min_sim_sb.setSingleStep(0.05)
+        self.min_sim_sb.setValue(0.30)
+        self.min_sim_sb.setToolTip(
+            "Keep only pairs at or above this fingerprint similarity (0 = all pairs)."
+        )
+        form.addRow("Minimum similarity:", self.min_sim_sb)
 
         self.min_dact_sb = QDoubleSpinBox()
         self.min_dact_sb.setDecimals(6)
@@ -103,21 +113,18 @@ class MmpNeighborhoodDialog(QDialog):
         self.min_dact_sb.setValue(0.0)
         self.min_dact_sb.setSingleStep(0.1)
         self.min_dact_sb.setToolTip(
-            "Report only pairs whose absolute activity difference is at least this value. "
-            "0 reports all pairs."
+            "Keep only pairs whose absolute activity difference is at least this value."
         )
         form.addRow("Minimum activity difference:", self.min_dact_sb)
 
-        self.max_dact_sb = QDoubleSpinBox()
-        self.max_dact_sb.setDecimals(6)
-        self.max_dact_sb.setRange(0.0, 1e12)
-        self.max_dact_sb.setValue(0.0)
-        self.max_dact_sb.setSingleStep(0.1)
-        self.max_dact_sb.setToolTip(
-            "Report only pairs whose absolute activity difference is at most this value. "
-            "0 disables the upper bound."
+        self.max_pairs_sb = QSpinBox()
+        self.max_pairs_sb.setRange(100, 200000)
+        self.max_pairs_sb.setValue(10000)
+        self.max_pairs_sb.setSingleStep(500)
+        self.max_pairs_sb.setToolTip(
+            "Maximum pairs to plot (highest SALI kept when more pairs qualify)."
         )
-        form.addRow("Maximum activity difference:", self.max_dact_sb)
+        form.addRow("Max pairs to plot:", self.max_pairs_sb)
         root.addLayout(form)
 
         self.only_selected_cb = QCheckBox("Selected Rows Only")
@@ -142,19 +149,16 @@ class MmpNeighborhoodDialog(QDialog):
     def only_selected_rows(self) -> bool:
         return selection_scope_checked(self)
 
-    def params(self) -> MmpNeighborhoodDialogParams:
-        return MmpNeighborhoodDialogParams(
+    def params(self) -> SaliDialogParams:
+        return SaliDialogParams(
             structure_source=self.src_combo.currentText(),
             activity_column=self.activity_combo.currentText(),
-            max_cuts=int(self.max_cuts_sb.value()),
-            max_variable_heavy_atoms=int(self.max_var_atoms_sb.value()),
+            fp_choice=self.fp_combo.currentText(),
+            metric=self.metric_combo.currentText(),
+            min_similarity=float(self.min_sim_sb.value()),
             min_activity_difference=float(self.min_dact_sb.value()),
-            max_activity_difference=float(self.max_dact_sb.value()),
+            max_pairs=int(self.max_pairs_sb.value()),
         )
 
 
-__all__ = [
-    "MmpNeighborhoodDialog",
-    "MmpNeighborhoodDialogParams",
-    "activity_columns_for_mmp",
-]
+__all__ = ["SaliDialog", "SaliDialogParams", "activity_columns_for_mmp"]

@@ -126,9 +126,11 @@ def interactive_plot_shell_html() -> str:
       var hoverPersist = false;
       var hoverPinned = false;
       var hoverReqGen = 0;
+      var pinnedHoverIndices = [];
       var shiftHeld = false;
       var lastHoverAnchor = {{x: 16, y: 16}};
       var SVG_NS = "http://www.w3.org/2000/svg";
+      var hoverReposTimer = null;
       function refreshShiftHeld(ev) {{
         try {{
           if (ev && typeof ev.shiftKey === "boolean") shiftHeld = !!ev.shiftKey;
@@ -303,13 +305,16 @@ def interactive_plot_shell_html() -> str:
       function indexToPageXY(idx) {{
         try {{
           if (!gd || !gd.data || !gd.data.length) return null;
-          var main = gd.data[0];
+          var selTraces = selectionTracesFromLayout();
+          var ti = (selTraces && selTraces.length) ? Number(selTraces[0]) : 0;
+          if (!Number.isFinite(ti) || ti < 0 || ti >= gd.data.length) ti = 0;
+          var main = gd.data[ti];
           if (!main || main.type === "scatter3d") return null;
           var xa = gd._fullLayout && gd._fullLayout.xaxis;
           var ya = gd._fullLayout && gd._fullLayout.yaxis;
           if (!xa || !ya || typeof xa.l2p !== "function" || typeof ya.l2p !== "function") return null;
           var ii = Number(idx);
-          if (!Number.isFinite(ii) || ii < 0 || ii >= main.x.length) return null;
+          if (!Number.isFinite(ii) || ii < 0 || !main.x || ii >= main.x.length) return null;
           var xv = main.x[ii], yv = main.y[ii];
           if (xv == null || yv == null) return null;
           var rect = gd.getBoundingClientRect();
@@ -320,6 +325,24 @@ def interactive_plot_shell_html() -> str:
         }} catch (_ix) {{
           return null;
         }}
+      }}
+      function schedulePinnedHoverReposition() {{
+        if (hoverReposTimer) clearTimeout(hoverReposTimer);
+        hoverReposTimer = setTimeout(function() {{
+          try {{
+            repositionPinnedHoverCards();
+          }} catch (_rp) {{}}
+        }}, 60);
+      }}
+      function repositionPinnedHoverCards() {{
+        if (!hoverPinned || !hoverPersist) return;
+        if (!pinnedHoverIndices || !pinnedHoverIndices.length) return;
+        if (!gd || !gd.data || !gd.data.length) return;
+        var idxs = pinnedHoverIndices.slice();
+        var anchors = idxs.map(function(i) {{
+          return indexToPageXY(i) || lastHoverAnchor || {{x: 16, y: 16}};
+        }});
+        requestHoverCards(idxs, anchors, true);
       }}
       function clearHoverCards(force) {{
         if (hoverPinned && !force) return;
@@ -575,7 +598,10 @@ def interactive_plot_shell_html() -> str:
             if (!pin) clearHoverCards(false);
             return;
           }}
-          if (pin) hoverPinned = true;
+          if (pin) {{
+            hoverPinned = true;
+            pinnedHoverIndices = idxs.slice();
+          }}
           var pts = idxs.slice(0, items.length);
           var anch = [];
           for (var i = 0; i < items.length; i++) {{
@@ -610,6 +636,7 @@ def interactive_plot_shell_html() -> str:
       }}
       window.molmanagerClearHoverPin = function() {{
         hoverPinned = false;
+        pinnedHoverIndices = [];
         clearHoverCards(true);
       }};
       window.molmanagerPinHoverPoint = function(pointIndex) {{
@@ -623,6 +650,7 @@ def interactive_plot_shell_html() -> str:
           return;
         }}
         hoverPinned = true;
+        pinnedHoverIndices = idxs.slice();
         var anchors = idxs.map(function(i) {{
           return indexToPageXY(i) || lastHoverAnchor || {{x: 16, y: 16}};
         }});
@@ -632,6 +660,7 @@ def interactive_plot_shell_html() -> str:
         hoverPersist = !!on;
         if (!hoverPersist) {{
           hoverPinned = false;
+          pinnedHoverIndices = [];
         }}
       }};
       function applySelectionIndices(indicesJson) {{
@@ -753,6 +782,7 @@ def interactive_plot_shell_html() -> str:
           applyInFlight = true;
           pendingSelectionJson = null;
           hoverPinned = false;
+          pinnedHoverIndices = [];
           hideHoverCard(true);
           try {{
             hoverPersist = !!(layout.meta && layout.meta.molmanager_hover_persist);
@@ -769,6 +799,7 @@ def interactive_plot_shell_html() -> str:
               gd.removeAllListeners('plotly_deselect');
               gd.removeAllListeners('plotly_hover');
               gd.removeAllListeners('plotly_unhover');
+              gd.removeAllListeners('plotly_relayout');
             }} catch (_l) {{}}
             var selTracesClick = [0];
             try {{
@@ -882,9 +913,15 @@ def interactive_plot_shell_html() -> str:
                 hideHoverCard(false);
               }} catch (_unhovErr) {{}}
             }});
+            gd.on('plotly_relayout', function() {{
+              try {{
+                schedulePinnedHoverReposition();
+              }} catch (_rl) {{}}
+            }});
             applyInFlight = false;
             flushPendingSelection();
             try {{ Plotly.Plots.resize(gd); }} catch (_rz) {{}}
+            schedulePinnedHoverReposition();
           }}).finally(function() {{
             applyInFlight = false;
             // Hold a bit after react so restyle/relayout echo events stay suppressed.
@@ -898,6 +935,7 @@ def interactive_plot_shell_html() -> str:
         try {{
           if (gd && gd.data) Plotly.Plots.resize(gd);
         }} catch (_r) {{}}
+        schedulePinnedHoverReposition();
       }}
       var resizeTimer = null;
       window.addEventListener('resize', function() {{

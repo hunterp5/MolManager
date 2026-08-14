@@ -14,38 +14,30 @@
 # You should have received a copy of the GNU General Public License
 # along with MolManager.  If not, see <https://www.gnu.org/licenses/>.
 
-"""Plotly figure for the Activity Cliff Map tool."""
+"""Plotly figure for the Structure–Activity Landscape (SALI) map."""
 
 from __future__ import annotations
 
 from collections.abc import Sequence
-from hashlib import md5
 from typing import Any
 
 from plotly import graph_objects as go
 
-from ..activity_cliff_analysis import ActivityCliffPoint
 from ..plot_color import (
     DEFAULT_MARKER_SIZE_MAX_PX,
     DEFAULT_MARKER_SIZE_MIN_PX,
     marker_sizes_from_column_values,
     scatter_marker_from_column_values,
 )
+from ..sali_analysis import SaliPoint
 from .plotly_html import finalize_plot_legend
 
 
-def _x_jitter(oid_a: int, oid_b: int, scale: float = 0.12) -> float:
-    """Tiny deterministic jitter so integer HA counts do not fully overlap."""
-    digest = md5(f"{oid_a}:{oid_b}".encode("utf-8")).hexdigest()
-    unit = (int(digest[:8], 16) / 0xFFFFFFFF) - 0.5
-    return float(unit) * scale
-
-
-def build_activity_cliff_figure(
-    points: Sequence[ActivityCliffPoint],
+def build_sali_figure(
+    points: Sequence[SaliPoint],
     *,
     activity_column: str,
-    x_mode: str = "heavy_atoms",
+    similarity_label: str = "Similarity",
     color_values: list[Any] | None = None,
     color_label: str | None = None,
     colorscale: str | None = None,
@@ -55,27 +47,10 @@ def build_activity_cliff_figure(
     size_min_px: float = DEFAULT_MARKER_SIZE_MIN_PX,
     size_max_px: float = DEFAULT_MARKER_SIZE_MAX_PX,
 ) -> go.Figure:
-    """
-    Scatter of structural-change size vs ``|Δactivity|``, colored by signed Δ by default.
-
-    ``x_mode`` is ``\"heavy_atoms\"`` (default) or ``\"frag_distance\"``.
-    """
-    use_distance = (x_mode or "").strip().lower() in {"frag_distance", "distance", "tanimoto"}
-    xs: list[float] = []
-    ys: list[float] = []
-    colors: list[float] = []
-    custom: list[list[int]] = []
-    for p in points:
-        if use_distance:
-            x = float(p.frag_distance)
-            x_label = "Fragment distance (1 − Tanimoto)"
-        else:
-            x = float(p.change_heavy_atoms) + _x_jitter(p.oid_a, p.oid_b)
-            x_label = "Changing heavy atoms"
-        xs.append(x)
-        ys.append(float(p.abs_delta))
-        colors.append(float(p.signed_delta))
-        custom.append([int(p.oid_a), int(p.oid_b), int(p.pair_index)])
+    """Scatter of fingerprint similarity vs ``|Δactivity|``, colored by SALI by default."""
+    xs = [float(p.similarity) for p in points]
+    ys = [float(p.abs_delta) for p in points]
+    custom = [[int(p.oid_a), int(p.oid_b), int(p.pair_index)] for p in points]
 
     if color_values is not None:
         marker = scatter_marker_from_column_values(
@@ -100,14 +75,12 @@ def build_activity_cliff_figure(
             size_max_px=size_max_px,
             default_size=9.0,
         )
-        cmax = max((abs(c) for c in colors), default=1.0) or 1.0
+        colors = [float(p.sali) for p in points]
         marker = {
             "size": sizes,
             "color": colors,
-            "colorscale": "RdBu",
-            "cmin": -cmax,
-            "cmax": cmax,
-            "colorbar": {"title": f"Δ{activity_column}"},
+            "colorscale": "Viridis",
+            "colorbar": {"title": "SALI"},
             "line": {"width": 0.5, "color": "#333"},
             "opacity": 0.85,
         }
@@ -130,8 +103,8 @@ def build_activity_cliff_figure(
         ]
     )
     fig.update_layout(
-        title="Activity Cliff Map",
-        xaxis_title=x_label,
+        title="SALI",
+        xaxis_title=similarity_label,
         yaxis_title=f"|Δ{activity_column}|",
         template="plotly_white",
         dragmode="lasso",
