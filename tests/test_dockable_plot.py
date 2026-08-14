@@ -19,6 +19,8 @@
 from molmanager.ui.dockable_plot import (
     PLOT_PANEL_BASE_MINIMUM_WIDTH,
     PLOT_PANEL_DEFAULT_WIDTH,
+    is_dockable_plot_widget,
+    is_dockable_workspace_widget,
     plot_embedded_minimum_width,
     plot_embedded_preferred_width,
 )
@@ -30,6 +32,10 @@ class _WidePlot:
 
     def embedded_preferred_width(self) -> int:
         return 900
+
+
+class _ViewerLike:
+    dockable_in_workspace = True
 
 
 def test_plot_embedded_widths_use_custom_hooks():
@@ -66,3 +72,16 @@ def test_plot_widget_dock_width_is_figure_sized():
     assert "420" in min_src
     assert "640" in pref_src
     assert "_AXES_CONTROLS_MIN_WIDTH" not in min_src
+
+
+def test_is_dockable_workspace_widget_accepts_viewer_marker():
+    viewer = _ViewerLike()
+    assert is_dockable_workspace_widget(viewer)
+    assert not is_dockable_plot_widget(viewer)
+
+
+def test_molecule_3d_viewer_widget_is_workspace_dockable():
+    from molmanager.ui.mol_viewer_3d import Molecule3DViewerWidget
+
+    assert getattr(Molecule3DViewerWidget, "dockable_in_workspace", False) is True
+    assert is_dockable_workspace_widget(Molecule3DViewerWidget)

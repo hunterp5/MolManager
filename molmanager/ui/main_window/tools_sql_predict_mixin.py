@@ -234,23 +234,23 @@ class ToolsSqlPredictMixin:
             on_reused_visible=_on_reuse if mol is not None else None,
         )
 
-    def open_molecule_3d(self, mol=None):
+    def open_molecule_3d(self, mol=None, *, source_oid=None):
         if mol is not None and not isinstance(mol, Chem.Mol):
             mol = None
         if mol is None:
             return
         from ..mol_viewer_3d import open_molecule_3d_viewer
 
-        open_molecule_3d_viewer(mol, self, title="View in 3D")
+        open_molecule_3d_viewer(mol, self, title="View in 3D", source_oid=source_oid)
 
-    def open_molecule_2d(self, mol=None):
+    def open_molecule_2d(self, mol=None, *, source_oid=None):
         if mol is not None and not isinstance(mol, Chem.Mol):
             mol = None
         if mol is None:
             return
         from ..mol_viewer_3d import open_molecule_2d_viewer
 
-        open_molecule_2d_viewer(mol, self, title="View in 2D")
+        open_molecule_2d_viewer(mol, self, title="View in 2D", source_oid=source_oid)
 
     def open_external_db(self):
         from ..external import ExternalDBDialog

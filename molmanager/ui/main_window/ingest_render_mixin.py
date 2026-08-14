@@ -422,7 +422,7 @@ class IngestRenderMixin:
     def _reveal_table_after_ingest_prep(self) -> None:
         """Switch from the loading page to the table once prep work is finished."""
         self._ingest_prep_before_reveal = False
-        self._ingest_loading = False
+        self._set_ingest_loading(False)
         self._table_stack.setCurrentIndex(1)
         app = QApplication.instance()
         if app is not None:

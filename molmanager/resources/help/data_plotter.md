@@ -1,6 +1,6 @@
 # Plotter
 
-Plotter builds interactive charts - scatter/histogram, 2D line, heatmap, box, violin, and radar - linked to table columns and selection.
+Plotter builds interactive charts - scatter, histogram, 2D line, heatmap, box, violin, and radar - linked to table columns and selection.
 
 ## Goal
 
@@ -16,7 +16,7 @@ Numeric (and categorical where supported) columns for rows in scope; **Selected 
 
 ## Options
 
-- **Plot type** - Scatter/Histogram, **2D Line**, **Heatmap**, **Box plot**, **Violin**, **Radar**.
+- **Plot type** - **Scatter**, **Histogram**, **2D Line**, **Heatmap**, **Box plot**, **Violin**, **Radar**.
 - Axes **X** / **Y** / **Z**, **Min** / **Max**, **Bin width** (and Y bin width).
 - **Selected Rows Only**.
 - **Color by**, **Spectrum**, color **Min** / **Max**.

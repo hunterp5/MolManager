@@ -137,6 +137,8 @@ def test_dimred_figure_numeric_string_color_by():
     fig = build_dimension_reduction_figure(result)
     assert fig.data[0].marker.colorscale is not None
     assert all(isinstance(c, float) for c in fig.data[0].marker.color)
+    assert fig.data[0].hoverinfo == "none"
+    assert fig.data[0].customdata[0][0] == 1
 
 
 def test_build_reduction_result_hover():

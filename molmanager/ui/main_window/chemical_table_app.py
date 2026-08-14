@@ -1079,6 +1079,7 @@ class ChemicalTableApp(
         btn_layout.setFocusPolicy(Qt.NoFocus)
         btn_layout.setFont(mb.font())
         btn_layout.clicked.connect(self.open_workspace_layout_picker)
+        self._btn_workspace_layout = btn_layout
         corner_ly.addWidget(btn_layout)
 
         btn_proc = QToolButton(corner)
@@ -1089,8 +1090,39 @@ class ChemicalTableApp(
         btn_proc.setFocusPolicy(Qt.NoFocus)
         btn_proc.setFont(mb.font())
         btn_proc.clicked.connect(self.open_processes_dialog)
+        self._btn_processes = btn_proc
         corner_ly.addWidget(btn_proc)
         mb.setCornerWidget(corner, Qt.TopRightCorner)
+        self._sync_main_toolbar_for_table_ready()
+
+    def _set_ingest_loading(self, loading: bool) -> None:
+        """Track file/import ingest and gray out the main toolbar until the table is ready."""
+        self._ingest_loading = bool(loading)
+        self._sync_main_toolbar_for_table_ready()
+
+    def _sync_main_toolbar_for_table_ready(self) -> None:
+        """Disable File/Edit/Tools menus and Layout while ``_ingest_loading``; keep Processes usable."""
+        enabled = not bool(getattr(self, "_ingest_loading", False))
+        mb = self.menuBar()
+        for action in mb.actions():
+            menu = action.menu()
+            if menu is not None:
+                menu.setEnabled(enabled)
+            else:
+                action.setEnabled(enabled)
+        calc = getattr(self, "_act_custom_calc", None)
+        calc_blocked = bool(load_config().disable_custom_calc)
+        for action in getattr(self, "_hotkey_actions", {}).values():
+            if action is None:
+                continue
+            if action is calc and calc_blocked:
+                action.setEnabled(False)
+            else:
+                action.setEnabled(enabled)
+        layout_btn = getattr(self, "_btn_workspace_layout", None)
+        if layout_btn is not None:
+            layout_btn.setEnabled(enabled)
+        # Processes stays enabled so the user can cancel a long open/import.
 
     def open_workspace_layout_picker(self) -> None:
         """Show the graphic layout picker and apply the chosen preset."""

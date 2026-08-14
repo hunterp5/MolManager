@@ -20,15 +20,12 @@ from __future__ import annotations
 
 from typing import Any
 
-from PyQt5.QtCore import QItemSelection, QItemSelectionModel, Qt, QTimer
+from PyQt5.QtCore import QItemSelectionModel, Qt, QTimer
 from PyQt5.QtGui import QImage, QKeySequence, QPixmap
 from PyQt5.QtWidgets import (
     QAbstractItemView,
     QCheckBox,
-    QComboBox,
     QDialog,
-    QFormLayout,
-    QGroupBox,
     QHBoxLayout,
     QLabel,
     QPushButton,
@@ -42,6 +39,7 @@ from ..display_constants import (
     BROWSER_STRUCTURE_PREVIEW_MIN_WIDTH,
 )
 from .compound_table_model import CompoundTableModel
+from .property_columns_panel import PropertyColumnsPanel
 from .qt_widget_utils import make_window_minimizable
 from .table_selection import item_selection_for_view_rows
 
@@ -79,36 +77,9 @@ class SelectionBrowserDialog(QDialog):
         )
         root.addWidget(self._struct_label, 1)
 
-        self._prop_box = QGroupBox()
-        # Keep this panel visually distinct (no header/title).
-        self._prop_box.setStyleSheet(
-            "QGroupBox { margin-top: 10px; background-color: palette(base); "
-            "border: 1px solid palette(mid); border-radius: 4px; }"
-        )
-        self._prop_form = QFormLayout(self._prop_box)
-        self._prop_form.setLabelAlignment(Qt.AlignRight)
-        self._prop_form.setFormAlignment(Qt.AlignTop)
-        self._prop_form.setContentsMargins(12, 12, 12, 10)
-        self._prop_form.setVerticalSpacing(8)
-        self._prop_form.setHorizontalSpacing(10)
-
-        self._prop_combo_1 = QComboBox()
-        self._prop_combo_2 = QComboBox()
-        self._prop_combo_3 = QComboBox()
-        for cb in (self._prop_combo_1, self._prop_combo_2, self._prop_combo_3):
-            cb.setSizeAdjustPolicy(QComboBox.AdjustToContents)
-
-        self._prop_value_1 = QLabel("—")
-        self._prop_value_2 = QLabel("—")
-        self._prop_value_3 = QLabel("—")
-        for lab in (self._prop_value_1, self._prop_value_2, self._prop_value_3):
-            lab.setTextInteractionFlags(Qt.TextSelectableByMouse)
-            lab.setWordWrap(True)
-
-        self._prop_form.addRow(self._prop_combo_1, self._prop_value_1)
-        self._prop_form.addRow(self._prop_combo_2, self._prop_value_2)
-        self._prop_form.addRow(self._prop_combo_3, self._prop_value_3)
-        root.addWidget(self._prop_box)
+        self._prop_panel = PropertyColumnsPanel(self)
+        self._prop_panel.bind_app(self._app)
+        root.addWidget(self._prop_panel)
 
         row_btns = QHBoxLayout()
         self._btn_first = QPushButton("<<")
@@ -136,9 +107,6 @@ class SelectionBrowserDialog(QDialog):
         self._btn_last.clicked.connect(self._go_last)
         self._btn_toggle_select.clicked.connect(self._toggle_current_row_selected)
         self._cb_only_selected.toggled.connect(lambda _v: self.refresh_from_app())
-        self._prop_combo_1.currentIndexChanged.connect(lambda _i: self._update_property_values())
-        self._prop_combo_2.currentIndexChanged.connect(lambda _i: self._update_property_values())
-        self._prop_combo_3.currentIndexChanged.connect(lambda _i: self._update_property_values())
 
         QShortcut(QKeySequence(Qt.Key_Home), self, activated=self._go_first)
         QShortcut(QKeySequence(Qt.Key_Left), self, activated=lambda: self._step(-1))
@@ -353,43 +321,8 @@ class SelectionBrowserDialog(QDialog):
         self._update_property_values()
 
     def _refresh_property_columns(self) -> None:
-        """Populate the 3 column pickers from current table headers, preserving selections if possible."""
-        try:
-            headers = list(getattr(self._app, "headers", []) or [])
-        except Exception:
-            headers = []
-        choices = [h for h in headers if h not in ("ID_HIDDEN", "Structure")]
-        if not choices:
-            choices = []
-
-        combos = (self._prop_combo_1, self._prop_combo_2, self._prop_combo_3)
-        prev = [cb.currentText() for cb in combos]
-        for cb in combos:
-            cb.blockSignals(True)
-            cb.clear()
-            cb.addItem("—", userData=None)
-            for h in choices:
-                cb.addItem(h, userData=h)
-            cb.blockSignals(False)
-        for cb, p in zip(combos, prev, strict=False):
-            if p and p != "—":
-                j = cb.findText(p)
-                if j >= 0:
-                    cb.setCurrentIndex(j)
-
-        # Reasonable defaults: SMILES then Name-ish columns if present.
-        def _set_default(cb: QComboBox, prefer: list[str]) -> None:
-            if cb.currentData() is not None:
-                return
-            for h in prefer:
-                j = cb.findText(h)
-                if j >= 0:
-                    cb.setCurrentIndex(j)
-                    return
-
-        _set_default(self._prop_combo_1, ["SMILES", "Name", "CompoundName", "ID"])
-        _set_default(self._prop_combo_2, ["Name", "CompoundName", "CAS", "InChIKey"])
-        _set_default(self._prop_combo_3, ["MW", "MolWt", "cLogP", "LogP", "TPSA"])
+        """Populate column pickers from current table headers."""
+        self._prop_panel.refresh_columns()
 
     def _current_row(self) -> int | None:
         if not self._rows:
@@ -397,14 +330,6 @@ class SelectionBrowserDialog(QDialog):
         if not (0 <= self._idx < len(self._rows)):
             return None
         return self._rows[self._idx]
-
-    def _cell_text(self, logical_row: int, header: str) -> str:
-        app = self._app
-        try:
-            col = int(app.headers.index(header))
-        except Exception:
-            return ""
-        return str(app._table_model.data(app._table_model.index(logical_row, col), Qt.DisplayRole) or "")
 
     def _is_row_selected(self, logical_row: int) -> bool:
         app = self._app
@@ -468,24 +393,13 @@ class SelectionBrowserDialog(QDialog):
 
     def _update_property_values(self) -> None:
         r = self._current_row()
-        if r is None:
-            self._prop_value_1.setText("—")
-            self._prop_value_2.setText("—")
-            self._prop_value_3.setText("—")
-            return
-        mapping = [
-            (self._prop_combo_1, self._prop_value_1),
-            (self._prop_combo_2, self._prop_value_2),
-            (self._prop_combo_3, self._prop_value_3),
-        ]
-        for cb, lab in mapping:
-            h = cb.currentData()
-            if not h:
-                lab.setText("—")
-                continue
-            v = self._cell_text(r, str(h))
-            lab.setText(v if v != "" else "—")
-
+        oid = None
+        if r is not None:
+            try:
+                oid = int(self._app._table_model.row_oid(r))
+            except Exception:
+                oid = None
+        self._prop_panel.set_source_oid(oid)
         self._sync_select_button()
 
     def _sync_select_button(self) -> None:

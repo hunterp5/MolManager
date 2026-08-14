@@ -45,7 +45,7 @@ class IngestExportMixin:
         self._ingest_append_mode = False
         self._structure_field_override = None
         self.clear_all()
-        self._ingest_loading = True
+        self._set_ingest_loading(True)
         self._structures_queued = 0
         self._import_building_progress_shown = False
         self._table_stack.setCurrentIndex(0)
@@ -67,7 +67,7 @@ class IngestExportMixin:
         self._last_batch_received = False
         self._structure_field_override = None
         self._ingest_append_mode = True
-        self._ingest_loading = True
+        self._set_ingest_loading(True)
         self._structures_queued = 0
         self._import_building_progress_shown = False
         self._table_stack.setCurrentIndex(0)

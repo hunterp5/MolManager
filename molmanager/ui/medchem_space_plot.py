@@ -76,15 +76,15 @@ def _scatter_marker(
 def _compound_scatter(
     xs: list[float],
     ys: list[float],
-    hover: list[str],
+    oids: list[int],
     marker: dict,
 ) -> go.Scatter:
     return go.Scatter(
         x=xs,
         y=ys,
         mode="markers",
-        text=hover,
-        hoverinfo="text",
+        customdata=[[int(oid)] for oid in oids],
+        hoverinfo="none",
         marker=marker,
         name="Compounds",
         showlegend=False,
@@ -116,7 +116,7 @@ def build_boiled_egg_figure(
             _compound_scatter(
                 [p.tpsa for p in pts],
                 [p.wlogp for p in pts],
-                [p.hover for p in pts],
+                [p.oid for p in pts],
                 marker,
             )
         ]
@@ -124,8 +124,13 @@ def build_boiled_egg_figure(
     fig.update_layout(
         template="plotly_white",
         dragmode="lasso",
+        clickmode="event+select",
         showlegend=False,
         margin=dict(l=56, r=24, t=24, b=48),
+        meta={
+            "molmanager_selection_traces": [0],
+            "molmanager_hover_persist": True,
+        },
         shapes=[
             dict(
                 type="rect",
@@ -179,7 +184,7 @@ def build_golden_triangle_figure(
             _compound_scatter(
                 [p.logp for p in pts],
                 [p.mw for p in pts],
-                [p.hover for p in pts],
+                [p.oid for p in pts],
                 marker,
             )
         ]
@@ -187,8 +192,13 @@ def build_golden_triangle_figure(
     fig.update_layout(
         template="plotly_white",
         dragmode="lasso",
+        clickmode="event+select",
         showlegend=False,
         margin=dict(l=56, r=24, t=24, b=48),
+        meta={
+            "molmanager_selection_traces": [0],
+            "molmanager_hover_persist": True,
+        },
         shapes=[
             _path_shape(
                 golden_triangle_polygon(),

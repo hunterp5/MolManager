@@ -100,6 +100,13 @@ def is_dockable_plot_widget(widget) -> bool:
     )
 
 
+def is_dockable_workspace_widget(widget) -> bool:
+    """True for plot panels or other workspace-dockable widgets (e.g. 2D/3D viewers)."""
+    if is_dockable_plot_widget(widget):
+        return True
+    return bool(getattr(widget, "dockable_in_workspace", False))
+
+
 def plot_embedded_minimum_width(widget: QWidget | None) -> int:
     """Minimum panel width so docked plot controls do not overlap or clip."""
     if widget is None:

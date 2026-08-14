@@ -77,8 +77,8 @@ def build_dimension_reduction_figure(
                 x=result.x,
                 y=result.y,
                 mode="markers",
-                text=result.hover,
-                hoverinfo="text",
+                customdata=[[int(oid)] for oid in result.oids],
+                hoverinfo="none",
                 marker=marker,
                 showlegend=False,
                 unselected={"marker": {"opacity": 0.35}},
@@ -92,7 +92,12 @@ def build_dimension_reduction_figure(
         yaxis_title=y_label,
         template="plotly_white",
         dragmode="lasso",
+        clickmode="event+select",
         showlegend=False,
         margin=dict(l=48, r=24, t=48, b=48),
+        meta={
+            "molmanager_selection_traces": [0],
+            "molmanager_hover_persist": True,
+        },
     )
     return finalize_plot_legend(fig)

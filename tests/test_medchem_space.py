@@ -128,11 +128,14 @@ def test_build_dataset_and_figures_from_ethanol():
     assert len(egg.data) == 1
     assert len(egg.layout.shapes) == 3
     assert egg.layout.yaxis.title.text == "LogP"
+    assert egg.data[0].hoverinfo == "none"
+    assert egg.data[0].customdata[0][0] == 1
     assert "LogP" in ds.points[0].hover
     assert "WLOGP" not in ds.points[0].hover
     tri = build_golden_triangle_figure(ds)
     assert len(tri.data) == 1
     assert len(tri.layout.shapes) == 1
+    assert tri.data[0].hoverinfo == "none"
     assert tri.layout.xaxis.title.text == "LogP"
     assert tri.layout.yaxis.title.text == "Molecular weight (Da)"
     assert isinstance(oids_in_egg_gia(ds), list)

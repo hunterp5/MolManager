@@ -21,6 +21,7 @@ from __future__ import annotations
 __all__ = [
     "AXIS_NONE",
     "PLOT_TYPE_SCATTER",
+    "PLOT_TYPE_HISTOGRAM",
     "PLOT_TYPE_CHOICES",
     "PlotDialog",
     "PlotWidget",
@@ -34,6 +35,7 @@ __all__ = [
 AXIS_NONE = "None"
 
 PLOT_TYPE_SCATTER = "scatter"
+PLOT_TYPE_HISTOGRAM = "histogram"
 PLOT_TYPE_LINE_2D = "line_2d"
 PLOT_TYPE_BOX = "box"
 PLOT_TYPE_VIOLIN = "violin"
@@ -41,7 +43,8 @@ PLOT_TYPE_HEATMAP = "heatmap"
 PLOT_TYPE_RADAR = "radar"
 
 PLOT_TYPE_CHOICES: tuple[tuple[str, str], ...] = (
-    ("Scatter/Histogram", PLOT_TYPE_SCATTER),
+    ("Scatter", PLOT_TYPE_SCATTER),
+    ("Histogram", PLOT_TYPE_HISTOGRAM),
     ("2D Line", PLOT_TYPE_LINE_2D),
     ("Heatmap", PLOT_TYPE_HEATMAP),
     ("Box plot", PLOT_TYPE_BOX),
@@ -115,6 +118,11 @@ from ..plot_radar import (
     summarize_radar,
 )
 from .plot_color_range_controls import PlotColorRangeControls
+from .plot_hover import (
+    default_hover_column_preferences,
+    hover_cards_payload,
+    hover_column_choices,
+)
 from .plot_table_sync import (
     apply_table_selection_for_source_rows,
     clear_table_selection_from_plot,
@@ -137,19 +145,15 @@ def normalize_axis_name(text: str | None) -> str | None:
 
 
 def infer_plot_mode(x: str | None, y: str | None, z: str | None) -> str | None:
-    """Infer plot type from axis combo text: Histogram, 2D, 3D, or None if invalid."""
+    """Infer scatter dimensionality from axis combo text: 2D, 3D, or None if invalid."""
     xn = normalize_axis_name(x)
     yn = normalize_axis_name(y)
     zn = normalize_axis_name(z)
-    if not xn:
+    if not xn or yn is None:
         return None
-    if yn is None and zn is None:
-        return "Histogram"
-    if yn is not None and zn is None:
+    if zn is None:
         return "2D"
-    if yn is not None and zn is not None:
-        return "3D"
-    return None
+    return "3D"
 
 
 def resolve_plot_mode(
@@ -158,10 +162,11 @@ def resolve_plot_mode(
     y: str | None,
     z: str | None,
 ) -> str | None:
-    """Resolve scatter/histogram mode from plot type and axis selections."""
+    """Resolve plot mode from plot type and axis selections."""
     xn = normalize_axis_name(x)
     yn = normalize_axis_name(y)
-    zn = normalize_axis_name(z)
+    if plot_type == PLOT_TYPE_HISTOGRAM:
+        return "Histogram" if xn else None
     if plot_type == PLOT_TYPE_SCATTER:
         return infer_plot_mode(x, y, z)
     if plot_type == PLOT_TYPE_LINE_2D:
@@ -258,17 +263,17 @@ class _PlotBridge(QObject):
         super().__init__(plot_widget)
         self._plot_widget = plot_widget
 
-    @pyqtSlot(int)
-    def pointClicked(self, point_index: int) -> None:  # noqa: N802
-        self._plot_widget._on_plot_point_clicked(int(point_index))
+    @pyqtSlot(int, bool)
+    def pointClicked(self, point_index: int, additive: bool = False) -> None:  # noqa: N802
+        self._plot_widget._on_plot_point_clicked(int(point_index), additive=bool(additive))
 
-    @pyqtSlot(str)
-    def pointsSelected(self, points_json: str) -> None:  # noqa: N802
-        self._plot_widget._on_plot_points_selected(points_json)
+    @pyqtSlot(str, bool)
+    def pointsSelected(self, points_json: str, additive: bool = False) -> None:  # noqa: N802
+        self._plot_widget._on_plot_points_selected(points_json, additive=bool(additive))
 
-    @pyqtSlot(str)
-    def histogramPointsSelected(self, indices_json: str) -> None:  # noqa: N802
-        self._plot_widget._on_histogram_points_selected(indices_json)
+    @pyqtSlot(str, bool)
+    def histogramPointsSelected(self, indices_json: str, additive: bool = False) -> None:  # noqa: N802
+        self._plot_widget._on_histogram_points_selected(indices_json, additive=bool(additive))
 
     @pyqtSlot(int)
     def histogramBinClicked(self, bin_index: int) -> None:  # noqa: N802
@@ -281,6 +286,14 @@ class _PlotBridge(QObject):
     @pyqtSlot(int)
     def radarTraceClicked(self, trace_index: int) -> None:  # noqa: N802
         self._plot_widget._on_radar_trace_clicked(int(trace_index))
+
+    @pyqtSlot(int, result=str)
+    def hoverCardJson(self, point_index: int) -> str:  # noqa: N802
+        return self._plot_widget._hover_card_json_for_point(int(point_index))
+
+    @pyqtSlot(str, result=str)
+    def hoverCardsJson(self, indices_json: str) -> str:  # noqa: N802
+        return self._plot_widget._hover_card_json_for_points(indices_json)
 
 class PlotStatisticsPanel(QWidget):
     """Embedded statistics and curve-fit summary beside the plot options."""
@@ -354,7 +367,7 @@ class PlotWidget(QWidget):
         for label, key in PLOT_TYPE_CHOICES:
             self.plot_type_combo.addItem(label, key)
         self.plot_type_combo.setToolTip(
-            "Scatter/Histogram: histogram when only X is set; 2D/3D scatter from axes. "
+            "Scatter: 2D or 3D from X/Y/Z. Histogram: single-column distribution. "
             "Radar: compare 2–6 numeric spokes. Other types use a fixed chart style."
         )
         type_row.addWidget(self.plot_type_combo, 1)
@@ -421,7 +434,9 @@ class PlotWidget(QWidget):
 
         cols = self._numeric_column_names()
         self.x_combo.addItems(cols)
-        self._populate_optional_axis_combo(self.y_combo, cols, AXIS_NONE)
+        # Scatter needs X+Y; default Y to the second numeric column when available.
+        y_default = cols[1] if len(cols) > 1 else AXIS_NONE
+        self._set_axis_combo_items(self.y_combo, cols, previous=y_default, allow_none=True)
         self._populate_optional_axis_combo(self.z_combo, cols, AXIS_NONE)
 
         n_sel = len(parent_app._selected_logical_rows()) if parent_app is not None else 0
@@ -439,6 +454,31 @@ class PlotWidget(QWidget):
         options_l.setSpacing(4)
         options_l.addWidget(self.only_selected_cb)
         ctrl_root.addWidget(gb_options)
+
+        gb_hover = QGroupBox("On Hover")
+        hover_l = QVBoxLayout(gb_hover)
+        hover_l.setSpacing(4)
+        self.hover_structure_cb = QCheckBox("Show structure")
+        self.hover_structure_cb.setChecked(True)
+        self.hover_structure_cb.setToolTip(
+            "Show a small 2D depiction of the molecule next to the hover card."
+        )
+        self.hover_structure_cb.stateChanged.connect(self._schedule_plot)
+        hover_l.addWidget(self.hover_structure_cb)
+        self._hover_combos: list[QComboBox] = []
+        for _ in range(3):
+            cb = QComboBox()
+            cb.setSizeAdjustPolicy(QComboBox.AdjustToContents)
+            cb.currentIndexChanged.connect(lambda _i: self._schedule_plot())
+            hover_l.addWidget(cb)
+            self._hover_combos.append(cb)
+        self.hover_persist_cb = QCheckBox("Persistent on Select")
+        self.hover_persist_cb.setToolTip(
+            "Keep the hover card near selected point(s); multiple selections are shown together."
+        )
+        self.hover_persist_cb.stateChanged.connect(self._on_hover_persist_changed)
+        hover_l.addWidget(self.hover_persist_cb)
+        ctrl_root.addWidget(gb_hover)
 
         color_row = QHBoxLayout()
         color_row.setSpacing(6)
@@ -829,6 +869,116 @@ class PlotWidget(QWidget):
                 self.color_combo.setCurrentIndex(idx)
         finally:
             self.color_combo.blockSignals(False)
+        self._reload_hover_columns()
+
+    def _reload_hover_columns(self) -> None:
+        """Populate On Hover column pickers from current table headers."""
+        combos = getattr(self, "_hover_combos", None) or []
+        if not combos:
+            return
+        headers = list(getattr(self.parent_app, "headers", []) or []) if self.parent_app else []
+        choices = hover_column_choices(headers)
+        prev = [cb.currentText() for cb in combos]
+        for cb in combos:
+            cb.blockSignals(True)
+        try:
+            for cb in combos:
+                cb.clear()
+                cb.addItem("—", userData=None)
+                for h in choices:
+                    cb.addItem(h, userData=h)
+            for cb, p in zip(combos, prev, strict=False):
+                if p and p != "—":
+                    j = cb.findText(p)
+                    if j >= 0:
+                        cb.setCurrentIndex(j)
+            prefs = default_hover_column_preferences()
+            for i, cb in enumerate(combos):
+                if cb.currentData() is not None:
+                    continue
+                prefer = prefs[i] if i < len(prefs) else ()
+                for h in prefer:
+                    j = cb.findText(h)
+                    if j >= 0:
+                        cb.setCurrentIndex(j)
+                        break
+        finally:
+            for cb in combos:
+                cb.blockSignals(False)
+    def _selected_hover_columns(self) -> list[str]:
+        cols: list[str] = []
+        for cb in getattr(self, "_hover_combos", None) or []:
+            h = cb.currentData()
+            if h:
+                cols.append(str(h))
+        return cols
+
+    def _hover_card_json_for_point(self, point_index: int) -> str:
+        if point_index < 0 or point_index >= len(self._plotted_oids):
+            return ""
+        oid = int(self._plotted_oids[point_index])
+        show_struct = bool(getattr(self, "hover_structure_cb", None) and self.hover_structure_cb.isChecked())
+        payload = hover_cards_payload(
+            self.parent_app,
+            [oid],
+            self._selected_hover_columns(),
+            show_structure=show_struct,
+        )
+        return json.dumps(payload, separators=(",", ":"))
+
+    def _hover_card_json_for_points(self, indices_json: str) -> str:
+        try:
+            raw = json.loads(indices_json or "[]")
+            idxs = [int(x) for x in raw if isinstance(x, (int, float))]
+        except Exception:
+            idxs = []
+        oids: list[int] = []
+        n = len(self._plotted_oids)
+        for i in idxs:
+            if 0 <= i < n:
+                oids.append(int(self._plotted_oids[i]))
+        if not oids:
+            return ""
+        show_struct = bool(getattr(self, "hover_structure_cb", None) and self.hover_structure_cb.isChecked())
+        payload = hover_cards_payload(
+            self.parent_app,
+            oids,
+            self._selected_hover_columns(),
+            show_structure=show_struct,
+        )
+        return json.dumps(payload, separators=(",", ":"))
+
+    def _on_hover_persist_changed(self, *_args) -> None:
+        self._sync_hover_persist_visual()
+
+    def _sync_hover_persist_visual(self) -> None:
+        if not self._web_ready:
+            return
+        persist = bool(getattr(self, "hover_persist_cb", None) and self.hover_persist_cb.isChecked())
+        self.web.page().runJavaScript(
+            f"window.molmanagerSetHoverPersist && molmanagerSetHoverPersist({json.dumps(persist)});"
+        )
+        if not persist:
+            self.web.page().runJavaScript(
+                "window.molmanagerClearHoverPin && molmanagerClearHoverPin();"
+            )
+            return
+        idxs = sorted(self._selected_point_indices)
+        if not idxs:
+            self.web.page().runJavaScript(
+                "window.molmanagerClearHoverPin && molmanagerClearHoverPin();"
+            )
+            return
+        js_idxs = json.dumps(idxs)
+        self.web.page().runJavaScript(
+            f"window.molmanagerPinHoverPoints && molmanagerPinHoverPoints({json.dumps(js_idxs)});"
+        )
+    def _attach_point_hover(self, trace_kwargs: dict, oids: list[int]) -> dict:
+        """Disable native Plotly hover labels; custom overlay uses OIDs via the bridge."""
+        out = dict(trace_kwargs)
+        out["customdata"] = [[int(oid)] for oid in oids]
+        out["hoverinfo"] = "none"
+        return out
 
     def _current_color_column(self) -> str | None:
         text = self.color_combo.currentText()
@@ -871,10 +1021,7 @@ class PlotWidget(QWidget):
         return str(key) if key else FIT_NONE
 
     def _is_histogram_plot(self) -> bool:
-        return (
-            self._current_plot_type() == PLOT_TYPE_SCATTER
-            and self._effective_plot_mode() == "Histogram"
-        )
+        return self._current_plot_type() == PLOT_TYPE_HISTOGRAM
 
     def _analysis_supports_fit(self) -> bool:
         ptype = self._current_plot_type()
@@ -882,9 +1029,11 @@ class PlotWidget(QWidget):
             return False
         if ptype == PLOT_TYPE_LINE_2D:
             return True
+        if ptype == PLOT_TYPE_HISTOGRAM:
+            return True
         if ptype != PLOT_TYPE_SCATTER:
             return False
-        return self._effective_plot_mode() in ("2D", "Histogram")
+        return self._effective_plot_mode() == "2D"
 
     def _refresh_fit_combo_items(self) -> None:
         prev = self._current_fit_kind()
@@ -1050,7 +1199,10 @@ class PlotWidget(QWidget):
         self._update_analysis_controls()
 
     def _schedule_plot(self) -> None:
-        self._plot_debounce.start(70)
+        timer = getattr(self, "_plot_debounce", None)
+        if timer is None:
+            return
+        timer.start(70)
 
     @staticmethod
     def _build_axis_row(
@@ -1167,16 +1319,14 @@ class PlotWidget(QWidget):
 
     def _is_single_column_plot(self) -> bool:
         ptype = self._current_plot_type()
-        if ptype in (PLOT_TYPE_BOX, PLOT_TYPE_VIOLIN):
-            return True
-        return ptype == PLOT_TYPE_SCATTER and self._infer_plot_mode() == "Histogram"
+        return ptype in (PLOT_TYPE_BOX, PLOT_TYPE_VIOLIN, PLOT_TYPE_HISTOGRAM)
 
     def _is_heatmap_plot(self) -> bool:
         return self._current_plot_type() == PLOT_TYPE_HEATMAP
 
     def _shows_x_bin_width(self) -> bool:
         ptype = self._current_plot_type()
-        return ptype in (PLOT_TYPE_SCATTER, PLOT_TYPE_HEATMAP)
+        return ptype in (PLOT_TYPE_HISTOGRAM, PLOT_TYPE_HEATMAP)
 
     def _shows_y_bin_width(self) -> bool:
         return self._is_heatmap_plot()
@@ -1191,7 +1341,9 @@ class PlotWidget(QWidget):
             return False
         if ptype in (PLOT_TYPE_BOX, PLOT_TYPE_VIOLIN, PLOT_TYPE_RADAR):
             return False
-        return mode in ("2D", "3D", "Histogram")
+        if ptype == PLOT_TYPE_HISTOGRAM:
+            return mode == "Histogram"
+        return mode in ("2D", "3D")
 
     def _plot_source_row_indices(self):
         """Source-model rows for plotting (visible/filtered rows; optional selection-only).
@@ -1334,20 +1486,24 @@ class PlotWidget(QWidget):
 
     def _annotate_scatter_selection_meta(self, fig: go.Figure) -> None:
         """Tell the Plotly shell which traces map to table row indices (skip fit lines, etc.)."""
-        if not self._supports_table_linked_selection():
-            return
-        indices: list[int] = []
-        for i, tr in enumerate(fig.data):
-            t = getattr(tr, "type", None)
-            mode = str(getattr(tr, "mode", "") or "")
-            if t in ("scatter", "scattergl") and "markers" in mode:
-                indices.append(i)
-            elif t == "scatter3d" and i == 0:
-                indices.append(i)
-            elif t == "histogram" and i == 0:
-                indices.append(i)
-        if indices:
-            fig.update_layout(meta={"molmanager_selection_traces": indices})
+        meta: dict = {}
+        if self._supports_table_linked_selection():
+            indices: list[int] = []
+            for i, tr in enumerate(fig.data):
+                t = getattr(tr, "type", None)
+                mode = str(getattr(tr, "mode", "") or "")
+                if t in ("scatter", "scattergl") and "markers" in mode:
+                    indices.append(i)
+                elif t == "scatter3d" and i == 0:
+                    indices.append(i)
+                elif t == "histogram" and i == 0:
+                    indices.append(i)
+            if indices:
+                meta["molmanager_selection_traces"] = indices
+        persist = bool(getattr(self, "hover_persist_cb", None) and self.hover_persist_cb.isChecked())
+        meta["molmanager_hover_persist"] = persist
+        if meta:
+            fig.update_layout(meta=meta)
 
     def _push_plotly_figure(self, fig: go.Figure) -> None:
         from .plotly_html import figure_payload_json
@@ -1358,6 +1514,7 @@ class PlotWidget(QWidget):
         if self._web_ready:
             self._apply_pending_payload()
             QTimer.singleShot(0, self.sync_from_table_selection)
+            QTimer.singleShot(50, self._sync_hover_persist_visual)
 
     def _apply_pending_payload(self) -> None:
         if not self._web_ready or not self._pending_payload_json:
@@ -1387,6 +1544,7 @@ class PlotWidget(QWidget):
         # Pass a JSON string — Plotly bridge uses JSON.stringify; bare arrays break JSON.parse in JS.
         js_payload = json.dumps(json.dumps(idxs))
         self.web.page().runJavaScript(f"window.molmanagerSetSelection({js_payload});")
+        QTimer.singleShot(0, self._sync_hover_persist_visual)
 
     def _clear_plot_table_selection(self, *, update_plot: bool = True) -> None:
         self._selected_point_indices = set()
@@ -1394,6 +1552,8 @@ class PlotWidget(QWidget):
         clear_table_selection_from_plot(self.parent_app)
         if update_plot:
             self._sync_plot_selection_visual()
+        else:
+            self._sync_hover_persist_visual()
 
     def _arm_ignore_plot_clear(self, ms: int = 500) -> None:
         self._ignore_plot_clear_until = time.monotonic() + (ms / 1000.0)
@@ -1444,7 +1604,9 @@ class PlotWidget(QWidget):
     def _empty_plot_hint(self) -> str:
         ptype = self._current_plot_type()
         if ptype == PLOT_TYPE_SCATTER:
-            return "Choose X. Leave Y and Z as None for a histogram; set Y for 2D; set Y and Z for 3D."
+            return "Choose X and Y for 2D scatter; set Z as well for 3D."
+        if ptype == PLOT_TYPE_HISTOGRAM:
+            return "Choose a numeric column for the X axis."
         if ptype in (PLOT_TYPE_BOX, PLOT_TYPE_VIOLIN):
             return "Choose a numeric column for the X axis."
         if ptype == PLOT_TYPE_LINE_2D:
@@ -1468,12 +1630,15 @@ class PlotWidget(QWidget):
             self._plot_heatmap()
         elif ptype == PLOT_TYPE_RADAR:
             self._plot_radar()
+        elif ptype == PLOT_TYPE_HISTOGRAM:
+            if self._effective_plot_mode() == "Histogram":
+                self._plot_histogram()
+            else:
+                self._render_empty_plot(self._empty_plot_hint())
         else:
             mode = self._effective_plot_mode()
             if mode is None:
                 self._render_empty_plot(self._empty_plot_hint())
-            elif mode == "Histogram":
-                self._plot_histogram()
             else:
                 self._plot_scatter(mode)
         self._update_color_controls()
@@ -1528,13 +1693,18 @@ class PlotWidget(QWidget):
         if is3d:
             fig.add_trace(
                 go.Scatter3d(
-                    x=fx,
-                    y=fy,
-                    z=fz,
-                    mode="markers",
-                    marker=marker,
-                    name="Points",
-                    showlegend=False,
+                    **self._attach_point_hover(
+                        {
+                            "x": fx,
+                            "y": fy,
+                            "z": fz,
+                            "mode": "markers",
+                            "marker": marker,
+                            "name": "Points",
+                            "showlegend": False,
+                        },
+                        foids,
+                    )
                 )
             )
             if selected_points:
@@ -1550,6 +1720,7 @@ class PlotWidget(QWidget):
                         marker={"size": 7, "opacity": 1.0, "color": "#d62828"},
                         name="Selected",
                         showlegend=False,
+                        hoverinfo="skip",
                     )
                 )
             fig.update_layout(
@@ -1569,14 +1740,19 @@ class PlotWidget(QWidget):
         else:
             fig.add_trace(
                 go.Scatter(
-                    x=fx,
-                    y=fy,
-                    mode="markers",
-                    marker=marker,
-                    showlegend=False,
-                    selectedpoints=selected_points if selected_points else None,
-                    selected={"marker": {"size": 9, "color": "#d62828", "opacity": 1.0}},
-                    unselected={"marker": {"opacity": 0.35}},
+                    **self._attach_point_hover(
+                        {
+                            "x": fx,
+                            "y": fy,
+                            "mode": "markers",
+                            "marker": marker,
+                            "showlegend": False,
+                            "selectedpoints": selected_points if selected_points else None,
+                            "selected": {"marker": {"size": 9, "color": "#d62828", "opacity": 1.0}},
+                            "unselected": {"marker": {"opacity": 0.35}},
+                        },
+                        foids,
+                    )
                 )
             )
             fig.update_layout(
@@ -1626,15 +1802,20 @@ class PlotWidget(QWidget):
         fig = go.Figure()
         fig.add_trace(
             go.Scatter(
-                x=fx,
-                y=fy,
-                mode="lines+markers",
-                line={"color": "#2a74d6", "width": 1.5},
-                marker=marker,
-                showlegend=False,
-                selectedpoints=selected_points if selected_points else None,
-                selected={"marker": {"size": 9, "color": "#d62828", "opacity": 1.0}},
-                unselected={"marker": {"opacity": 0.35}},
+                **self._attach_point_hover(
+                    {
+                        "x": fx,
+                        "y": fy,
+                        "mode": "lines+markers",
+                        "line": {"color": "#2a74d6", "width": 1.5},
+                        "marker": marker,
+                        "showlegend": False,
+                        "selectedpoints": selected_points if selected_points else None,
+                        "selected": {"marker": {"size": 9, "color": "#d62828", "opacity": 1.0}},
+                        "unselected": {"marker": {"opacity": 0.35}},
+                    },
+                    foids,
+                )
             )
         )
         fig.update_layout(
@@ -1946,7 +2127,7 @@ class PlotWidget(QWidget):
             f"Heatmap: selected {len(oids):,} row(s) in the clicked cell."
         )
 
-    def _on_histogram_points_selected(self, indices_json: str) -> None:
+    def _on_histogram_points_selected(self, indices_json: str, *, additive: bool = False) -> None:
         try:
             raw = json.loads(indices_json)
         except json.JSONDecodeError:
@@ -1957,6 +2138,8 @@ class PlotWidget(QWidget):
         oids = oids_at_histogram_point_indices(self._hist_oids, indices)
         if not oids:
             return
+        if additive:
+            oids = sorted({int(x) for x in oids} | selected_oids_for_plot(self.parent_app))
         self._arm_ignore_plot_clear()
         self._select_rows_for_oids(oids)
         self.parent_app.status_label.setText(
@@ -1988,34 +2171,47 @@ class PlotWidget(QWidget):
     def _select_rows_for_source_rows(self, source_rows: list[int]) -> None:
         apply_table_selection_for_source_rows(self.parent_app, source_rows)
 
-    def _on_plot_point_clicked(self, point_index: int) -> None:
+    def _on_plot_point_clicked(self, point_index: int, *, additive: bool = False) -> None:
         if point_index < 0:
             return
-        self._selected_point_indices = {int(point_index)}
+        idx = int(point_index)
+        if additive:
+            self._selected_point_indices.add(idx)
+        else:
+            self._selected_point_indices = {idx}
         self._arm_ignore_plot_clear()
-        self._select_rows_for_point_indices([int(point_index)])
+        self._select_rows_for_point_indices(sorted(self._selected_point_indices))
         self._sync_plot_selection_visual()
-        if 0 <= point_index < len(self._plotted_oids):
-            oid = int(self._plotted_oids[point_index])
+        n = len(self._selected_point_indices)
+        if n > 1:
+            self.parent_app.status_label.setText(f"Plot: selected {n:,} point(s).")
+        elif 0 <= idx < len(self._plotted_oids):
+            oid = int(self._plotted_oids[idx])
             row = self.parent_app.get_row_by_id(oid)
             if row >= 0:
                 self.parent_app.status_label.setText(f"Plot: selected row {row + 1:,} (OID {oid}).")
 
-    def _on_plot_points_selected(self, points_json: str) -> None:
+    def _on_plot_points_selected(self, points_json: str, *, additive: bool = False) -> None:
         try:
             raw = json.loads(points_json or "[]")
             idxs = [int(x) for x in raw if isinstance(x, (int, float))]
         except Exception:
             idxs = []
         if not idxs:
+            if additive:
+                return
             if time.monotonic() < self._ignore_plot_clear_until:
                 return
             self._clear_plot_table_selection()
             self.parent_app.status_label.setText("Plot: selection cleared.")
             return
-        self._selected_point_indices = {i for i in idxs if 0 <= i < len(self._plotted_oids)}
-        if not self._selected_point_indices:
+        new_idxs = {i for i in idxs if 0 <= i < len(self._plotted_oids)}
+        if not new_idxs:
             return
+        if additive:
+            self._selected_point_indices |= new_idxs
+        else:
+            self._selected_point_indices = new_idxs
         self._arm_ignore_plot_clear()
         sel_sorted = sorted(self._selected_point_indices)
         self._select_rows_for_point_indices(sel_sorted)
@@ -2029,7 +2225,27 @@ class PlotWidget(QWidget):
         self._prev_range_axis[axis_key] = axis_name
         self._set_axis_range_edits(axis_name, edit_min, edit_max)
 
+    def _ensure_scatter_y_axis(self) -> None:
+        """If Scatter is active and Y is unset, pick a column distinct from X when possible."""
+        if self._current_plot_type() != PLOT_TYPE_SCATTER:
+            return
+        if self._combo_axis_name(self.y_combo) is not None:
+            return
+        cols = self._numeric_column_names()
+        if not cols:
+            return
+        xname = self._combo_axis_name(self.x_combo)
+        pick = next((c for c in cols if c != xname), cols[0])
+        idx = self.y_combo.findText(pick)
+        if idx >= 0:
+            self.y_combo.blockSignals(True)
+            try:
+                self.y_combo.setCurrentIndex(idx)
+            finally:
+                self.y_combo.blockSignals(False)
+
     def _on_plot_type_change(self, _idx: int = 0) -> None:
+        self._ensure_scatter_y_axis()
         self._on_axis_change()
 
     def _on_axis_change(self):
@@ -2042,9 +2258,18 @@ class PlotWidget(QWidget):
             self._schedule_plot()
             return
         if ptype == PLOT_TYPE_SCATTER:
+            self._ensure_scatter_y_axis()
             self._x_axis_row.setVisible(True)
             self._y_axis_row.setVisible(True)
             self._z_axis_row.setVisible(True)
+            self.hist_bin_width_label.setVisible(False)
+            self.hist_bin_width.setVisible(False)
+            self.heatmap_y_bin_width_label.setVisible(False)
+            self.heatmap_y_bin_width.setVisible(False)
+        elif ptype == PLOT_TYPE_HISTOGRAM:
+            self._x_axis_row.setVisible(True)
+            self._y_axis_row.setVisible(False)
+            self._z_axis_row.setVisible(False)
             self.hist_bin_width_label.setText("Bin width:")
             self.hist_bin_width_label.setVisible(True)
             self.hist_bin_width.setVisible(True)

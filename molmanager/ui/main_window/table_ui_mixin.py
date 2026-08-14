@@ -1857,11 +1857,12 @@ class TableUIMixin(TableSearchMixin, FilterPanelMixin):
                 initial_superpose=False,
                 export_parent_oid=oid,
                 export_confs_column=confs_col,
+                source_oid=oid,
             )
         elif view3d_act is not None and action == view3d_act and mol_ctx is not None:
-            self.open_molecule_3d(mol_ctx)
+            self.open_molecule_3d(mol_ctx, source_oid=oid)
         elif view2d_act is not None and action == view2d_act and mol_ctx is not None:
-            self.open_molecule_2d(mol_ctx)
+            self.open_molecule_2d(mol_ctx, source_oid=oid)
         elif render2d_act is not None and action == render2d_act and mol_ctx is not None:
             self.run_render_2d_for_table_row(row, col)
         elif copy_smiles_act is not None and action == copy_smiles_act and copy_smiles_txt:
@@ -1991,7 +1992,7 @@ class TableUIMixin(TableSearchMixin, FilterPanelMixin):
         self._pending_batches = []
         self._processing_batches = False
         self._last_batch_received = False
-        self._ingest_loading = False
+        self._set_ingest_loading(False)
         self._ingest_sqlite_bulk_active = False
         self._ingest_sqlite_paused_dirty = False
         self._ingest_sqlite_bulk_headers = None

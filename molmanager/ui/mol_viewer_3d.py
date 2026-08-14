@@ -24,7 +24,7 @@ import logging
 import shutil
 from pathlib import Path
 
-from PyQt5.QtCore import QTemporaryDir, QTimer, QUrl, Qt
+from PyQt5.QtCore import QEvent, QTemporaryDir, QTimer, QUrl, Qt
 from PyQt5.QtWidgets import (
     QDialog,
     QHBoxLayout,
@@ -40,6 +40,7 @@ from rdkit import Chem
 from rdkit.Chem import AllChem
 
 from ..confs_codec import conformer_mol_blocks_b64_json
+from .property_columns_panel import PropertyColumnsPanel
 from .qt_widget_utils import make_window_minimizable
 
 logger = logging.getLogger(__name__)
@@ -821,13 +822,15 @@ class Molecule3DEmbedView(QWidget):
             self.clear()
 
 
-class Molecule3DViewerDialog(QDialog):
-    """Modeless dialog: interactive structure in 3Dmol (3D conformer or 2D / flat layout)."""
+class Molecule3DViewerWidget(QWidget):
+    """Interactive 3Dmol structure viewer; float or dock beside the compound table."""
+
+    dockable_in_workspace = True
 
     def __init__(
         self,
         mol: Chem.Mol,
-        parent: QWidget | None = None,
+        parent_app: QWidget | None = None,
         *,
         window_title: str = "View in 3D",
         flat: bool = False,
@@ -838,13 +841,18 @@ class Molecule3DViewerDialog(QDialog):
         export_parent_oid: int | None = None,
         export_confs_column: str = "confs",
         strain_overlay: dict | None = None,
+        source_oid: int | None = None,
     ):
-        super().__init__(parent)
-        self.setModal(False)
-        self.setWindowModality(Qt.NonModal)
-        self.setWindowTitle(window_title)
-        self.setAttribute(Qt.WA_DeleteOnClose, True)
-        self.resize(920, 720)
+        super().__init__(None)
+        self.parent_app = parent_app
+        self._window_title = window_title
+        self._flat = bool(flat)
+        if source_oid is None:
+            source_oid = export_parent_oid
+        try:
+            self._source_oid = int(source_oid) if source_oid is not None else None
+        except (TypeError, ValueError):
+            self._source_oid = None
 
         self._multi_conf_blocks_b64 = multi_conf_blocks_json_b64
         self._export_parent_oid = export_parent_oid
@@ -860,8 +868,11 @@ class Molecule3DViewerDialog(QDialog):
 
         mol_b64 = _mol_block_b64(mol) if multi_conf_blocks_json_b64 is None else ""
         self._viewer_tmp: QTemporaryDir | None = None
+        self._prop_panel: PropertyColumnsPanel | None = None
+        self._prop_refresh_wired = False
 
         root = QVBoxLayout(self)
+        root.setContentsMargins(4, 4, 4, 4)
 
         web = None
         try:
@@ -928,7 +939,9 @@ class Molecule3DViewerDialog(QDialog):
             root.addWidget(QLabel(msg), 1)
 
         if multi_conf_blocks_json_b64 is not None:
-            btn_row = QHBoxLayout()
+            export_host = QWidget(self)
+            btn_row = QHBoxLayout(export_host)
+            btn_row.setContentsMargins(0, 0, 0, 0)
             self._viewer_status = QLabel("")
             self._viewer_status.setWordWrap(True)
             self._viewer_status.setStyleSheet("color: #333;")
@@ -942,17 +955,208 @@ class Molecule3DViewerDialog(QDialog):
             if web is None:
                 self._btn_export_table.setEnabled(False)
             btn_row.addWidget(self._btn_export_table)
-            root.addLayout(btn_row)
+            self._export_host = export_host
+        else:
+            self._export_host = None
 
-        make_window_minimizable(self)
+        self._options_host = QWidget(self)
+        options_ly = QVBoxLayout(self._options_host)
+        options_ly.setContentsMargins(0, 0, 0, 0)
+        options_ly.setSpacing(4)
+        if self._export_host is not None:
+            options_ly.addWidget(self._export_host)
+        self._prop_panel = PropertyColumnsPanel(self._options_host)
+        self._prop_panel.bind_app(parent_app)
+        self._prop_panel.set_source_oid(self._source_oid)
+        options_ly.addWidget(self._prop_panel)
+        root.addWidget(self._options_host)
+        self._wire_property_column_updates()
+        self._options_visible = True
+
+        foot = QHBoxLayout()
+        foot.setContentsMargins(0, 4, 0, 0)
+        self._add_to_main_btn = QPushButton("Add to Main Window")
+        self._add_to_main_btn.setAutoDefault(False)
+        self._add_to_main_btn.setDefault(False)
+        self._add_to_main_btn.setToolTip(
+            "Dock this viewer beside the table in the main window (like a plot pane)."
+        )
+        self._add_to_main_btn.clicked.connect(self._add_to_main_window)
+        foot.addWidget(self._add_to_main_btn)
+        self._send_window_btn = QPushButton("Send to New Window")
+        self._send_window_btn.setToolTip(
+            "Open this docked viewer in a separate floating window."
+        )
+        self._send_window_btn.clicked.connect(self._send_to_new_window)
+        foot.addWidget(self._send_window_btn)
+        self._close_viewer_btn = QPushButton("Close Viewer")
+        self._close_viewer_btn.setToolTip(
+            "Close this docked viewer and free the panel so another plot or viewer can be docked."
+        )
+        self._close_viewer_btn.clicked.connect(self._close_docked_viewer)
+        foot.addWidget(self._close_viewer_btn)
+        self._toggle_options_btn = QPushButton("Hide Options")
+        self._toggle_options_btn.setAutoDefault(False)
+        self._toggle_options_btn.setDefault(False)
+        self._toggle_options_btn.setToolTip(
+            "Hide column pickers (and export controls) so only the structure view is shown."
+        )
+        self._toggle_options_btn.clicked.connect(self._toggle_options_visible)
+        foot.addWidget(self._toggle_options_btn)
+        foot.addStretch(1)
+        root.addLayout(foot)
+        self._sync_footer_chrome()
+        self._sync_options_chrome()
+        self.setMinimumWidth(self.embedded_minimum_width())
+
+    def _wire_property_column_updates(self) -> None:
+        """Refresh property values when table cells/headers change."""
+        if self._prop_refresh_wired:
+            return
+        app = self.parent_app
+        model = getattr(app, "_table_model", None) if app is not None else None
+        if model is None:
+            return
+        self._prop_refresh_wired = True
+        timer = QTimer(self)
+        timer.setSingleShot(True)
+        timer.setInterval(80)
+
+        def _refresh() -> None:
+            panel = self._prop_panel
+            if panel is None:
+                return
+            panel.refresh_columns()
+            panel.update_values()
+
+        timer.timeout.connect(_refresh)
+
+        def _schedule(*_args) -> None:
+            timer.start()
+
+        model.dataChanged.connect(_schedule)
+        model.rowsInserted.connect(_schedule)
+        model.rowsRemoved.connect(_schedule)
+        model.modelReset.connect(_schedule)
+        model.layoutChanged.connect(_schedule)
+        model.columnsInserted.connect(_schedule)
+        model.columnsRemoved.connect(_schedule)
+        try:
+            model.headerDataChanged.connect(_schedule)
+        except Exception:
+            pass
+
+    def rebind_parent_app(self, parent_app: QWidget | None) -> None:
+        """Update the host app after dock/undock and refresh property columns."""
+        self.parent_app = parent_app
+        if self._prop_panel is not None:
+            self._prop_panel.bind_app(parent_app)
+            self._prop_panel.set_source_oid(self._source_oid)
+        self._wire_property_column_updates()
+
+    def embedded_minimum_width(self) -> int:
+        return 420
+
+    def embedded_preferred_width(self) -> int:
+        return max(self.embedded_minimum_width(), 640)
+
+    def create_floating_dialog(self, parent_app) -> "Molecule3DViewerDialog":
+        """Re-open this viewer in a floating window after undocking from the main table."""
+        return Molecule3DViewerDialog(
+            None,
+            parent_app,
+            window_title=self._window_title,
+            viewer_widget=self,
+        )
+
+    def _add_to_main_window(self) -> None:
+        if self.parent_app is None:
+            return
+        dock = getattr(self.parent_app, "dock_plot_widget", None)
+        if not callable(dock):
+            return
+        dlg = self.window()
+        teardown = getattr(dlg, "_scope_sync_disconnect", None)
+        if callable(teardown):
+            teardown()
+        if not dock(self):
+            return
+        if isinstance(dlg, Molecule3DViewerDialog):
+            dlg._viewer_widget = None
+            dlg._force_close = True
+            dlg.close()
+
+    def _send_to_new_window(self) -> None:
+        if self.parent_app is not None:
+            undock = getattr(self.parent_app, "undock_plot_to_window", None)
+            if callable(undock):
+                undock(self)
+
+    def _close_docked_viewer(self) -> None:
+        if self.parent_app is not None:
+            close_fn = getattr(self.parent_app, "close_docked_plot", None)
+            if callable(close_fn):
+                close_fn(self)
+
+    def _is_docked_in_main_window(self) -> bool:
+        app = self.parent_app
+        if app is None:
+            return False
+        check = getattr(app, "is_plot_docked", None)
+        if callable(check):
+            return bool(check(self))
+        return getattr(app, "_docked_plot_widget", None) is self
+
+    def _sync_footer_chrome(self) -> None:
+        """Floating: Add to Main. Docked: Send/Close. Options toggle always."""
+        floating = isinstance(self.window(), Molecule3DViewerDialog)
+        docked = self._is_docked_in_main_window()
+        self._add_to_main_btn.setVisible(floating)
+        self._send_window_btn.setVisible(docked)
+        self._close_viewer_btn.setVisible(docked)
+
+    def _sync_options_chrome(self) -> None:
+        """Show or hide column pickers / export controls; keep a Show/Hide Options control."""
+        visible = bool(getattr(self, "_options_visible", True))
+        host = getattr(self, "_options_host", None)
+        if host is not None:
+            host.setVisible(visible)
+        btn = getattr(self, "_toggle_options_btn", None)
+        if btn is not None:
+            if visible:
+                btn.setText("Hide Options")
+                btn.setToolTip(
+                    "Hide column pickers (and export controls) so only the structure view is shown."
+                )
+            else:
+                btn.setText("Show Options")
+                btn.setToolTip("Show column pickers and related viewer controls.")
+
+    def _toggle_options_visible(self) -> None:
+        self._options_visible = not bool(getattr(self, "_options_visible", True))
+        self._sync_options_chrome()
+        web = getattr(self, "_standalone_web", None)
+        if web is not None:
+            QTimer.singleShot(50, lambda w=web: self._refit_standalone_viewer(w))
+
+    def event(self, event):  # noqa: N802 — Qt API name
+        if event.type() == QEvent.ParentChange:
+            self._sync_footer_chrome()
+        return super().event(event)
+
+    def _host_app(self) -> QWidget | None:
+        if self.parent_app is not None:
+            return self.parent_app
+        parent = self.parent()
+        return parent if parent is not None else None
 
     def _set_viewer_status(self, message: str) -> None:
         msg = (message or "").strip()
         status = getattr(self, "_viewer_status", None)
         if status is not None:
             status.setText(msg)
-        parent = self.parent()
-        plabel = getattr(parent, "status_label", None) if parent is not None else None
+        app = self._host_app()
+        plabel = getattr(app, "status_label", None) if app is not None else None
         if plabel is not None and msg:
             try:
                 plabel.setText(msg)
@@ -988,8 +1192,8 @@ class Molecule3DViewerDialog(QDialog):
             self._set_viewer_status("Export failed: could not read the current conformer index.")
 
     def _export_conformers_to_table(self, state) -> None:
-        parent = self.parent()
-        export_fn = getattr(parent, "export_conformer_viewer_to_table", None)
+        app = self._host_app()
+        export_fn = getattr(app, "export_conformer_viewer_to_table", None) if app is not None else None
         if not callable(export_fn):
             self._set_viewer_status("Export failed: open the viewer from the main MolManager window.")
             return
@@ -1055,7 +1259,77 @@ class Molecule3DViewerDialog(QDialog):
             QTimer.singleShot(50, lambda w=web: self._refit_standalone_viewer(w))
 
 
-def open_molecule_3d_viewer(mol: Chem.Mol, parent: QWidget | None = None, *, title: str = "View in 3D") -> None:
+class Molecule3DViewerDialog(QDialog):
+    """Floating window hosting a :class:`Molecule3DViewerWidget`."""
+
+    def __init__(
+        self,
+        mol: Chem.Mol | None,
+        parent: QWidget | None = None,
+        *,
+        window_title: str = "View in 3D",
+        flat: bool = False,
+        multi_conf_blocks_json_b64: str | None = None,
+        multi_conf_initial_superpose: bool = False,
+        multi_conf_strain_overlay_json_b64: str = "",
+        multi_conf_initial_index: int = 0,
+        export_parent_oid: int | None = None,
+        export_confs_column: str = "confs",
+        strain_overlay: dict | None = None,
+        source_oid: int | None = None,
+        viewer_widget: Molecule3DViewerWidget | None = None,
+    ):
+        super().__init__(parent)
+        self.parent_app = parent
+        self.setModal(False)
+        self.setWindowModality(Qt.NonModal)
+        self.setWindowTitle(window_title)
+        self.setAttribute(Qt.WA_DeleteOnClose, True)
+        self.resize(920, 720)
+        self._force_close = False
+
+        if viewer_widget is not None:
+            self._viewer_widget = viewer_widget
+            self._viewer_widget.setParent(self)
+            self._viewer_widget._window_title = window_title
+            self._viewer_widget.rebind_parent_app(parent)
+        else:
+            if mol is None:
+                raise ValueError("mol is required when viewer_widget is not provided")
+            self._viewer_widget = Molecule3DViewerWidget(
+                mol,
+                parent,
+                window_title=window_title,
+                flat=flat,
+                multi_conf_blocks_json_b64=multi_conf_blocks_json_b64,
+                multi_conf_initial_superpose=multi_conf_initial_superpose,
+                multi_conf_strain_overlay_json_b64=multi_conf_strain_overlay_json_b64,
+                multi_conf_initial_index=multi_conf_initial_index,
+                export_parent_oid=export_parent_oid,
+                export_confs_column=export_confs_column,
+                strain_overlay=strain_overlay,
+                source_oid=source_oid,
+            )
+
+        root = QVBoxLayout(self)
+        root.setContentsMargins(0, 0, 0, 0)
+        root.addWidget(self._viewer_widget, 1)
+        self._viewer_widget._sync_footer_chrome()
+        make_window_minimizable(self)
+
+    def closeEvent(self, event) -> None:  # noqa: N802 — Qt API name
+        if self._force_close:
+            self._force_close = False
+        event.accept()
+
+
+def open_molecule_3d_viewer(
+    mol: Chem.Mol,
+    parent: QWidget | None = None,
+    *,
+    title: str = "View in 3D",
+    source_oid: int | None = None,
+) -> None:
     """Show *mol* in 3Dmol: multiple RDKit conformers use a conformer slider; otherwise embed once (ETKDG)."""
     if mol is None or not isinstance(mol, Chem.Mol):
         return
@@ -1091,6 +1365,8 @@ def open_molecule_3d_viewer(mol: Chem.Mol, parent: QWidget | None = None, *, tit
             flat=False,
             multi_conf_blocks_json_b64=payload,
             multi_conf_initial_superpose=False,
+            source_oid=source_oid,
+            export_parent_oid=source_oid,
         )
         dlg.show()
         return
@@ -1104,7 +1380,9 @@ def open_molecule_3d_viewer(mol: Chem.Mol, parent: QWidget | None = None, *, tit
             "Try editing the structure or simplifying the molecule.",
         )
         return
-    dlg = Molecule3DViewerDialog(m3d, parent, window_title=title, flat=False)
+    dlg = Molecule3DViewerDialog(
+        m3d, parent, window_title=title, flat=False, source_oid=source_oid
+    )
     dlg.show()
 
 
@@ -1118,6 +1396,7 @@ def open_conformation_viewer_from_blocks_payload(
     initial_conf_index: int = 0,
     export_parent_oid: int | None = None,
     export_confs_column: str = "confs",
+    source_oid: int | None = None,
 ) -> None:
     """Open the multi-conformer 3Dmol viewer (one-at-a-time and/or superpose) from packed mol blocks."""
     b = (blocks_json_b64 or "").strip()
@@ -1149,6 +1428,8 @@ def open_conformation_viewer_from_blocks_payload(
     win_title = title if title else "View Conformers"
     if n > 1:
         win_title = f"{win_title} ({n} conformers)"
+    if source_oid is None:
+        source_oid = export_parent_oid
     dlg = Molecule3DViewerDialog(
         dummy,
         parent,
@@ -1161,11 +1442,18 @@ def open_conformation_viewer_from_blocks_payload(
         export_parent_oid=export_parent_oid,
         export_confs_column=export_confs_column,
         strain_overlay=strain_overlay,
+        source_oid=source_oid,
     )
     dlg.show()
 
 
-def open_molecule_2d_viewer(mol: Chem.Mol, parent: QWidget | None = None, *, title: str = "View in 2D") -> None:
+def open_molecule_2d_viewer(
+    mol: Chem.Mol,
+    parent: QWidget | None = None,
+    *,
+    title: str = "View in 2D",
+    source_oid: int | None = None,
+) -> None:
     """Lay out *mol* in 2D and show it in 3Dmol with an orthographic (flat) projection."""
     if mol is None or not isinstance(mol, Chem.Mol):
         return
@@ -1177,5 +1465,7 @@ def open_molecule_2d_viewer(mol: Chem.Mol, parent: QWidget | None = None, *, tit
             "Could not compute a 2D layout for this structure.",
         )
         return
-    dlg = Molecule3DViewerDialog(m2d, parent, window_title=title, flat=True)
+    dlg = Molecule3DViewerDialog(
+        m2d, parent, window_title=title, flat=True, source_oid=source_oid
+    )
     dlg.show()

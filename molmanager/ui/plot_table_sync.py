@@ -20,7 +20,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from PyQt5.QtCore import QItemSelection, QItemSelectionModel, Qt, QTimer
+from PyQt5.QtCore import QItemSelectionModel
 from PyQt5.QtWidgets import QAbstractItemView
 
 from .table_selection import item_selection_for_view_rows
@@ -114,17 +114,7 @@ def apply_table_selection_for_source_rows(
     finally:
         table.setUpdatesEnabled(True)
         parent_app._in_programmatic_table_selection = was_programmatic
-    if scroll:
-        QTimer.singleShot(
-            0,
-            lambda: (
-                parent_app.activateWindow(),
-                table.setFocus(Qt.OtherFocusReason),
-                table.viewport().update(),
-            ),
-        )
-    else:
-        table.viewport().update()
+    table.viewport().update()
 
 
 def clear_table_selection_from_plot(parent_app: ChemicalTableApp) -> None:

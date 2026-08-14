@@ -345,11 +345,11 @@ class PlotToolsMixin:
         return upper
 
     def dock_plot_widget(self, plot_widget) -> bool:
-        """Move a plot widget into the active workspace plot pane."""
-        from ..dockable_plot import is_dockable_plot_widget
+        """Move a plot or viewer widget into the active workspace plot pane."""
+        from ..dockable_plot import is_dockable_workspace_widget
         from ..plot import PlotWidget
 
-        if not is_dockable_plot_widget(plot_widget) and not isinstance(plot_widget, PlotWidget):
+        if not is_dockable_workspace_widget(plot_widget) and not isinstance(plot_widget, PlotWidget):
             return False
         mgr = self._workspace()
         if mgr is None:
@@ -389,7 +389,10 @@ class PlotToolsMixin:
         sync_footer = getattr(plot_widget, "_sync_footer_chrome", None)
         if callable(sync_footer):
             sync_footer()
-        self.status_label.setText(f"Plot: docked in pane {mgr.plot_panes().index(pane) + 1}.")
+        kind = "Viewer" if getattr(plot_widget, "dockable_in_workspace", False) and not getattr(
+            plot_widget, "only_selected_cb", None
+        ) else "Plot"
+        self.status_label.setText(f"{kind}: docked in pane {mgr.plot_panes().index(pane) + 1}.")
         return True
 
     def _float_released_plot_widget(self, plot_widget) -> None:
@@ -538,7 +541,10 @@ class PlotToolsMixin:
             dlg.show()
             dlg.raise_()
             dlg.activateWindow()
-            self.status_label.setText("Plot: moved to separate window.")
+            kind = "Viewer" if getattr(plot_widget, "dockable_in_workspace", False) and not getattr(
+                plot_widget, "only_selected_cb", None
+            ) else "Plot"
+            self.status_label.setText(f"{kind}: moved to separate window.")
             return True
 
         if not isinstance(plot_widget, PlotWidget):
