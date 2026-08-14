@@ -18,14 +18,17 @@
 
 from __future__ import annotations
 
+import logging
 from typing import Any
 
-from PyQt5.QtCore import QPoint
 from PyQt5.QtGui import QImage, QPixmap, QTransform
 from rdkit import Chem
 from rdkit.Chem.Draw import rdMolDraw2D
 
-from .iupac_style import iupac_sketch_style
+from ...exception_policy import log_swallowed_exception
+
+logger = logging.getLogger(__name__)
+
 
 # MolDraw2D Cairo surface is supersampled so bonds stay crisp when the sketch is zoomed.
 SKETCH_RDKIT_RENDER_SCALE = 3
@@ -128,21 +131,21 @@ def _configure_sketch_drawer_style(
     try:
         rdMolDraw2D.SetACS1996Mode(opts, 1.5)
     except Exception:
-        pass
+        log_swallowed_exception(logger, "SetACS1996Mode unavailable for sketcher draw options")
     opts.padding = 0.02
     opts.bondLineWidth = max(1.0, style.bond_width_px / sx_eff)
     # Keep multiple-bond offset proportional after ACS mode.
     try:
         opts.multipleBondOffset = max(0.12, style.double_bond_offset_px / max(style.median_bond_px, 1.0))
     except Exception:
-        pass
+        log_swallowed_exception(logger, "multipleBondOffset unavailable for sketcher draw options")
     font_px = max(8, int(round(style.label_font_pt / sx_eff)))
     opts.minFontSize = font_px
     opts.maxFontSize = font_px + 2
     try:
         opts.fixedBondLength = max(10.0, style.median_bond_px / sx_eff)
     except Exception:
-        pass
+        log_swallowed_exception(logger, "fixedBondLength unavailable for sketcher draw options")
 
 def _draw_sketch_mol(
     drawer: rdMolDraw2D.MolDraw2D,

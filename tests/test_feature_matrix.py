@@ -21,7 +21,6 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 from rdkit import Chem
-from rdkit.Chem import AllChem
 
 from molmanager.feature_matrix import build_combined_feature_matrix, standardize_feature_matrix
 

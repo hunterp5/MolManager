@@ -23,7 +23,6 @@ from molmanager.ui.hotkeys import (
     default_shortcuts,
     effective_shortcuts,
     find_duplicate_bindings,
-    load_hotkey_overrides,
     save_hotkey_overrides,
 )
 

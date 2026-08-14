@@ -432,10 +432,11 @@ Optional settings for power users and IT deployments:
 | `MOLMANAGER_PG_CONNECT_TIMEOUT` | PostgreSQL connect timeout seconds (default `30`) |
 | `MOLMANAGER_SQLITE_BACKEND_PAGE_SIZE` | SQLite cache page size for filters (default `5000`) |
 | `MOLMANAGER_DISABLE_CUSTOM_CALC` | Set to `1` / `true` to disable Tools → Custom Calculator |
-| `MOLMANAGER_CUSTOM_CALC_LEGACY_EVAL` | Use legacy restricted `eval` for custom calculator expressions |
 | `MOLMANAGER_BUNDLE_DIR` | Folder containing optional `vina` / `smina` binaries |
 
-**Custom calculator:** expressions use a restricted AST interpreter by default. Treat them as trusted input only.
+**Custom calculator:** expressions always use a restricted AST interpreter (`safe_calc`). Treat them as trusted input only. `MOLMANAGER_CUSTOM_CALC_LEGACY_EVAL` is retired and ignored if set.
+
+**Legacy env aliases:** `CHEMMANAGER_*` variables are still mapped to `MOLMANAGER_*` when the new name is unset, with a deprecation warning. Prefer `MOLMANAGER_*` only.
 
 **SQL URLs in logs:** at `DEBUG`, connection URLs are logged with credentials redacted.
 
@@ -459,6 +460,8 @@ Optional settings for power users and IT deployments:
 
 ## Development
 
+See [docs/CONTRIBUTING.md](docs/CONTRIBUTING.md) for coding standards, Ruff, GPL headers, and CI expectations.
+
 **Tests** (with venv active; pytest is included in `requirements.txt`):
 
 Windows:
@@ -475,7 +478,14 @@ export QT_QPA_PLATFORM=offscreen
 python -m pytest tests/ -v
 ```
 
-CI runs tests on Ubuntu and macOS for pushes and pull requests to `main` and `dev` (see `.github/workflows/ci.yml`).
+CI runs lint (Ruff + GPL headers) on Ubuntu, and tests on Ubuntu, macOS, and Windows for pushes and pull requests to `main` and `dev` (see `.github/workflows/ci.yml`). Linux also runs the 100k performance gate and a CRITICAL/HIGH/malware `pip-audit` gate (`scripts/check_dependency_audit.py`).
+
+**Lint / headers:**
+
+```bash
+python -m ruff check molmanager tests scripts
+python scripts/check_gpl_headers.py
+```
 
 **Performance benchmark:**
 

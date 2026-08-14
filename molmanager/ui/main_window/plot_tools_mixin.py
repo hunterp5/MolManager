@@ -21,7 +21,7 @@ from __future__ import annotations
 import logging
 
 from PyQt5.QtCore import Qt, QTimer
-from PyQt5.QtWidgets import QMessageBox
+from PyQt5.QtWidgets import QDialog, QMessageBox
 
 logger = logging.getLogger(__name__)
 

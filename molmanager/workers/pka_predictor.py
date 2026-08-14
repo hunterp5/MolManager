@@ -454,13 +454,11 @@ class PKaPredictorWorker(QRunnable):
                     (k, rep[k].ToBinary(), self.most_basic_only, self.most_acidic_only) for k in order
                 ]
                 results_by_key: dict[str, str] = {}
-                user_cancelled = False
                 ex = register_process_pool(ProcessPoolExecutor(max_workers=proc_workers))
                 try:
                     pending = {ex.submit(_mp_compute_pka_text, t) for t in tasks}
                     while pending:
                         if should_terminate_process_pool(cancel_ev) or application_is_shutting_down():
-                            user_cancelled = True
                             cancelled = True
                             for f in pending:
                                 f.cancel()

@@ -1,0 +1,4 @@
+# Vulnerability IDs ignored by CI pip-audit (one per line).
+# Document each entry in dependency-audit-exceptions.md.
+# Example:
+# GHSA-xxxx-yyyy-zzzz

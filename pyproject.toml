@@ -37,7 +37,11 @@ permeability = [
     "chemprop>=2.1.0,<2.3",
     "lightning>=2.0,<3",
 ]
-dev = ["pytest>=7.4,<9"]
+dev = [
+    "pytest>=7.4,<9",
+    "ruff>=0.6",
+    "pip-audit>=2.7",
+]
 
 [project.scripts]
 molmanager = "molmanager.app:main"
@@ -54,4 +58,23 @@ molmanager = [
     "resources/models/**/README.md",
     "resources/models/**/.gitkeep",
     "resources/bin/**/.gitkeep",
+]
+
+[tool.ruff]
+target-version = "py310"
+line-length = 100
+src = ["molmanager", "tests", "scripts"]
+extend-exclude = [
+    "molmanager/ui/static",
+]
+
+[tool.ruff.lint]
+# Correctness plus unused import/variable hygiene.
+select = [
+    "E9",
+    "F63",
+    "F7",
+    "F82",
+    "F401",
+    "F841",
 ]

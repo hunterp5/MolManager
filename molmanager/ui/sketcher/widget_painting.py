@@ -23,7 +23,6 @@ import math
 from PyQt5.QtCore import QPoint, QPointF, Qt
 from PyQt5.QtGui import QBrush, QColor, QFont, QFontMetrics, QPainter, QPainterPath, QPen, QPolygonF
 
-from .acs_style import acs_sketch_style
 from .chem import sketch_lone_pair_count, sketch_oxidation_state
 from .sketch_rdkit_paint import render_sketch_mol_to_pixmap, sketch_rdkit_paint_cache_key
 from .constants import SKETCH_MEDIAN_BOND_PX, WILDCARD_ELEMENT

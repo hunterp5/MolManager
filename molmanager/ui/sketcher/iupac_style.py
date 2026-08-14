@@ -25,8 +25,12 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
 
 from .constants import SKETCH_MEDIAN_BOND_PX
+
+if TYPE_CHECKING:
+    from PyQt5.QtGui import QFont
 
 # Preferred bond angles (radians). IUPAC treats listed degree values as ≈±10°.
 ANGLE_LINEAR_DEG = 180.0
@@ -228,7 +232,7 @@ def iupac_structure_font(
     *,
     italic: bool = False,
     weight: int | None = None,
-) -> "QFont":
+) -> QFont:
     """
     Font for atom labels and diagram annotations (GR-0).
 

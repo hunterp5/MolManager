@@ -22,7 +22,6 @@ import re
 
 from unittest.mock import patch
 
-import pytest
 from rdkit import Chem
 
 from molmanager.medchem_descriptors import (

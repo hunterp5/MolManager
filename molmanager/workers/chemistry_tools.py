@@ -55,6 +55,7 @@ else:
         return int(sum(fp))
 
 from ..config import load_config
+from ..exception_policy import log_swallowed_exception
 from ..confs_codec import format_confs_table_cell, mol_from_packed_confs_cell, pack_confs_cell
 from ..medchem_descriptors import (
     ab_mps_score,
@@ -2039,11 +2040,10 @@ def describe_custom_calc_error(exc: BaseException) -> str:
 
 
 class CustomCalcWorker(QRunnable):
-    """Evaluate a numeric expression per row via a restricted ``ast`` evaluator (or legacy ``eval``).
+    """Evaluate a numeric expression per row via the restricted AST safe_calc path.
 
     Only ``math`` helpers and rewritten column variables are in scope. This is not a
     full sandbox—do not run sessions with untrusted expressions on sensitive machines.
-    Set ``MOLMANAGER_CUSTOM_CALC_LEGACY_EVAL`` to restore the old ``eval`` path if needed.
     """
 
     def __init__(
@@ -2061,7 +2061,6 @@ class CustomCalcWorker(QRunnable):
 
     def run(self):
         results = []
-        use_legacy_eval = load_config().custom_calc_legacy_eval
         expr_template = (self.expression or "").strip()
         # Support both bracketed refs ([MW]) and bare refs (MW).
         req_vars = re.findall(r"\\[(.*?)\\]", expr_template)
@@ -2104,10 +2103,7 @@ class CustomCalcWorker(QRunnable):
                 if not expr:
                     res = "Empty expression (nothing to evaluate)."
                 else:
-                    if use_legacy_eval:
-                        res = eval(expr, {"__builtins__": None}, local_scope)
-                    else:
-                        res = eval_custom_calc_expression(expr, local_scope)
+                    res = eval_custom_calc_expression(expr, local_scope)
             except Exception as e:
                 res = describe_custom_calc_error(e)
             results.append((idx, f"{res:.3f}" if isinstance(res, float) else str(res)))
@@ -2126,7 +2122,7 @@ class CustomCalcWorker(QRunnable):
                 try:
                     self.signals.tool_progress.emit("Calculator…", done, tot)
                 except Exception:
-                    pass
+                    log_swallowed_exception(logger, "CustomCalcWorker progress emit failed")
         if self.progress_state is not None:
             self.progress_state.update("Calculator…", min(done, tot) if rows else 0, tot)
         emit_partial_results_if_cancelled(self.signals, "Calculator", len(results), tot, cancelled)

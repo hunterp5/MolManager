@@ -23,7 +23,8 @@ import threading
 
 from PyQt5.QtCore import QObject, QRunnable, pyqtSignal
 
-from ..qsar import QSARFitResult, fit_qsar_model, predict_qsar_rows
+from ..exception_policy import log_swallowed_exception
+from ..qsar import fit_qsar_model, predict_qsar_rows
 
 logger = logging.getLogger(__name__)
 
@@ -32,7 +33,7 @@ def _emit_qsar_cancelled(signals: QSARSignals) -> None:
     try:
         signals.failed.emit("Cancelled.")
     except Exception:
-        pass
+        log_swallowed_exception(logger, "QSAR cancel signal emit failed")
 
 
 class QSARSignals(QObject):
@@ -79,7 +80,7 @@ class QSARTrainWorker(QRunnable):
             try:
                 self.signals.failed.emit(str(exc) or exc.__class__.__name__)
             except Exception:
-                pass
+                log_swallowed_exception(logger, "QSAR train failed-signal emit failed")
 
 
 class QSARPredictWorker(QRunnable):
@@ -113,4 +114,4 @@ class QSARPredictWorker(QRunnable):
             try:
                 self.signals.failed.emit(str(exc) or exc.__class__.__name__)
             except Exception:
-                pass
+                log_swallowed_exception(logger, "QSAR predict failed-signal emit failed")

@@ -382,7 +382,6 @@ class FilterPanelMixin:
         self._invalidate_filter_jobs()
         gen = self._filter_job_gen
         n_rows = self._table_model.rowCount()
-        cfg = load_config()
         self._chunked_filter_state = {
             "job_gen": gen,
             "row": 0,

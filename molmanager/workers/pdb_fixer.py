@@ -20,7 +20,6 @@ from __future__ import annotations
 
 import threading
 from concurrent.futures import FIRST_COMPLETED, BrokenExecutor, ProcessPoolExecutor, wait
-from pathlib import Path
 
 from PyQt5.QtCore import QObject, QRunnable, pyqtSignal
 

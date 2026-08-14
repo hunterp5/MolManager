@@ -1,0 +1,89 @@
+---
+description: IUPAC graphical representation standards for ChemManager sketcher structure creation and rendering
+globs: molmanager/ui/sketcher/**/*.py,docs/IUPAC_DRAWING.md,tests/test_sketch_iupac*.py
+alwaysApply: false
+---
+
+# IUPAC drawing standards (sketcher)
+
+Authoritative source: [IUPAC Graphical Representation Standards for Chemical Structure Diagrams (2008)](https://iupac.qmul.ac.uk/drawing/drawing.html) (Pure Appl. Chem. 2008, 80, 277–410). Stereochemical wedges/hashes also follow the 2006 ST recommendations.
+
+When creating or changing sketcher geometry, bonds, rings, stereo, labels, charges, or Clean Up, follow these rules. Prefer existing helpers in `iupac_rings.py`, `iupac_style.py`, `iupac_orient.py`, `iupac_labels.py`, `iupac_validate.py`, and `widget_painting.py`.
+
+**Scope:** Apply IUPAC layout (CoordGen preference, GR-3 orientation, macrocycle hex) on Clean Up and interactive drawing tidy only. Table→sketcher load (`load_from_rdkit_mol`) must keep the same orientation as the table structure picture (RDKit default / SDF 2D coords via `_depict_mol_2d_table_match`).
+
+## GR-0 Typography and presentation
+
+- Structure fonts: plain roman Helvetica/Arial (not bold for atom labels). Annotations (CIP, E/Z) may use a distinct style (smaller italic).
+- Text ~8–14 pt in normal UI; scale bonds with text (GR-1.1).
+- Avoid ambiguous marks; context decides whether a line is a bond, label stroke, or charge.
+
+## GR-1 Bonds
+
+- **GR-1.1** Consistent bond lengths across a diagram (median `SKETCH_MEDIAN_BOND_PX`).
+- **GR-1.2** Bond width ≈ stroke width of atom-label characters.
+- **GR-1.3** Hash spacing ~2–4× bond width; enough bars to read the hash.
+- **GR-1.4–1.5** Terminal singles and bent bonds must stay unambiguous; no false atom junctions.
+- **GR-1.6** Multiple bonds: parallel strokes; clear order.
+- **GR-1.7** Coordination: prefer plain bonds (not dashes used for stereo); dative arrow allowed in sketcher.
+- **GR-1.10** Double-bond sidedness: asymmetric → offset toward fewer substituents; ring doubles to the interior of the smallest sensible face; fused systems bias by double count (GR-1.10.4).
+
+## GR-2 Atom labels
+
+- Carbon skeletal (no C label) unless isolated / explicit carbon / needed for clarity.
+- Condensed H on heteroatoms (`OH`, `NH2`, …) when appropriate.
+- Contracted labels / abbreviations (GR-2.2 / GR-2.3) via Text mode; expand on export.
+- Bonds stop at labeled atoms; termini aim at the attachment character (GR-2.1.5).
+- **GR-2.1.6** Multi-character labels reverse when bonds are on the right but not the left
+  (`OH`→`HO`, `NH2`→`H2N`, …). Bonded element stays at the attachment end; charges stay
+  with the free end of the label (`iupac_labels` + painter).
+
+## GR-3 Orientation and rings (critical for macrocycles)
+
+- **GR-3.1** Horizontal main axis (GR-3.1.1) when the structure is significantly elongated; principal groups / heteroatoms toward the right (including ring heteroatoms, GR-3.4.2); rings toward bottom-left when free.
+- **GR-3.4.1** Orient from the principal (largest) ring system first; substituents follow.
+- Layout scoring tries discrete flips/turns after horizontal alignment and heavily penalizes bond crossings and coincident stacked bonds (GR-3.3.4).
+- Near-collinear single-bond warnings (GR-1.5) are skipped at S/P (and Se/As), where ≈180° ligand angles are common.
+- **GR-3.2** Chains horizontal; branching doubles preferentially upward when free.
+- **GR-3.3.1** Isolated rings ≤8 atoms → regular polygons.
+- **GR-3.3.2** Isolated rings ≥9 → **reentrant (puckered)** shapes preserving standard bond lengths. Prefer **120°** bond angles; else 108° / ~129° / 135°.  
+  - Highest priority: correct **double-bond configuration** inside the ring (never sacrifice E/Z).  
+  - Next: fused-ring placement; then substituents preferably outside; unsubstituted heteroatoms at **inward-facing** sites when unconstrained.  
+  - Triple bonds in large rings stay **linear**.
+- **GR-3.3.3** Ortho-fusion: abut at shared bond; all atoms of one ring outside the other; large-ring fusion preferably cis-like at the fusion bond.
+- **GR-3.3.4** Bridged: maximize undistorted six-membered rings; bridges avoid overlap; perspective only when unavoidable.
+- **GR-3.4** Principal ring system selection/orientation; heteroatoms in polycycles often toward the right.
+- **GR-3.5** Ring double placement secondary to ring orientation; mancude/aromatic alternation may use either Kekulé form.
+
+Implementation: `large_ring_offsets_y_up` (hex-lattice 120° for even n); Clean Up uses CoordGen then replaces **isolated unsubstituted** ≥9 rings with that geometry; skips rings with multi-bonds (stereo/linear triples win).
+
+## GR-4 Substituents and angles
+
+- Chain atoms: ~109.5° / 120° / 180° as appropriate (GR-4.1); triples and allenes linear.
+- **GR-4.2.1** Single substituent on an exterior ring atom bisects the **larger** exterior angle (including non-convex / large rings); software may snap to horizontal / vertical / 30° multiples.
+- Avoid substituent overlap (GR-4.3).
+- Spiro: second ring occupies the larger free exterior sector (GR-4.2.4).
+
+## GR-5 Charges, radicals, lone pairs
+
+- Charges associated with atoms (GR-5.1); lone pairs optional (GR-5.2); unpaired electrons (GR-5.3).
+
+## GR-6–GR-13 (awareness)
+
+- Aromatic circles only when representing delocalization (GR-6); salts (GR-7); N/P/S charge-separated vs hypervalent forms (GR-8); variable attachment (GR-9); tautomer clarity (GR-10); annotations clear of structure (GR-11); linear drawing style still labels atoms and draws rings as rings (GR-13).
+
+## Stereochemistry (ST + rendering)
+
+- Wedge/hash on **single** bonds only; narrow tip at the stereocenter.
+- **ST-0.5**: do not draw stereo bonds between two stereocenters.
+- **ST-1.2 / ST-1.3**: omit explicit stereo-H whenever a non-stereogenic substituent can take the wedge/hash (acyclic or exocyclic); keep ring bonds plain when an exocyclic option exists. Draw stereo-H only when no suitable ligand remains.
+- CIP `(R)`/`(S)` and alkene `(E)`/`(Z)` placed in open space (GR-11.1–11.2), clear of bond ink and atom labels (collision search).
+- After Clean Up, re-sanitize stereo tips / between-center bonds.
+
+## Validation
+
+Flag stereo-on-multiple, stereo-between-centers, bond-length outliers, near-collinear singles, and atom overlap (`iupac_validate`).
+
+## Docs
+
+Keep `docs/IUPAC_DRAWING.md` aligned with behavior. Full narrative examples live at the QMUL HTML link above.

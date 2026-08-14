@@ -18,8 +18,11 @@
 
 from __future__ import annotations
 
+import logging
 import os
 from dataclasses import dataclass
+
+logger = logging.getLogger(__name__)
 
 
 def _env_str(name: str, default: str) -> str:
@@ -106,7 +109,6 @@ class MolManagerConfig:
     protomer_process_workers: int | None
     pka_process_workers: int | None
     disable_custom_calc: bool
-    custom_calc_legacy_eval: bool
     filter_debounce_substructure_rows: int
     filter_debounce_substructure_ms: int
     filter_debounce_default_rows: int
@@ -158,17 +160,34 @@ def _migrate_chemmanager_env_aliases() -> None:
     """Map legacy ``CHEMMANAGER_*`` variables to ``MOLMANAGER_*`` when the new name is unset."""
     old_prefix = "CHEMMANAGER_"
     new_prefix = "MOLMANAGER_"
+    migrated: list[str] = []
     for key, value in list(os.environ.items()):
         if not key.startswith(old_prefix):
             continue
         new_key = new_prefix + key[len(old_prefix) :]
         if new_key not in os.environ:
             os.environ[new_key] = value
+            migrated.append(f"{key}→{new_key}")
+    if migrated:
+        logger.warning(
+            "Deprecated CHEMMANAGER_* environment variables were mapped to MOLMANAGER_* "
+            "(%s). Rename them; this alias will be removed in a future release.",
+            ", ".join(migrated),
+        )
+
+
+def _warn_retired_custom_calc_legacy_eval() -> None:
+    if _env_truthy("MOLMANAGER_CUSTOM_CALC_LEGACY_EVAL"):
+        logger.warning(
+            "MOLMANAGER_CUSTOM_CALC_LEGACY_EVAL is retired and ignored; "
+            "custom calculator expressions always use the AST safe_calc path."
+        )
 
 
 def load_config() -> MolManagerConfig:
     """Read current settings from ``os.environ`` (no process-wide cache — tests can monkeypatch)."""
     _migrate_chemmanager_env_aliases()
+    _warn_retired_custom_calc_legacy_eval()
     hard = _env_int("MOLMANAGER_SQL_MAX_ROWS_HARD", 2_000_000, lo=1000, hi=50_000_000)
     precowarn = _env_int("MOLMANAGER_SQL_PRECOUNT_WARN", 100_000, lo=1000, hi=hard)
     return MolManagerConfig(
@@ -211,7 +230,6 @@ def load_config() -> MolManagerConfig:
         protomer_process_workers=_env_optional_positive_int("MOLMANAGER_PROTOMER_PROCESSES", lo=1, hi=8),
         pka_process_workers=_env_optional_positive_int("MOLMANAGER_PKA_PROCESS_WORKERS", lo=1, hi=8),
         disable_custom_calc=_env_truthy("MOLMANAGER_DISABLE_CUSTOM_CALC"),
-        custom_calc_legacy_eval=_env_truthy("MOLMANAGER_CUSTOM_CALC_LEGACY_EVAL"),
         filter_debounce_substructure_rows=_env_int(
             "MOLMANAGER_FILTER_DEBOUNCE_SUBSTRUCTURE_ROWS", 120, lo=1, hi=1_000_000
         ),

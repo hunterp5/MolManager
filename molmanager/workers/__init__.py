@@ -140,6 +140,7 @@ __all__ = [
     "FPSimilarityWorker",
     "SIMILARITY_FP_TYPE_LABELS",
     "SIMILARITY_METRIC_LABELS",
+    "pairwise_fingerprint_similarity",
     "PKaPredictorSignals",
     "PKaPredictorWorker",
     "PermeabilityPredictorSignals",

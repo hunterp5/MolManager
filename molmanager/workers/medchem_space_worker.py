@@ -21,7 +21,7 @@ from __future__ import annotations
 from PyQt5 import sip
 from PyQt5.QtCore import QObject, QRunnable, pyqtSignal
 
-from ..medchem_space import MedChemRowSnapshot, MedChemSpaceBuildResult, build_medchem_space_result
+from ..medchem_space import build_medchem_space_result
 
 
 def _safe_emit(obj, emitter_name: str, *args) -> None:

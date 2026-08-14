@@ -18,13 +18,16 @@ from __future__ import annotations
 
 import json
 import math
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from PyQt5.QtCore import QLineF, QPoint, QPointF, QRect, Qt, pyqtSignal
 from PyQt5.QtGui import (
     QCursor,
     QPainter,
 )
+
+if TYPE_CHECKING:
+    from PyQt5.QtGui import QPainterPath
 from PyQt5.QtWidgets import (
     QAction,
     QApplication,
@@ -320,7 +323,7 @@ class SketchWidget(SketchWidgetEventsMixin, SketchWidgetPaintMixin, SketchWidget
                 buds.add(bi)
         self.selected_bond_indices = buds
 
-    def _lasso_path_model(self) -> "QPainterPath":
+    def _lasso_path_model(self) -> QPainterPath:
         from PyQt5.QtGui import QPainterPath
 
         path = QPainterPath()

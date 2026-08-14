@@ -103,6 +103,7 @@ Progress: `WorkerSignals.tool_progress` + `ToolProgressState` polling → bottom
 
 ## Related docs
 
+- [CONTRIBUTING.md](CONTRIBUTING.md) — coding standards, CI lint/headers, dependency audit
 - [STEREO_AND_ISOMERISM.md](STEREO_AND_ISOMERISM.md)
 - [VALENCE_BONDS_AND_AROMATICITY.md](VALENCE_BONDS_AND_AROMATICITY.md)
 - [PACKAGING.md](PACKAGING.md)

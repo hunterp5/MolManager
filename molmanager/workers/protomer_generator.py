@@ -245,13 +245,11 @@ class ProtomerGeneratorWorker(QRunnable):
             if use_mp:
                 tasks = [(k, rep[k].ToBinary(), self.pH) for k in order]
                 results_by_key: dict[str, list[tuple[str, float]]] = {}
-                user_cancelled = False
                 ex = register_process_pool(ProcessPoolExecutor(max_workers=proc_workers))
                 try:
                     pending = {ex.submit(_mp_compute_protomer_smiles_pct, t) for t in tasks}
                     while pending:
                         if should_terminate_process_pool(cancel_ev):
-                            user_cancelled = True
                             cancelled = True
                             for f in pending:
                                 f.cancel()

@@ -279,14 +279,12 @@ def build_microstates_cache_by_key(
 
     if use_mp:
         tasks = [(k, rep[k].ToBinary()) for k in need]
-        user_cancelled = False
         pool_failed = False
         ex = register_process_pool(ProcessPoolExecutor(max_workers=proc_workers))
         try:
             pending = {ex.submit(_mp_compute_microstates, t) for t in tasks}
             while pending:
                 if should_terminate_process_pool(cancel_event):
-                    user_cancelled = True
                     for f in pending:
                         f.cancel()
                     break

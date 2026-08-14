@@ -14,6 +14,7 @@
 # You should have received a copy of the GNU General Public License
 # along with MolManager.  If not, see <https://www.gnu.org/licenses/>.
 
+import logging
 import sys
 import threading
 import time
@@ -23,12 +24,9 @@ from PyQt5.QtGui import QCloseEvent
 from PyQt5.QtWidgets import (
     QAction,
     QApplication,
-    QCheckBox,
-    QComboBox,
     QFrame,
     QHBoxLayout,
     QLabel,
-    QLineEdit,
     QMainWindow,
     QPushButton,
     QScrollArea,
@@ -41,6 +39,9 @@ from PyQt5.QtWidgets import (
 )
 
 from ...config import load_config
+from ...exception_policy import log_swallowed_exception
+
+logger = logging.getLogger(__name__)
 from ...memory_usage import format_process_memory_status
 from ...performance import PerformanceTracker
 from ...tool_progress import ToolProgressState
@@ -1271,7 +1272,7 @@ class ChemicalTableApp(
             try:
                 pq.shutdown_for_exit()
             except Exception:
-                pass
+                log_swallowed_exception(logger, "process_queue.shutdown_for_exit failed during quit")
 
         for dlg in list(getattr(self, "_plot_dialogs", [])):
             try:
@@ -1338,19 +1339,19 @@ class ChemicalTableApp(
 
             clear_fingerprint_cache()
         except Exception:
-            pass
+            log_swallowed_exception(logger, "fingerprint_cache.clear failed during quit")
         try:
             from ...microstate_cache import clear as clear_microstate_cache
 
             clear_microstate_cache()
         except Exception:
-            pass
+            log_swallowed_exception(logger, "microstate_cache.clear failed during quit")
         store = getattr(self, "_sqlite_store", None)
         if store is not None:
             try:
                 store.close()
             except Exception:
-                pass
+                log_swallowed_exception(logger, "sqlite_store.close failed during quit")
 
     def _on_export_finished_message(self, message: str) -> None:
         self._export_busy = False
