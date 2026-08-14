@@ -72,7 +72,8 @@ class PlotPane(QFrame):
         self._plot_widget: QWidget | None = None
         self._activate_filter = _PaneActivateFilter(self)
         self.setObjectName("PlotPane")
-        self.setFrameShape(QFrame.StyledPanel)
+        # Border width is owned by the stylesheet; avoid QFrame chrome fighting it.
+        self.setFrameShape(QFrame.NoFrame)
         self.setMinimumWidth(PLOT_PANEL_BASE_MINIMUM_WIDTH // 2)
         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         self._root = QVBoxLayout(self)
@@ -148,14 +149,11 @@ class PlotPane(QFrame):
         self._set_active_style(active)
 
     def _set_active_style(self, active: bool) -> None:
-        if active:
-            self.setStyleSheet(
-                "QFrame#PlotPane { border: 2px solid palette(highlight); border-radius: 2px; }"
-            )
-        else:
-            self.setStyleSheet(
-                "QFrame#PlotPane { border: 1px solid palette(mid); border-radius: 2px; }"
-            )
+        # Keep border width identical so activating a pane does not resize Plotly.
+        color = "palette(highlight)" if active else "palette(mid)"
+        self.setStyleSheet(
+            f"QFrame#PlotPane {{ border: 2px solid {color}; border-radius: 2px; }}"
+        )
 
     def mousePressEvent(self, event) -> None:  # noqa: N802 — Qt API
         self.activated.emit(self)

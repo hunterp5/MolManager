@@ -19,6 +19,7 @@ Structures/properties required by the plot for rows in scope; **Selected Rows On
 - **Selected Rows Only**.
 - **Structure from**.
 - **Color by**, **Spectrum**, **Min** / **Max**.
+- **Size by**, marker **Min size** / **Max size** (pixels).
 - **Summary** panel.
 - **Select in egg** / **Select in yolk**.
 - **Add to Main Window**, **Send to New Window**, **Close Plot**, **Plot Options**, **Clear Selection**.

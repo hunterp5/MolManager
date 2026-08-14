@@ -41,9 +41,11 @@ from ...config import load_config
 from ...plot_color import (
     PLOT_COLORSCALE_CHOICES,
     color_values_are_numeric,
+    normalize_size_column,
     resolve_plot_colorscale,
 )
 from ..plot_color_range_controls import PlotColorRangeControls
+from ..plot_size_controls import PlotSizeRangeControls
 from ...utils import mol_to_canonical_smiles
 from ...medchem_space import (
     MedChemRowSnapshot,
@@ -176,6 +178,22 @@ class MedChemPlotPanel(QWidget):
         color_row.addWidget(self.color_range)
         opts.addLayout(color_row)
 
+        size_row = QHBoxLayout()
+        size_row.setSpacing(6)
+        self._size_by_label = QLabel("Size by:")
+        size_row.addWidget(self._size_by_label)
+        self.size_combo = QComboBox()
+        self.size_combo.setMinimumWidth(120)
+        self.size_combo.setToolTip(
+            "Size points by a table column (numeric or categorical)."
+        )
+        self.size_combo.currentIndexChanged.connect(self._on_size_column_changed)
+        size_row.addWidget(self.size_combo, 1)
+        self.size_range = PlotSizeRangeControls()
+        self.size_range.connect_changed(self._on_size_column_changed)
+        size_row.addWidget(self.size_range)
+        opts.addLayout(size_row)
+
         self.summary_text = QTextEdit()
         self.summary_text.setReadOnly(True)
         self.summary_text.setMaximumHeight(52)
@@ -228,6 +246,7 @@ class MedChemPlotPanel(QWidget):
         self._refresh_structure_sources()
         self._reload_color_columns()
         self._update_spectrum_controls()
+        self._update_size_controls()
         self._sync_footer_chrome()
         self.summary_text.setPlainText("Preparing plot…")
         self.setMinimumWidth(self.embedded_minimum_width())
@@ -313,16 +332,21 @@ class MedChemPlotPanel(QWidget):
 
     def _reload_color_columns(self) -> None:
         prev = self.color_combo.currentText()
+        prev_size = self.size_combo.currentText()
         self.color_combo.blockSignals(True)
+        self.size_combo.blockSignals(True)
         try:
             self.color_combo.clear()
             self.color_combo.addItem("(none)")
+            self.size_combo.clear()
+            self.size_combo.addItem("(none)")
             if self.parent_app is None:
                 return
             model = self.parent_app._table_model
             if model.rowCount() > 8000:
                 for col in model._sorted_bounds_data_headers():
                     self.color_combo.addItem(col)
+                    self.size_combo.addItem(col)
             else:
                 only_sel = selection_scope_checked(self)
                 df, _rows = table_to_dataframe(
@@ -330,11 +354,16 @@ class MedChemPlotPanel(QWidget):
                 )
                 for col in numeric_subset(df, exclude_id=True).columns:
                     self.color_combo.addItem(col)
+                    self.size_combo.addItem(col)
             idx = self.color_combo.findText(prev)
             if idx >= 0:
                 self.color_combo.setCurrentIndex(idx)
+            sidx = self.size_combo.findText(prev_size)
+            if sidx >= 0:
+                self.size_combo.setCurrentIndex(sidx)
         finally:
             self.color_combo.blockSignals(False)
+            self.size_combo.blockSignals(False)
 
     def _on_scope_changed(self) -> None:
         self._reload_color_columns()
@@ -349,15 +378,26 @@ class MedChemPlotPanel(QWidget):
             vals = self._color_values_for_oids(self._plot_dataset.oids, color_col)
             numeric = color_values_are_numeric(vals)
         self.color_range.set_enabled(enabled and numeric)
+        self._update_size_controls()
+
+    def _update_size_controls(self) -> None:
+        self.size_range.set_enabled(self.size_combo.currentText() != "(none)")
 
     def _current_color_bounds(self) -> tuple[float | None, float | None]:
         return self.color_range.parse_bounds()
+
+    def _current_size_bounds(self) -> tuple[float, float]:
+        return self.size_range.parse_bounds()
 
     def _current_colorscale(self) -> str:
         return resolve_plot_colorscale(self.colorscale_combo.currentText())
 
     def _on_color_column_changed(self, _index: int = 0) -> None:
         self._update_spectrum_controls()
+        self._push_plot_figure()
+
+    def _on_size_column_changed(self, _index: int = 0) -> None:
+        self._update_size_controls()
         self._push_plot_figure()
 
     def _descriptor_column_names(self) -> tuple[str | None, str | None, str | None, str | None]:
@@ -852,6 +892,12 @@ class MedChemPlotPanel(QWidget):
         color_vals, color_col = normalize_color_column(color_vals, color_col)
         colorscale = self._current_colorscale()
         color_min, color_max = self._current_color_bounds()
+        size_col = self.size_combo.currentText()
+        if size_col == "(none)":
+            size_col = None
+        size_vals = self._color_values_for_oids(self._plot_dataset.oids, size_col)
+        size_vals, _ = normalize_size_column(size_vals, size_col)
+        size_min_px, size_max_px = self._current_size_bounds()
         try:
             if self._plot_kind == "golden_triangle":
                 fig = build_golden_triangle_figure(
@@ -861,6 +907,9 @@ class MedChemPlotPanel(QWidget):
                     colorscale=colorscale,
                     color_min=color_min,
                     color_max=color_max,
+                    size_values=size_vals,
+                    size_min_px=size_min_px,
+                    size_max_px=size_max_px,
                 )
             else:
                 fig = build_boiled_egg_figure(
@@ -870,6 +919,9 @@ class MedChemPlotPanel(QWidget):
                     colorscale=colorscale,
                     color_min=color_min,
                     color_max=color_max,
+                    size_values=size_vals,
+                    size_min_px=size_min_px,
+                    size_max_px=size_max_px,
                 )
             self._plot_view.push_figure(fig, self._plot_dataset.oids)
             self._update_spectrum_controls()

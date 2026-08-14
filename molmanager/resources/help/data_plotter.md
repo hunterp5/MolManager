@@ -20,6 +20,7 @@ Numeric (and categorical where supported) columns for rows in scope; **Selected 
 - Axes **X** / **Y** / **Z**, **Min** / **Max**, **Bin width** (and Y bin width).
 - **Selected Rows Only**.
 - **Color by**, **Spectrum**, color **Min** / **Max**.
+- **Size by**, marker **Min size** / **Max size** (pixels).
 - **Fit** - None / Linear / Quadratic / Normal / Truncated Normal / Log-Normal (plus trunc bounds when relevant).
 - Radar: **Spokes**, **Entry** selectors.
 - **Add to Main Window**, **Send to New Window**, **Close Plot**, **Plot Options**, **Clear Selection**.

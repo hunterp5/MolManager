@@ -55,6 +55,9 @@ def build_dimension_reduction_figure(
     colorscale: str = DEFAULT_PLOT_COLORSCALE,
     color_min: float | None = None,
     color_max: float | None = None,
+    size_values: list[Any] | None = None,
+    size_min_px: float | None = None,
+    size_max_px: float | None = None,
 ) -> go.Figure:
     if result.method == "pca":
         x_label, y_label = "PC1", "PC2"
@@ -64,12 +67,20 @@ def build_dimension_reduction_figure(
         x_label, y_label = "SOM column", "SOM row"
     else:
         x_label, y_label = "t-SNE 1", "t-SNE 2"
+    marker_kwargs: dict[str, Any] = {
+        "color_label": result.color_label,
+        "colorscale": colorscale,
+        "color_min": color_min,
+        "color_max": color_max,
+        "size_values": size_values,
+    }
+    if size_min_px is not None:
+        marker_kwargs["size_min_px"] = size_min_px
+    if size_max_px is not None:
+        marker_kwargs["size_max_px"] = size_max_px
     marker = scatter_marker_from_column_values(
         result.color_values,
-        color_label=result.color_label,
-        colorscale=colorscale,
-        color_min=color_min,
-        color_max=color_max,
+        **marker_kwargs,
     )
     fig = go.Figure(
         data=[

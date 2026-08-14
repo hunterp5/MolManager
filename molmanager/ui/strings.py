@@ -29,6 +29,8 @@ TOOL_ADD_EXPLICIT_HYDROGENS = "Add Explicit Hydrogens"
 TOOL_REMOVE_EXPLICIT_HYDROGENS = "Remove Explicit Hydrogens"
 TOOL_REACTION_ENUMERATION = "Reaction Based Enumeration"
 TOOL_MMP = "Matched Molecular Pairs"
+TOOL_ACTIVITY_CLIFF_MAP = "Activity Cliffs"
+TOOL_MMP_PAIR_NETWORK = "Pair Network"
 TOOL_RANDOM_NUMBER = "Random Number"
 TOOL_RANDOM_MOLECULE = "Random Molecule"
 

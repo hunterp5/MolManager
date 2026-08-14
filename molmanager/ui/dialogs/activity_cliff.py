@@ -14,7 +14,7 @@
 # You should have received a copy of the GNU General Public License
 # along with MolManager.  If not, see <https://www.gnu.org/licenses/>.
 
-"""Matched molecular pair (MMP) analysis dialog (Tools → MMP → Transform Ledger)."""
+"""Activity Cliffs configuration dialog (legacy; cliffs open from Transform Ledger)."""
 
 from __future__ import annotations
 
@@ -31,26 +31,25 @@ from PyQt5.QtWidgets import (
     QVBoxLayout,
 )
 
-from ..data_analysis import numeric_subset, table_to_dataframe
 from ..qt_widget_utils import make_window_minimizable
+from .mmp import activity_columns_for_mmp
 from .scope import selection_scope_checked
 
 
 @dataclass(frozen=True)
-class MmpDialogParams:
-    """Arguments from :class:`MmpDialog` for the worker."""
+class ActivityCliffDialogParams:
+    """Arguments for the activity-cliff analysis worker."""
 
     structure_source: str
     activity_column: str
     max_cuts: int
     max_variable_heavy_atoms: int
     min_activity_difference: float
-    max_activity_difference: float
-    write_to_table: bool
+    x_mode: str
 
 
-class MmpDialog(QDialog):
-    """Configure matched molecular pair analysis on table structures and an activity column."""
+class ActivityCliffDialog(QDialog):
+    """Configure MMP-based activity cliff mapping on a numeric activity column."""
 
     def __init__(
         self,
@@ -62,7 +61,7 @@ class MmpDialog(QDialog):
     ):
         super().__init__(parent)
         self.parent_app = parent
-        self.setWindowTitle("Matched Molecular Pairs (MMP)")
+        self.setWindowTitle("Activity Cliff Map")
         self.setMinimumWidth(440)
         self.resize(500, 0)
         self._have_selection = selected_row_count > 0
@@ -84,24 +83,27 @@ class MmpDialog(QDialog):
             self.activity_combo.addItem("(no numeric columns)")
             self.activity_combo.setEnabled(False)
         self.activity_combo.setToolTip(
-            "Biological activity (or other numeric property) used to compute Δactivity for each pair."
+            "Numeric activity/property used for |Δactivity| on the cliff map."
         )
         form.addRow("Activity column:", self.activity_combo)
+
+        self.x_mode_combo = QComboBox()
+        self.x_mode_combo.addItem("Changing heavy atoms", "heavy_atoms")
+        self.x_mode_combo.addItem("Fragment distance (1 − Tanimoto)", "frag_distance")
+        self.x_mode_combo.setToolTip(
+            "Horizontal axis: size of the MMP change, or fingerprint distance "
+            "between the two variable fragments."
+        )
+        form.addRow("X axis:", self.x_mode_combo)
 
         self.max_cuts_sb = QSpinBox()
         self.max_cuts_sb.setRange(1, 3)
         self.max_cuts_sb.setValue(1)
-        self.max_cuts_sb.setToolTip(
-            "Maximum number of acyclic cuts (1 = classic single-point MMP transforms)."
-        )
         form.addRow("Max cuts:", self.max_cuts_sb)
 
         self.max_var_atoms_sb = QSpinBox()
         self.max_var_atoms_sb.setRange(1, 50)
         self.max_var_atoms_sb.setValue(13)
-        self.max_var_atoms_sb.setToolTip(
-            "Ignore pairs whose changing fragment exceeds this many heavy atoms."
-        )
         form.addRow("Max variable heavy atoms:", self.max_var_atoms_sb)
 
         self.min_dact_sb = QDoubleSpinBox()
@@ -110,21 +112,9 @@ class MmpDialog(QDialog):
         self.min_dact_sb.setValue(0.0)
         self.min_dact_sb.setSingleStep(0.1)
         self.min_dact_sb.setToolTip(
-            "Report only pairs whose absolute activity difference is at least this value. "
-            "0 reports all pairs."
+            "Only plot pairs whose absolute activity difference is at least this value."
         )
         form.addRow("Minimum activity difference:", self.min_dact_sb)
-
-        self.max_dact_sb = QDoubleSpinBox()
-        self.max_dact_sb.setDecimals(6)
-        self.max_dact_sb.setRange(0.0, 1e12)
-        self.max_dact_sb.setValue(0.0)
-        self.max_dact_sb.setSingleStep(0.1)
-        self.max_dact_sb.setToolTip(
-            "Report only pairs whose absolute activity difference is at most this value. "
-            "0 disables the upper bound."
-        )
-        form.addRow("Maximum activity difference:", self.max_dact_sb)
         root.addLayout(form)
 
         self.only_selected_cb = QCheckBox("Selected Rows Only")
@@ -136,14 +126,6 @@ class MmpDialog(QDialog):
         else:
             self.only_selected_cb.setEnabled(False)
         root.addWidget(self.only_selected_cb)
-
-        self.write_table_cb = QCheckBox("Write MMP annotations to the main table")
-        self.write_table_cb.setChecked(True)
-        self.write_table_cb.setToolTip(
-            "Add MMP_Partners, MMP_Transforms, and MMP_Delta_<activity> columns "
-            "for molecules that participate in at least one pair."
-        )
-        root.addWidget(self.write_table_cb)
 
         box = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
         box.accepted.connect(self.accept)
@@ -157,29 +139,19 @@ class MmpDialog(QDialog):
     def only_selected_rows(self) -> bool:
         return selection_scope_checked(self)
 
-    def params(self) -> MmpDialogParams:
-        return MmpDialogParams(
+    def params(self) -> ActivityCliffDialogParams:
+        return ActivityCliffDialogParams(
             structure_source=self.src_combo.currentText(),
             activity_column=self.activity_combo.currentText(),
             max_cuts=int(self.max_cuts_sb.value()),
             max_variable_heavy_atoms=int(self.max_var_atoms_sb.value()),
             min_activity_difference=float(self.min_dact_sb.value()),
-            max_activity_difference=float(self.max_dact_sb.value()),
-            write_to_table=bool(self.write_table_cb.isChecked()),
+            x_mode=str(self.x_mode_combo.currentData() or "heavy_atoms"),
         )
 
 
-def activity_columns_for_mmp(parent_app, *, only_selected: bool = False) -> list[str]:
-    """Numeric table columns suitable as MMP activity (Y) inputs."""
-    if parent_app is None:
-        return []
-    try:
-        df, _ = table_to_dataframe(
-            parent_app,
-            visible_only=False,
-            only_selected=only_selected,
-        )
-        num = numeric_subset(df, exclude_id=True)
-        return [str(c) for c in num.columns]
-    except Exception:
-        return []
+__all__ = [
+    "ActivityCliffDialog",
+    "ActivityCliffDialogParams",
+    "activity_columns_for_mmp",
+]

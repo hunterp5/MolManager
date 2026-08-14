@@ -99,6 +99,7 @@ from ..plot_color import (
     PLOT_COLORSCALE_CHOICES,
     color_values_are_numeric,
     normalize_color_column,
+    normalize_size_column,
     resolve_plot_colorscale,
     scatter_marker_from_column_values,
 )
@@ -118,6 +119,7 @@ from ..plot_radar import (
     summarize_radar,
 )
 from .plot_color_range_controls import PlotColorRangeControls
+from .plot_size_controls import PlotSizeRangeControls
 from .plot_hover import (
     default_hover_column_preferences,
     hover_cards_payload,
@@ -506,6 +508,23 @@ class PlotWidget(QWidget):
         color_row.addWidget(self.color_range, 0)
         axes_l.addLayout(color_row)
 
+        size_row = QHBoxLayout()
+        size_row.setSpacing(6)
+        self._size_by_label = QLabel("Size by:")
+        size_row.addWidget(self._size_by_label)
+        self.size_combo = QComboBox()
+        self.size_combo.setMinimumWidth(100)
+        self.size_combo.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        self.size_combo.setToolTip(
+            "Size scatter and line points by a table column (numeric or categorical)."
+        )
+        self.size_combo.currentIndexChanged.connect(self._on_size_column_changed)
+        size_row.addWidget(self.size_combo, 1)
+        self.size_range = PlotSizeRangeControls()
+        self.size_range.connect_changed(self._schedule_plot)
+        size_row.addWidget(self.size_range, 0)
+        axes_l.addLayout(size_row)
+
         analysis_row = QHBoxLayout()
         analysis_row.setSpacing(6)
         self._fit_label = QLabel("Fit:")
@@ -856,19 +875,28 @@ class PlotWidget(QWidget):
 
     def _reload_color_columns(self) -> None:
         prev = self.color_combo.currentText()
+        prev_size = self.size_combo.currentText()
         self.color_combo.blockSignals(True)
+        self.size_combo.blockSignals(True)
         try:
             self.color_combo.clear()
             self.color_combo.addItem("(none)")
+            self.size_combo.clear()
+            self.size_combo.addItem("(none)")
             if self.parent_app is not None:
                 for h in self.parent_app.headers:
                     if h and h != "ID_HIDDEN":
                         self.color_combo.addItem(h)
+                        self.size_combo.addItem(h)
             idx = self.color_combo.findText(prev)
             if idx >= 0:
                 self.color_combo.setCurrentIndex(idx)
+            sidx = self.size_combo.findText(prev_size)
+            if sidx >= 0:
+                self.size_combo.setCurrentIndex(sidx)
         finally:
             self.color_combo.blockSignals(False)
+            self.size_combo.blockSignals(False)
         self._reload_hover_columns()
 
     def _reload_hover_columns(self) -> None:
@@ -984,10 +1012,13 @@ class PlotWidget(QWidget):
         text = self.color_combo.currentText()
         return None if not text or text == "(none)" else text
 
-    def _color_values_for_oids(self, oids: list[int]) -> tuple[list | None, str | None]:
-        color_col = self._current_color_column()
-        if not color_col or self.parent_app is None:
-            return None, None
+    def _current_size_column(self) -> str | None:
+        text = self.size_combo.currentText()
+        return None if not text or text == "(none)" else text
+
+    def _column_values_for_oids(self, oids: list[int], column: str | None) -> list | None:
+        if not column or self.parent_app is None:
+            return None
         model = self.parent_app._table_model
         out: list = []
         for oid in oids:
@@ -995,25 +1026,47 @@ class PlotWidget(QWidget):
             if row < 0:
                 out.append(None)
                 continue
-            raw = model.value_for_header(row, color_col)
+            raw = model.value_for_header(row, column)
             out.append(raw if (raw or "").strip() else None)
-        return out, color_col
+        return out
+
+    def _color_values_for_oids(self, oids: list[int]) -> tuple[list | None, str | None]:
+        color_col = self._current_color_column()
+        if not color_col:
+            return None, None
+        return self._column_values_for_oids(oids, color_col), color_col
+
+    def _size_values_for_oids(self, oids: list[int]) -> tuple[list | None, str | None]:
+        size_col = self._current_size_column()
+        if not size_col:
+            return None, None
+        return self._column_values_for_oids(oids, size_col), size_col
 
     def _scatter_marker_for_oids(self, oids: list[int], *, point_size: float = 6) -> dict:
         color_vals, color_label = self._color_values_for_oids(oids)
         color_vals, color_label = normalize_color_column(color_vals, color_label)
+        size_vals, size_label = self._size_values_for_oids(oids)
+        size_vals, size_label = normalize_size_column(size_vals, size_label)
         color_min, color_max = self.color_range.parse_bounds()
+        size_min_px, size_max_px = self.size_range.parse_bounds()
         return scatter_marker_from_column_values(
             color_vals,
             color_label=color_label,
             colorscale=resolve_plot_colorscale(self.colorscale_combo.currentText()),
             color_min=color_min,
             color_max=color_max,
+            size_values=size_vals,
+            size_min_px=size_min_px,
+            size_max_px=size_max_px,
             point_size=point_size,
         )
 
     def _on_color_column_changed(self, _index: int = 0) -> None:
         self._update_color_controls()
+        self._schedule_plot()
+
+    def _on_size_column_changed(self, _index: int = 0) -> None:
+        self._update_size_controls()
         self._schedule_plot()
 
     def _current_fit_kind(self) -> str:
@@ -1196,7 +1249,15 @@ class PlotWidget(QWidget):
             and color_values_are_numeric(self._probe_color_values())
         )
         self.color_range.set_enabled(numeric)
+        self._update_size_controls()
         self._update_analysis_controls()
+
+    def _update_size_controls(self) -> None:
+        supported = self._color_by_supported()
+        self.size_combo.setEnabled(supported)
+        self._size_by_label.setEnabled(supported)
+        size_on = supported and self._current_size_column() is not None
+        self.size_range.set_enabled(size_on)
 
     def _schedule_plot(self) -> None:
         timer = getattr(self, "_plot_debounce", None)
@@ -2166,10 +2227,11 @@ class PlotWidget(QWidget):
 
     def _select_rows_for_point_indices(self, point_indices: list[int]) -> None:
         source_rows = source_rows_for_point_indices(self.parent_app, self._plotted_oids, point_indices)
-        apply_table_selection_for_source_rows(self.parent_app, source_rows)
+        # Do not scroll the table — keeps docked-plot clicks from flashing scrollbars.
+        apply_table_selection_for_source_rows(self.parent_app, source_rows, scroll=False)
 
     def _select_rows_for_source_rows(self, source_rows: list[int]) -> None:
-        apply_table_selection_for_source_rows(self.parent_app, source_rows)
+        apply_table_selection_for_source_rows(self.parent_app, source_rows, scroll=False)
 
     def _on_plot_point_clicked(self, point_index: int, *, additive: bool = False) -> None:
         if point_index < 0:

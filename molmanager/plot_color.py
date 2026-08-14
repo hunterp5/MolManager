@@ -39,6 +39,9 @@ _MISSING_TOKENS = frozenset({"", "N/A", "NA", "NAN", "NONE", "NULL"})
 
 DEFAULT_PLOT_COLORSCALE = "Viridis"
 
+DEFAULT_MARKER_SIZE_MIN_PX = 4.0
+DEFAULT_MARKER_SIZE_MAX_PX = 16.0
+
 # Plotly built-in continuous colorscales (numeric Color by).
 PLOT_COLORSCALE_CHOICES: tuple[str, ...] = (
     "Viridis",
@@ -123,6 +126,92 @@ def normalize_color_column(
     return color_values, color_label
 
 
+def normalize_size_column(
+    size_values: list[Any] | None,
+    size_label: str | None,
+) -> tuple[list[Any] | None, str | None]:
+    """Return ``(None, None)`` when Size by has no usable values."""
+    return normalize_color_column(size_values, size_label)
+
+
+def clamp_marker_size_bounds(
+    size_min_px: float,
+    size_max_px: float,
+    *,
+    floor: float = 1.0,
+    ceiling: float = 64.0,
+) -> tuple[float, float]:
+    """Clamp and order marker pixel size bounds."""
+    lo = max(floor, min(ceiling, float(size_min_px)))
+    hi = max(floor, min(ceiling, float(size_max_px)))
+    if lo > hi:
+        lo, hi = hi, lo
+    return lo, hi
+
+
+def marker_sizes_from_column_values(
+    raw_values: list[Any] | None,
+    *,
+    size_min_px: float = DEFAULT_MARKER_SIZE_MIN_PX,
+    size_max_px: float = DEFAULT_MARKER_SIZE_MAX_PX,
+    default_size: float = 6.0,
+) -> float | list[float]:
+    """
+    Map per-point column values to Plotly marker sizes (pixels).
+
+    Numeric columns scale linearly between ``size_min_px`` and ``size_max_px``.
+    Categorical columns get evenly spaced sizes across that range.
+    Missing values use ``size_min_px``. Returns ``default_size`` when unused.
+    """
+    if not raw_values or not column_values_have_color_data(raw_values):
+        return float(default_size)
+
+    lo_px, hi_px = clamp_marker_size_bounds(size_min_px, size_max_px)
+    if abs(hi_px - lo_px) < 1e-12:
+        return lo_px
+
+    numeric: list[float] = []
+    for value in raw_values:
+        parsed = _try_float(value)
+        if parsed is None:
+            numeric.clear()
+            break
+        numeric.append(parsed)
+
+    if numeric:
+        finite = [v for v in numeric if v == v]
+        if not finite:
+            return float(default_size)
+        data_lo, data_hi = min(finite), max(finite)
+        if abs(data_hi - data_lo) < 1e-12:
+            return [(lo_px + hi_px) * 0.5] * len(numeric)
+        span = data_hi - data_lo
+        out: list[float] = []
+        for v in numeric:
+            if v != v:
+                out.append(lo_px)
+            else:
+                t = (v - data_lo) / span
+                t = 0.0 if t < 0.0 else 1.0 if t > 1.0 else t
+                out.append(lo_px + t * (hi_px - lo_px))
+        return out
+
+    categories: list[str] = []
+    for value in raw_values:
+        if _is_missing(value):
+            categories.append("(missing)")
+        else:
+            text = str(value).strip()
+            categories.append(text if text else "(missing)")
+    uniq = sorted(set(categories), key=lambda x: (x == "(missing)", x.lower()))
+    if len(uniq) == 1:
+        return [lo_px if uniq[0] == "(missing)" else (lo_px + hi_px) * 0.5] * len(categories)
+    size_map = {
+        cat: lo_px + (i / (len(uniq) - 1)) * (hi_px - lo_px) for i, cat in enumerate(uniq)
+    }
+    return [float(size_map[c]) for c in categories]
+
+
 def _try_float(value: Any) -> float | None:
     if _is_missing(value):
         return float("nan")
@@ -151,6 +240,9 @@ def scatter_marker_from_column_values(
     colorscale: str | None = None,
     color_min: float | None = None,
     color_max: float | None = None,
+    size_values: list[Any] | None = None,
+    size_min_px: float = DEFAULT_MARKER_SIZE_MIN_PX,
+    size_max_px: float = DEFAULT_MARKER_SIZE_MAX_PX,
     default_color: str = "#2a74d6",
     point_size: float = 6,
     opacity: float = 0.85,
@@ -160,9 +252,18 @@ def scatter_marker_from_column_values(
 
     Numeric columns (including numeric strings from the table) use a continuous colorscale.
     Text/category columns use a fixed discrete palette.
+    Optional ``size_values`` map a second column onto marker size between
+    ``size_min_px`` and ``size_max_px``.
     """
+    size = marker_sizes_from_column_values(
+        size_values,
+        size_min_px=size_min_px,
+        size_max_px=size_max_px,
+        default_size=point_size,
+    )
+
     if not raw_values or not column_values_have_color_data(raw_values):
-        return {"size": point_size, "opacity": opacity, "color": default_color}
+        return {"size": size, "opacity": opacity, "color": default_color}
 
     numeric: list[float] = []
     for value in raw_values:
@@ -176,7 +277,7 @@ def scatter_marker_from_column_values(
         plot_colors = [float(v) if v == v else float("nan") for v in numeric]
         finite = [v for v in plot_colors if v == v]
         if not finite:
-            return {"size": point_size, "opacity": opacity, "color": default_color}
+            return {"size": size, "opacity": opacity, "color": default_color}
         lo, hi = min(finite), max(finite)
         if color_min is not None:
             lo = float(color_min)
@@ -188,7 +289,7 @@ def scatter_marker_from_column_values(
             lo -= 0.5
             hi += 0.5
         marker: dict = {
-            "size": point_size,
+            "size": size,
             "opacity": opacity,
             "color": plot_colors,
             "colorscale": resolve_plot_colorscale(colorscale),
@@ -211,7 +312,7 @@ def scatter_marker_from_column_values(
     color_map = {cat: _CATEGORICAL_PALETTE[i % len(_CATEGORICAL_PALETTE)] for i, cat in enumerate(uniq)}
     point_colors = [color_map[c] for c in categories]
     return {
-        "size": point_size,
+        "size": size,
         "opacity": opacity,
         "color": point_colors,
     }

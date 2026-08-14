@@ -25,14 +25,18 @@ when numeric activity values are supplied.
 from __future__ import annotations
 
 from collections import defaultdict
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass
+from statistics import fmean, median
 
 from rdkit import Chem
 from rdkit.Chem import rdFMCS, rdMMPA
 
 # Core key type: (core_smiles, sidechain_tuple)
 CoreSideKey = tuple[str, tuple[str, ...]]
+
+# Absolute Δ below this is treated as flat for win-rate accounting.
+_FLAT_DELTA_EPS = 1e-12
 
 
 @dataclass(frozen=True)
@@ -50,6 +54,303 @@ class MmpPair:
     core: str
     sidechain_a: str
     sidechain_b: str
+
+
+@dataclass(frozen=True)
+class TransformSummary:
+    """Aggregated evidence for one chemically canonical ``from>>to`` transform on a core."""
+
+    transform: str
+    core: str
+    sidechain_from: str
+    sidechain_to: str
+    n: int
+    median_delta: float
+    mean_delta: float
+    win_rate: float
+    n_improve: int
+    n_worsen: int
+    n_flat: int
+    min_delta: float
+    max_delta: float
+    pair_indices: tuple[int, ...]
+
+
+def canonicalize_pair_direction(pair: MmpPair) -> tuple[str, str, str, float]:
+    """
+    Orient a pair so sidechains are lexicographically ordered.
+
+    Returns ``(transform, sidechain_from, sidechain_to, delta)`` where
+    ``transform`` is ``from>>to`` and ``delta`` is activity(to mol) − activity(from mol)
+    after any flip (negated when sides are swapped).
+    """
+    side_from = pair.sidechain_a
+    side_to = pair.sidechain_b
+    delta = float(pair.delta_activity)
+    if side_from > side_to:
+        side_from, side_to = side_to, side_from
+        delta = -delta
+    return f"{side_from}>>{side_to}", side_from, side_to, delta
+
+
+def pairs_involving_oid(pairs: Sequence[MmpPair], oid: int) -> list[MmpPair]:
+    """Return pairs where *oid* is either partner."""
+    ref = int(oid)
+    return [p for p in pairs if int(p.oid_a) == ref or int(p.oid_b) == ref]
+
+
+def orient_pair_relative_to_reference(
+    pair: MmpPair, reference_oid: int
+) -> tuple[str, str, str, float] | None:
+    """
+    Orient a pair as ``reference → partner``.
+
+    Returns ``(transform, side_from, side_to, delta)`` where delta is
+    activity(partner) − activity(reference), or ``None`` if *reference_oid*
+    is not in the pair.
+    """
+    ref = int(reference_oid)
+    if int(pair.oid_a) == ref:
+        side_from, side_to = pair.sidechain_a, pair.sidechain_b
+        delta = float(pair.delta_activity)
+    elif int(pair.oid_b) == ref:
+        side_from, side_to = pair.sidechain_b, pair.sidechain_a
+        delta = -float(pair.delta_activity)
+    else:
+        return None
+    return f"{side_from}>>{side_to}", side_from, side_to, delta
+
+
+def reference_oids_in_pairs(pairs: Sequence[MmpPair]) -> list[int]:
+    """Sorted unique molecule IDs that appear in at least one pair."""
+    oids: set[int] = set()
+    for p in pairs:
+        oids.add(int(p.oid_a))
+        oids.add(int(p.oid_b))
+    return sorted(oids)
+
+
+def aggregate_transforms(
+    pairs: Sequence[MmpPair],
+    *,
+    reference_oid: int | None = None,
+) -> list[TransformSummary]:
+    """
+    Group pairs by core and transform; compute evidence stats.
+
+    When *reference_oid* is set, only pairs involving that molecule are kept and
+    each transform is oriented as reference → partner (Δ = partner − reference).
+    Otherwise transforms are lexicographically canonicalized.
+
+    Win rate is the fraction of pairs with ``delta > 0`` after orientation.
+    Flat pairs (``|delta| < 1e-12``) are counted separately and are not wins.
+    Results are sorted by ``|median_delta|`` descending, then ``n`` descending.
+    """
+    buckets: dict[tuple[str, str], list[tuple[int, float, str, str]]] = defaultdict(list)
+    ref = int(reference_oid) if reference_oid is not None else None
+    for idx, pair in enumerate(pairs):
+        if ref is not None:
+            oriented = orient_pair_relative_to_reference(pair, ref)
+            if oriented is None:
+                continue
+            transform, side_from, side_to, delta = oriented
+        else:
+            transform, side_from, side_to, delta = canonicalize_pair_direction(pair)
+        buckets[(pair.core or "", transform)].append((idx, delta, side_from, side_to))
+
+    summaries: list[TransformSummary] = []
+    for (core, transform), items in buckets.items():
+        deltas = [d for _i, d, _sf, _st in items]
+        n = len(deltas)
+        n_improve = sum(1 for d in deltas if d > _FLAT_DELTA_EPS)
+        n_worsen = sum(1 for d in deltas if d < -_FLAT_DELTA_EPS)
+        n_flat = n - n_improve - n_worsen
+        side_from = items[0][2]
+        side_to = items[0][3]
+        summaries.append(
+            TransformSummary(
+                transform=transform,
+                core=core,
+                sidechain_from=side_from,
+                sidechain_to=side_to,
+                n=n,
+                median_delta=float(median(deltas)),
+                mean_delta=float(fmean(deltas)),
+                win_rate=(n_improve / n) if n else 0.0,
+                n_improve=n_improve,
+                n_worsen=n_worsen,
+                n_flat=n_flat,
+                min_delta=float(min(deltas)),
+                max_delta=float(max(deltas)),
+                pair_indices=tuple(i for i, _d, _sf, _st in items),
+            )
+        )
+
+    summaries.sort(key=lambda s: (-abs(s.median_delta), -s.n, s.core, s.transform))
+    return summaries
+
+
+def pairs_for_transform(
+    pairs: Sequence[MmpPair],
+    transform: str,
+    *,
+    core: str | None = None,
+) -> list[MmpPair]:
+    """Return pairs matching *transform* (and *core* when provided)."""
+    key = (transform or "").strip()
+    if not key:
+        return []
+    out: list[MmpPair] = []
+    for p in pairs:
+        if canonicalize_pair_direction(p)[0] != key:
+            continue
+        if core is not None and (p.core or "") != core:
+            continue
+        out.append(p)
+    return out
+
+
+def pairs_for_summary(pairs: Sequence[MmpPair], summary: TransformSummary) -> list[MmpPair]:
+    """Return the pairs that contributed to *summary* (by stored indices)."""
+    out: list[MmpPair] = []
+    for idx in summary.pair_indices:
+        if 0 <= idx < len(pairs):
+            out.append(pairs[idx])
+    return out
+
+
+def apply_transform_to_mol(
+    mol: Chem.Mol,
+    side_from: str,
+    side_to: str,
+    *,
+    max_cuts: int | None = None,
+    max_cut_bonds: int = 20,
+    require_core: str | None = None,
+) -> list[str]:
+    """
+    Apply an MMP ``from>>to`` fragment transform to *mol*.
+
+    Re-fragments the seed with ``rdMMPA.FragmentMol``, keeps cuts whose variable
+    side(s) match *side_from*, then ``molzip``s the constant core with *side_to*.
+    Returns unique product SMILES (may be empty if the from-fragment is absent).
+
+    Multi-cut transforms use dotted sides (``N[*:1].O[*:2]>>...``); atom-map
+    numbers must align between from and to for ``molzip``.
+    """
+    if mol is None:
+        return []
+    from_raw = [p.strip() for p in (side_from or "").split(".") if p.strip()]
+    to_raw = [p.strip() for p in (side_to or "").split(".") if p.strip()]
+    if not from_raw or not to_raw or len(from_raw) != len(to_raw):
+        return []
+
+    n_cuts = len(from_raw)
+    cuts = max(1, min(int(max_cuts) if max_cuts is not None else n_cuts, 3))
+    cuts = max(cuts, n_cuts)
+    max_cut_bonds = max(1, int(max_cut_bonds))
+
+    norm_cache: dict[str, str] = {}
+    from_key = tuple(sorted(_normalize_fragment_smiles(p, norm_cache) for p in from_raw))
+    require_core_n = (
+        _normalize_fragment_smiles(require_core, norm_cache) if require_core else None
+    )
+
+    try:
+        frags = rdMMPA.FragmentMol(
+            mol,
+            maxCuts=cuts,
+            maxCutBonds=max_cut_bonds,
+            resultsAsMols=False,
+        )
+    except Exception:
+        return []
+
+    products: list[str] = []
+    seen: set[str] = set()
+
+    def _emit(core_smiles: str) -> None:
+        core_mol = Chem.MolFromSmiles(core_smiles)
+        if core_mol is None:
+            return
+        combo = core_mol
+        for piece in to_raw:
+            piece_mol = Chem.MolFromSmiles(piece)
+            if piece_mol is None:
+                return
+            combo = Chem.CombineMols(combo, piece_mol)
+        try:
+            zipped = Chem.molzip(combo)
+            Chem.SanitizeMol(zipped)
+            smi = Chem.MolToSmiles(zipped, isomericSmiles=True)
+        except Exception:
+            return
+        if not smi or smi in seen:
+            return
+        seen.add(smi)
+        products.append(smi)
+
+    for core_smi, rest in frags or ():
+        core_smi = (core_smi or "").strip()
+        rest = (rest or "").strip()
+        if not rest:
+            continue
+        if core_smi:
+            sides = tuple(
+                sorted(
+                    _normalize_fragment_smiles(p, norm_cache)
+                    for p in rest.split(".")
+                    if p.strip()
+                )
+            )
+            if sides != from_key:
+                continue
+            core_n = _normalize_fragment_smiles(core_smi, norm_cache)
+            if require_core_n is not None and core_n != require_core_n:
+                continue
+            _emit(core_smi)
+            continue
+
+        # Single-cut empty-core form: ``side.core``.
+        if n_cuts != 1:
+            continue
+        parts = [p for p in rest.split(".") if p.strip()]
+        if len(parts) != 2:
+            continue
+        a_n = _normalize_fragment_smiles(parts[0], norm_cache)
+        b_n = _normalize_fragment_smiles(parts[1], norm_cache)
+        if from_key[0] == a_n:
+            core_candidate = parts[1]
+            core_n = b_n
+        elif from_key[0] == b_n:
+            core_candidate = parts[0]
+            core_n = a_n
+        else:
+            continue
+        if require_core_n is not None and core_n != require_core_n:
+            continue
+        _emit(core_candidate)
+
+    return products
+
+
+def apply_transform_summary_to_mol(
+    mol: Chem.Mol,
+    summary: TransformSummary,
+    *,
+    max_cuts: int | None = None,
+    max_cut_bonds: int = 20,
+    require_core: bool = False,
+) -> list[str]:
+    """Apply a ledger transform summary to *mol* (optional strict core match)."""
+    return apply_transform_to_mol(
+        mol,
+        summary.sidechain_from,
+        summary.sidechain_to,
+        max_cuts=max_cuts,
+        max_cut_bonds=max_cut_bonds,
+        require_core=summary.core if require_core else None,
+    )
 
 
 def _heavy_atom_count(smiles: str, cache: dict[str, int] | None = None) -> int:
@@ -156,14 +457,17 @@ def pairs_from_fragment_records(
     *,
     max_variable_heavy_atoms: int | None = 13,
     min_activity_difference: float = 0.0,
+    max_activity_difference: float = 0.0,
     cancel_check: Callable[[], bool] | None = None,
 ) -> list[MmpPair]:
     """
     Build MMP pairs from precomputed fragment keys.
 
     Each record is ``(oid, smiles, activity, fragment_keys)``.
+    ``max_activity_difference`` of 0 disables the upper bound.
     """
     min_dact = max(0.0, float(min_activity_difference))
+    max_dact = max(0.0, float(max_activity_difference))
     heavy_cache: dict[str, int] = {}
     index: dict[tuple[str, int], list[tuple[int, str, float, str]]] = defaultdict(list)
 
@@ -211,6 +515,8 @@ def pairs_from_fragment_records(
                         delta = right_act - left_act
                         if abs(delta) < min_dact:
                             continue
+                        if max_dact > 0.0 and abs(delta) > max_dact:
+                            continue
                         transform = f"{left_side}>>{right_side}"
                         cand = MmpPair(
                             oid_a=left_oid,
@@ -252,6 +558,7 @@ def find_matched_molecular_pairs(
     max_cut_bonds: int = 20,
     max_variable_heavy_atoms: int | None = 13,
     min_activity_difference: float = 0.0,
+    max_activity_difference: float = 0.0,
     cancel_check: Callable[[], bool] | None = None,
 ) -> list[MmpPair]:
     """
@@ -260,6 +567,8 @@ def find_matched_molecular_pairs(
     ``max_variable_heavy_atoms`` limits the size of the changing fragment
     (``None`` disables the limit). ``min_activity_difference`` keeps only pairs
     whose absolute Δactivity is at least that threshold (0 disables the filter).
+    ``max_activity_difference`` keeps only pairs whose absolute Δactivity is at
+    most that threshold (0 disables the upper bound).
     Pairs are sorted by absolute Δactivity descending, then by transform.
     """
     frag_records: list[tuple[int, str, float, list[CoreSideKey]]] = []
@@ -280,6 +589,7 @@ def find_matched_molecular_pairs(
         frag_records,
         max_variable_heavy_atoms=max_variable_heavy_atoms,
         min_activity_difference=min_activity_difference,
+        max_activity_difference=max_activity_difference,
         cancel_check=cancel_check,
     )
 

@@ -26,7 +26,13 @@ from plotly import graph_objects as go
 from plotly.io import to_json as plotly_to_json
 from plotly.offline import get_plotlyjs
 
-_DEFAULT_WEB_CONFIG = {"displaylogo": False, "responsive": True}
+_DEFAULT_WEB_CONFIG = {
+    "displaylogo": False,
+    "responsive": True,
+    # Wheel zoom; middle-mouse pan is handled in plotly_shell.js (keeps lasso on LMB).
+    "scrollZoom": True,
+}
+
 
 _UTILITY_LEGEND_NAMES = frozenset(
     {

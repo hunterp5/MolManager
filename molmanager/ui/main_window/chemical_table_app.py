@@ -176,6 +176,10 @@ class ChemicalTableApp(
         self.signals.reaction_enum_failed.connect(self.on_reaction_enum_failed, _qc)
         self.signals.mmp_finished.connect(self.on_mmp_finished, _qc)
         self.signals.mmp_failed.connect(self.on_mmp_failed, _qc)
+        self.signals.activity_cliff_finished.connect(self.on_activity_cliff_finished, _qc)
+        self.signals.activity_cliff_failed.connect(self.on_activity_cliff_failed, _qc)
+        self.signals.mmp_neighborhood_finished.connect(self.on_mmp_neighborhood_finished, _qc)
+        self.signals.mmp_neighborhood_failed.connect(self.on_mmp_neighborhood_failed, _qc)
         self.signals.cluster_failed.connect(self.on_cluster_failed, _qc)
         self.signals.cluster_explore_finished.connect(self.on_cluster_explore_finished, _qc)
         self.signals.export_finished.connect(self._on_export_finished_message, _qc)
@@ -238,6 +242,9 @@ class ChemicalTableApp(
         self._plot_table_sync_timer.timeout.connect(self._sync_active_plots_from_table_selection)
         self._selection_browser_dialog = None
         self._mmp_browser_dialog = None
+        self._mmp_ledger_dialog = None
+        self._activity_cliff_map_dialog = None
+        self._mmp_neighborhood_map_dialog = None
         self._sketcher_dialog = None
         self._calculator_dialog = None
         self._data_analysis_dialog = None
@@ -910,12 +917,13 @@ class ChemicalTableApp(
             act.setToolTip(tip)
             decomp_menu.addAction(act)
 
-        act_mmp = QAction("MMP…", self, triggered=self.open_mmp_dialog)
+        mmp_menu = tools.addMenu("&MMP")
+        act_mmp = QAction("Transform Ledger…", self, triggered=self.open_mmp_dialog)
         act_mmp.setToolTip(
-            "Find matched molecular pairs (RDKit MMPA): small structural changes and "
-            "their effect on a selected biological activity column."
+            "Find matched molecular pairs (RDKit MMPA) and rank transforms by "
+            "support and activity effect."
         )
-        tools.addAction(act_mmp)
+        mmp_menu.addAction(act_mmp)
 
         act_reaction_enum = QAction(
             "Reaction Based Enumeration…",
@@ -1264,6 +1272,9 @@ class ChemicalTableApp(
             "_processes_dialog",
             "_selection_browser_dialog",
             "_mmp_browser_dialog",
+            "_mmp_ledger_dialog",
+            "_activity_cliff_map_dialog",
+            "_mmp_neighborhood_map_dialog",
             "_sketcher_dialog",
             "_calculator_dialog",
             "_data_analysis_dialog",

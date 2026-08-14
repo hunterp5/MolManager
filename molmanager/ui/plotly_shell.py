@@ -36,7 +36,12 @@ def interactive_plot_shell_html() -> str:
 <head>
   <meta charset="utf-8">
   <style>
-    html, body, #plot {{ width: 100%; height: 100%; margin: 0; }}
+    html, body, #plot {{
+      width: 100%;
+      height: 100%;
+      margin: 0;
+      overflow: hidden;
+    }}
     #mol-hover-layer {{
       position: absolute;
       left: 0; top: 0;
@@ -47,11 +52,11 @@ def interactive_plot_shell_html() -> str:
       z-index: 40;
     }}
     #mol-hover-connectors {{
-      position: absolute;
+      position: fixed;
       left: 0; top: 0;
-      width: 100vw;
-      height: 100vh;
-      overflow: visible;
+      width: 100%;
+      height: 100%;
+      overflow: hidden;
       pointer-events: none;
     }}
     #mol-hover-connectors line {{
@@ -60,10 +65,10 @@ def interactive_plot_shell_html() -> str:
       stroke-opacity: 0.85;
     }}
     .mol-hover-card {{
-      position: absolute;
+      position: fixed;
       max-width: 240px;
       max-height: min(42vh, 320px);
-      overflow: auto;
+      overflow: hidden;
       pointer-events: none;
       background: rgba(255,255,255,0.97);
       border: 1px solid #c8c8c8;
@@ -84,7 +89,7 @@ def interactive_plot_shell_html() -> str:
     }}
     .mol-hover-card .lines {{ white-space: pre-wrap; word-break: break-word; }}
     .mol-hover-overflow {{
-      position: absolute;
+      position: fixed;
       background: rgba(255,255,255,0.95);
       border: 1px solid #c8c8c8;
       border-radius: 6px;
@@ -147,6 +152,67 @@ def interactive_plot_shell_html() -> str:
       }}, true);
       window.addEventListener('mouseup', function(e) {{ refreshShiftHeld(e); }}, true);
       // Do not clear shiftHeld on blur — Qt focus steals otherwise break Shift+lasso.
+      // Middle-mouse pan (LMB stays lasso/select via dragmode).
+      var middlePan = null;
+      function endMiddlePan() {{
+        middlePan = null;
+        try {{ document.body.style.cursor = ''; }} catch (_c0) {{}}
+      }}
+      function onMiddlePanMove(ev) {{
+        if (!middlePan || !gd || !gd._fullLayout) return;
+        try {{
+          var xa = gd._fullLayout.xaxis;
+          var ya = gd._fullLayout.yaxis;
+          if (!xa || !ya || !xa._length || !ya._length) return;
+          var dx = ev.clientX - middlePan.x0;
+          var dy = ev.clientY - middlePan.y0;
+          var xspan = middlePan.xr1 - middlePan.xr0;
+          var yspan = middlePan.yr1 - middlePan.yr0;
+          var dxData = -(dx / xa._length) * xspan;
+          var dyData = (dy / ya._length) * yspan;
+          Plotly.relayout(gd, {{
+            'xaxis.range': [middlePan.xr0 + dxData, middlePan.xr1 + dxData],
+            'yaxis.range': [middlePan.yr0 + dyData, middlePan.yr1 + dyData]
+          }});
+        }} catch (_panMove) {{}}
+      }}
+      function onMiddlePanUp(ev) {{
+        if (ev.button === 1 || middlePan) endMiddlePan();
+      }}
+      function installMiddleMousePan() {{
+        if (gd._molmanagerMiddlePan) return;
+        gd._molmanagerMiddlePan = true;
+        gd.addEventListener('mousedown', function(ev) {{
+          if (ev.button !== 1) return;
+          try {{
+            ev.preventDefault();
+            ev.stopPropagation();
+          }} catch (_pd) {{}}
+          try {{
+            var xa = gd._fullLayout && gd._fullLayout.xaxis;
+            var ya = gd._fullLayout && gd._fullLayout.yaxis;
+            if (!xa || !ya || !xa.range || !ya.range) return;
+            middlePan = {{
+              x0: ev.clientX,
+              y0: ev.clientY,
+              xr0: xa.range[0],
+              xr1: xa.range[1],
+              yr0: ya.range[0],
+              yr1: ya.range[1]
+            }};
+            document.body.style.cursor = 'grabbing';
+          }} catch (_panDown) {{
+            middlePan = null;
+          }}
+        }}, true);
+        gd.addEventListener('auxclick', function(ev) {{
+          if (ev.button === 1) {{
+            try {{ ev.preventDefault(); }} catch (_ax) {{}}
+          }}
+        }}, true);
+        window.addEventListener('mousemove', onMiddlePanMove, true);
+        window.addEventListener('mouseup', onMiddlePanUp, true);
+      }}
       function clearSelectionShapes() {{
         try {{
           if (!gd || !gd.layout) return;
@@ -682,6 +748,7 @@ def interactive_plot_shell_html() -> str:
           var data = payload.data || [];
           var layout = payload.layout || {{}};
           var config = payload.config || {{}};
+          if (config.scrollZoom === undefined) config.scrollZoom = true;
           beginSuppressPlotBridge(800);
           applyInFlight = true;
           pendingSelectionJson = null;
@@ -693,6 +760,9 @@ def interactive_plot_shell_html() -> str:
             hoverPersist = false;
           }}
           Plotly.react(gd, data, layout, config).then(function() {{
+            try {{
+              installMiddleMousePan();
+            }} catch (_mid) {{}}
             try {{
               gd.removeAllListeners('plotly_click');
               gd.removeAllListeners('plotly_selected');

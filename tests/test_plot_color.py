@@ -87,3 +87,29 @@ def test_mixed_none_and_float_uses_nan_for_missing():
     assert math.isnan(m["color"][1])
     assert m["color"][2] == 1.0
     go.Figure(data=[go.Scatter(x=[1, 2, 3], y=[1, 2, 3], marker=m)])
+
+
+def test_size_by_numeric_maps_to_pixel_range():
+    from molmanager.plot_color import marker_sizes_from_column_values
+
+    sizes = marker_sizes_from_column_values(
+        [0.0, 5.0, 10.0],
+        size_min_px=4.0,
+        size_max_px=14.0,
+    )
+    assert isinstance(sizes, list)
+    assert sizes[0] == 4.0
+    assert sizes[1] == 9.0
+    assert sizes[2] == 14.0
+
+
+def test_scatter_marker_applies_size_values():
+    m = scatter_marker_from_column_values(
+        [1.0, 2.0, 3.0],
+        color_label="score",
+        size_values=[10.0, 20.0, 30.0],
+        size_min_px=2.0,
+        size_max_px=8.0,
+    )
+    assert m["size"][0] == 2.0
+    assert m["size"][2] == 8.0

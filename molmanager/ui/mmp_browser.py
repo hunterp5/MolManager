@@ -21,7 +21,7 @@ from __future__ import annotations
 from typing import Any
 
 from PyQt5.QtCore import Qt, QTimer
-from PyQt5.QtGui import QImage, QKeySequence, QPixmap
+from PyQt5.QtGui import QImage, QKeySequence, QPainter, QPixmap
 from PyQt5.QtWidgets import (
     QComboBox,
     QDialog,
@@ -42,7 +42,12 @@ from ..display_constants import (
     BROWSER_STRUCTURE_PREVIEW_MIN_HEIGHT,
     BROWSER_STRUCTURE_PREVIEW_MIN_WIDTH,
 )
-from ..mmp_analysis import MmpPair, assemble_mmp_table_annotations, highlight_atoms_for_pair
+from ..mmp_analysis import (
+    MmpPair,
+    assemble_mmp_table_annotations,
+    canonicalize_pair_direction,
+    highlight_atoms_for_pair,
+)
 from .qt_widget_utils import make_window_minimizable
 
 
@@ -82,6 +87,13 @@ class MmpBrowserDialog(QDialog):
         self._meta = QLabel()
         self._meta.setAlignment(Qt.AlignCenter)
         root.addWidget(self._meta)
+
+        self._transform_preview = QLabel()
+        self._transform_preview.setAlignment(Qt.AlignCenter)
+        self._transform_preview.setMinimumHeight(72)
+        self._transform_preview.setMaximumHeight(88)
+        self._transform_preview.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        root.addWidget(self._transform_preview)
 
         self._delta_label = QLabel()
         self._delta_label.setAlignment(Qt.AlignCenter)
@@ -372,6 +384,9 @@ class MmpBrowserDialog(QDialog):
         if not has:
             self._meta.setText("No matched molecular pairs found.")
             self._delta_label.setText("")
+            self._transform_preview.clear()
+            self._transform_preview.setPixmap(QPixmap())
+            self._transform_preview.setToolTip("")
             for panel in (self._left_panel, self._right_panel):
                 panel["struct"].clear()
                 panel["struct"].setPixmap(QPixmap())
@@ -383,14 +398,67 @@ class MmpBrowserDialog(QDialog):
         pair = self._pairs[self._idx]
         self._meta.setText(f"Pair {self._idx + 1} of {n}")
         sign = "+" if pair.delta_activity >= 0 else ""
+        canon_transform, side_from, side_to, _cd = canonicalize_pair_direction(pair)
         self._delta_label.setText(
             f"Δ{self._activity_column} = {sign}{pair.delta_activity:.4g}  "
             f"({pair.activity_a:.4g} → {pair.activity_b:.4g})"
         )
+        self._delta_label.setToolTip(canon_transform)
+        self._update_transform_preview(side_from, side_to, canon_transform)
         self._left_panel["box"].setTitle(f"Molecule A  (ID {pair.oid_a})")
         self._right_panel["box"].setTitle(f"Molecule B  (ID {pair.oid_b})")
         self._refresh_previews()
         self._update_property_values()
+
+    def _update_transform_preview(self, side_from: str, side_to: str, transform: str) -> None:
+        frag_w, frag_h, arrow_w = 96, 64, 28
+        left = self._render_frag_smiles(side_from, frag_w, frag_h)
+        right = self._render_frag_smiles(side_to, frag_w, frag_h)
+        if left is None and right is None:
+            self._transform_preview.clear()
+            self._transform_preview.setPixmap(QPixmap())
+            self._transform_preview.setText("→")
+            self._transform_preview.setToolTip(transform)
+            return
+        if left is None:
+            left = QPixmap(frag_w, frag_h)
+            left.fill(Qt.transparent)
+        if right is None:
+            right = QPixmap(frag_w, frag_h)
+            right.fill(Qt.transparent)
+        out = QPixmap(frag_w + arrow_w + frag_w, frag_h)
+        out.fill(Qt.transparent)
+        painter = QPainter(out)
+        try:
+            painter.drawPixmap(0, 0, left)
+            painter.setPen(self.palette().color(self.palette().WindowText))
+            painter.drawText(frag_w, 0, arrow_w, frag_h, Qt.AlignCenter, "→")
+            painter.drawPixmap(frag_w + arrow_w, 0, right)
+        finally:
+            painter.end()
+        dpr = max(1.0, float(self.devicePixelRatioF()))
+        out.setDevicePixelRatio(dpr)
+        self._transform_preview.setPixmap(out)
+        self._transform_preview.setText("")
+        self._transform_preview.setToolTip(transform)
+
+    def _render_frag_smiles(self, smiles: str, pw: int, ph: int) -> QPixmap | None:
+        if not smiles:
+            return None
+        cache_key = ("frag", smiles, pw, ph)
+        cached = self._preview_cache.get(cache_key)
+        if cached is not None and not cached.isNull():
+            return cached
+        try:
+            mol = Chem.MolFromSmiles(smiles)
+        except Exception:
+            mol = None
+        if mol is None:
+            return None
+        pm = self._render_highlighted(mol, pw, ph, [])
+        if pm is not None and not pm.isNull():
+            self._preview_cache[cache_key] = pm
+        return pm
 
     def _highlights_for_pair(self, pair: MmpPair) -> tuple[list[int], list[int]]:
         key = (pair.oid_a, pair.oid_b)

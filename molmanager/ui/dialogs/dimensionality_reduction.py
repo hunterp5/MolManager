@@ -55,9 +55,11 @@ from ...plot_color import (
     PLOT_COLORSCALE_CHOICES,
     color_values_are_numeric,
     normalize_color_column,
+    normalize_size_column,
     resolve_plot_colorscale,
 )
 from ..plot_color_range_controls import PlotColorRangeControls
+from ..plot_size_controls import PlotSizeRangeControls
 from ..dimred_plot import build_dimension_reduction_figure, dimension_reduction_result_with_color
 from ..plotly_interactive_view import PlotlyInteractiveView
 from ..qt_widget_utils import apply_monospace_to_text_edit, make_window_minimizable
@@ -186,6 +188,22 @@ class DimensionReductionPanel(QWidget):
         color_row.addWidget(self.color_range)
         opts.addLayout(color_row)
 
+        size_row = QHBoxLayout()
+        size_row.setSpacing(6)
+        self._size_by_label = QLabel("Size by:")
+        size_row.addWidget(self._size_by_label)
+        self.size_combo = QComboBox()
+        self.size_combo.setMinimumWidth(120)
+        self.size_combo.setToolTip(
+            "Size points by a table column (numeric or categorical)."
+        )
+        self.size_combo.currentIndexChanged.connect(self._on_size_column_changed)
+        size_row.addWidget(self.size_combo, 1)
+        self.size_range = PlotSizeRangeControls()
+        self.size_range.connect_changed(self._on_size_range_changed)
+        size_row.addWidget(self.size_range)
+        opts.addLayout(size_row)
+
         run_row = QHBoxLayout()
         run_row.setContentsMargins(0, 10, 0, 6)
         run_row.addStretch()
@@ -249,6 +267,7 @@ class DimensionReductionPanel(QWidget):
         self._reload_columns()
         self._on_fp_selection_changed()
         self._update_spectrum_controls()
+        self._update_size_controls()
         self._sync_footer_chrome()
         self.setMinimumWidth(self.embedded_minimum_width())
 
@@ -356,11 +375,15 @@ class DimensionReductionPanel(QWidget):
 
     def _reload_columns(self) -> None:
         prev_color = self.color_combo.currentText()
+        prev_size = self.size_combo.currentText()
         self.column_list.clear()
         self.color_combo.blockSignals(True)
+        self.size_combo.blockSignals(True)
         try:
             self.color_combo.clear()
             self.color_combo.addItem("(none)")
+            self.size_combo.clear()
+            self.size_combo.addItem("(none)")
             if self.parent_app is None:
                 return
             self._refresh_structure_sources()
@@ -375,14 +398,19 @@ class DimensionReductionPanel(QWidget):
             for col in df.columns:
                 if col != "ID_HIDDEN":
                     self.color_combo.addItem(col)
+                    self.size_combo.addItem(col)
             idx = self.color_combo.findText(prev_color)
             if idx >= 0:
                 self.color_combo.setCurrentIndex(idx)
+            sidx = self.size_combo.findText(prev_size)
+            if sidx >= 0:
+                self.size_combo.setCurrentIndex(sidx)
         finally:
             self.color_combo.blockSignals(False)
+            self.size_combo.blockSignals(False)
 
-    def _color_values_for_oids(self, oids: list[int], color_col: str | None) -> list[Any] | None:
-        if not color_col or color_col == "(none)" or self.parent_app is None:
+    def _column_values_for_oids(self, oids: list[int], column: str | None) -> list[Any] | None:
+        if not column or column == "(none)" or self.parent_app is None:
             return None
         model = self.parent_app._table_model
         out: list[Any] = []
@@ -391,15 +419,24 @@ class DimensionReductionPanel(QWidget):
             if row < 0:
                 out.append(None)
                 continue
-            raw = model.value_for_header(row, color_col)
+            raw = model.value_for_header(row, column)
             out.append(raw if (raw or "").strip() else None)
         return out
+
+    def _color_values_for_oids(self, oids: list[int], color_col: str | None) -> list[Any] | None:
+        return self._column_values_for_oids(oids, color_col)
+
+    def _size_values_for_oids(self, oids: list[int], size_col: str | None) -> list[Any] | None:
+        return self._column_values_for_oids(oids, size_col)
 
     def _current_colorscale(self) -> str:
         return resolve_plot_colorscale(self.colorscale_combo.currentText())
 
     def _current_color_bounds(self) -> tuple[float | None, float | None]:
         return self.color_range.parse_bounds()
+
+    def _current_size_bounds(self) -> tuple[float, float]:
+        return self.size_range.parse_bounds()
 
     def _update_spectrum_controls(self) -> None:
         enabled = self.color_combo.currentText() != "(none)"
@@ -411,8 +448,18 @@ class DimensionReductionPanel(QWidget):
             vals = self._color_values_for_oids(self._last_result.oids, color_col)
             numeric = color_values_are_numeric(vals)
         self.color_range.set_enabled(enabled and numeric)
+        self._update_size_controls()
+
+    def _update_size_controls(self) -> None:
+        size_on = self.size_combo.currentText() != "(none)"
+        self.size_range.set_enabled(size_on)
 
     def _on_color_range_changed(self) -> None:
+        if self._last_result is None or self._job_running:
+            return
+        self._refresh_plot_colors()
+
+    def _on_size_range_changed(self) -> None:
         if self._last_result is None or self._job_running:
             return
         self._refresh_plot_colors()
@@ -423,10 +470,25 @@ class DimensionReductionPanel(QWidget):
             return
         self._refresh_plot_colors()
 
+    def _on_size_column_changed(self, _index: int = 0) -> None:
+        self._update_size_controls()
+        if self._last_result is None or self._job_running:
+            return
+        self._refresh_plot_colors()
+
     def _on_color_range_or_scale_changed(self, *_args) -> None:
         if self._last_result is None or self._job_running:
             return
         self._refresh_plot_colors()
+
+    def _size_encoding_for_oids(self, oids: list[int]) -> tuple[list[Any] | None, float, float]:
+        size_col = self.size_combo.currentText()
+        if size_col == "(none)":
+            size_col = None
+        size_vals = self._size_values_for_oids(oids, size_col)
+        size_vals, _ = normalize_size_column(size_vals, size_col)
+        size_min_px, size_max_px = self._current_size_bounds()
+        return size_vals, size_min_px, size_max_px
 
     def _refresh_plot_colors(self) -> None:
         if self._last_result is None or self._plot_view is None or self._job_running:
@@ -443,11 +505,15 @@ class DimensionReductionPanel(QWidget):
         )
         try:
             color_min, color_max = self._current_color_bounds()
+            size_vals, size_min_px, size_max_px = self._size_encoding_for_oids(updated.oids)
             fig = build_dimension_reduction_figure(
                 updated,
                 colorscale=self._current_colorscale(),
                 color_min=color_min,
                 color_max=color_max,
+                size_values=size_vals,
+                size_min_px=size_min_px,
+                size_max_px=size_max_px,
             )
             self._plot_view.push_figure(fig, list(updated.oids))
         except Exception as exc:
@@ -635,11 +701,15 @@ class DimensionReductionPanel(QWidget):
         )
         try:
             color_min, color_max = self._current_color_bounds()
+            size_vals, size_min_px, size_max_px = self._size_encoding_for_oids(plotted.oids)
             fig = build_dimension_reduction_figure(
                 plotted,
                 colorscale=self._current_colorscale(),
                 color_min=color_min,
                 color_max=color_max,
+                size_values=size_vals,
+                size_min_px=size_min_px,
+                size_max_px=size_max_px,
             )
             self._plot_view.push_figure(fig, list(plotted.oids))
             self._update_spectrum_controls()

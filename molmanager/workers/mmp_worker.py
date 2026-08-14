@@ -72,7 +72,10 @@ class MmpAnalysisWorker(QRunnable):
         max_cut_bonds: int = 20,
         max_variable_heavy_atoms: int | None = 13,
         min_activity_difference: float = 0.0,
+        max_activity_difference: float = 0.0,
         write_to_table: bool = False,
+        purpose: str = "mmp",
+        x_mode: str = "heavy_atoms",
         signals: WorkerSignals,
         cancel_event: threading.Event | None = None,
         progress_state=None,
@@ -84,7 +87,10 @@ class MmpAnalysisWorker(QRunnable):
         self.max_cut_bonds = max_cut_bonds
         self.max_variable_heavy_atoms = max_variable_heavy_atoms
         self.min_activity_difference = float(min_activity_difference)
+        self.max_activity_difference = float(max_activity_difference)
         self.write_to_table = bool(write_to_table)
+        self.purpose = (purpose or "mmp").strip().lower()
+        self.x_mode = x_mode or "heavy_atoms"
         self.signals = signals
         self.cancel_event = cancel_event
         self.progress_state = progress_state
@@ -98,8 +104,12 @@ class MmpAnalysisWorker(QRunnable):
 
         tot = max(len(self.records), 1)
         throttle = [0, 0.0]
+        progress_label = {
+            "activity_cliff": "Activity Cliffs",
+            "mmp_neighborhood": "Pair Network",
+        }.get(self.purpose, "MMP")
         report_tool_progress(
-            message="MMP",
+            message=progress_label,
             done=0,
             total=tot,
             progress_state=self.progress_state,
@@ -113,7 +123,7 @@ class MmpAnalysisWorker(QRunnable):
             mol_rows = [(int(oid), mol) for oid, mol, _act in self.records if mol is not None]
             order, rep, oids_map = group_rows_by_structure(mol_rows)
             if not order:
-                self.signals.mmp_finished.emit([], self.activity_column, self.write_to_table)
+                self._emit_finished([])
                 return
 
             frag_by_key: dict[str, list[CoreSideKey]] = {}
@@ -162,7 +172,7 @@ class MmpAnalysisWorker(QRunnable):
                         if (now - last_pulse) >= 0.12:
                             last_pulse = now
                             report_tool_progress(
-                                message="MMP",
+                                message=progress_label,
                                 done=min(done_cum, tot),
                                 total=tot,
                                 progress_state=self.progress_state,
@@ -190,7 +200,7 @@ class MmpAnalysisWorker(QRunnable):
                         frag_by_key[key] = []
                     done_cum += len(oids_map.get(key, ()))
                     report_tool_progress(
-                        message="MMP",
+                        message=progress_label,
                         done=min(done_cum, tot),
                         total=tot,
                         progress_state=self.progress_state,
@@ -229,11 +239,12 @@ class MmpAnalysisWorker(QRunnable):
                 frag_records,
                 max_variable_heavy_atoms=self.max_variable_heavy_atoms,
                 min_activity_difference=self.min_activity_difference,
+                max_activity_difference=self.max_activity_difference,
                 cancel_check=_cancelled,
             )
 
             report_tool_progress(
-                message="MMP",
+                message=progress_label,
                 done=tot,
                 total=tot,
                 progress_state=self.progress_state,
@@ -243,10 +254,26 @@ class MmpAnalysisWorker(QRunnable):
             )
             if ev is not None and ev.is_set():
                 return
-            self.signals.mmp_finished.emit(
-                pairs,
-                self.activity_column,
-                self.write_to_table,
-            )
+            self._emit_finished(pairs)
         except Exception as exc:
-            self.signals.mmp_failed.emit(str(exc) or "MMP analysis failed.")
+            self._emit_failed(str(exc) or f"{progress_label} analysis failed.")
+
+    def _emit_finished(self, pairs: list[MmpPair]) -> None:
+        if self.purpose == "activity_cliff":
+            self.signals.activity_cliff_finished.emit(
+                pairs, self.activity_column, self.x_mode
+            )
+        elif self.purpose == "mmp_neighborhood":
+            self.signals.mmp_neighborhood_finished.emit(pairs, self.activity_column)
+        else:
+            self.signals.mmp_finished.emit(
+                pairs, self.activity_column, self.write_to_table
+            )
+
+    def _emit_failed(self, message: str) -> None:
+        if self.purpose == "activity_cliff":
+            self.signals.activity_cliff_failed.emit(message)
+        elif self.purpose == "mmp_neighborhood":
+            self.signals.mmp_neighborhood_failed.emit(message)
+        else:
+            self.signals.mmp_failed.emit(message)

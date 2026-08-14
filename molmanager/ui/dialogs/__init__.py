@@ -45,6 +45,8 @@ from .mol_tools import (
     CalculateRmsdDialog,
 )
 from .mmp import MmpDialog, MmpDialogParams
+from .activity_cliff import ActivityCliffDialog, ActivityCliffDialogParams
+from .mmp_neighborhood import MmpNeighborhoodDialog, MmpNeighborhoodDialogParams
 from .random_molecule import RandomMoleculeDialog, RandomMoleculeDialogParams
 from .random_number import RandomNumberDialog, RandomNumberDialogParams
 from .permeability import PermeabilityPredictorDialog
@@ -60,6 +62,10 @@ from .render_2d import Render2DStructureDialog
 from .scope import selection_scope_checked
 
 __all__ = [
+    "ActivityCliffDialog",
+    "ActivityCliffDialogParams",
+    "MmpNeighborhoodDialog",
+    "MmpNeighborhoodDialogParams",
     "BulkSimilarityDialog",
     "CalculatorDialog",
     "ClusterDialog",

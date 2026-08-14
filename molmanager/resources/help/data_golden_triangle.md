@@ -19,6 +19,7 @@ Requires the property/structure inputs the plot expects; scope via **Selected Ro
 - **Selected Rows Only**.
 - **Structure from**.
 - **Color by**, **Spectrum**, **Min** / **Max**.
+- **Size by**, marker **Min size** / **Max size** (pixels).
 - **Summary**.
 - **Select in triangle**.
 - **Add to Main Window**, **Send to New Window**, **Close Plot**, **Plot Options**, **Clear Selection**.

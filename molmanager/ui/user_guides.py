@@ -136,7 +136,24 @@ GUIDE_SECTIONS: tuple[GuideSection, ...] = (
         "8 — Design and modeling",
         (
             _e("tools_rgroup", "R-Group Decomposition", "R-Group Decomposition", "Match a core and extract R-group columns."),
-            _e("tools_mmp", "MMP", "MMP", "Matched molecular pair analysis."),
+            _e(
+                "tools_mmp",
+                "MMP Transform Ledger",
+                "Transform Ledger",
+                "Matched molecular pair transform ledger.",
+            ),
+            _e(
+                "tools_activity_cliff",
+                "MMP Activity Cliffs",
+                "Activity Cliffs",
+                "Cliff scatter from Transform Ledger pairs.",
+            ),
+            _e(
+                "tools_mmp_neighborhood",
+                "MMP Pair Network",
+                "Pair Network",
+                "Neighborhood graph from Transform Ledger pairs.",
+            ),
             _e("tools_reaction_enum", "Reaction Enumeration", "Reaction Enumeration", "Enumerate products from reaction SMARTS."),
             _e("data_qsar", "QSAR", "QSAR", "Train and apply QSAR models on table features."),
             _e("data_mpo", "MPO Scoring", "MPO Scoring", "Multi-parameter desirability scores."),

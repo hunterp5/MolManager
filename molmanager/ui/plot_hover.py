@@ -149,6 +149,7 @@ def structure_png_data_url_for_oid(
     return f"data:image/png;base64,{b64}"
 
 
+HOVER_MULTI_MAX_ITEMS = 10
 HOVER_MULTI_THUMB_WIDTH = 96
 HOVER_MULTI_THUMB_HEIGHT = 80
 
@@ -199,8 +200,13 @@ def hover_cards_payload(
     columns: list[str],
     *,
     show_structure: bool,
+    max_items: int = HOVER_MULTI_MAX_ITEMS,
 ) -> dict[str, Any]:
-    """Hover overlay payload for one or many selected/hovered points."""
+    """Hover overlay payload for one or many selected/hovered points.
+
+    Caps rendered cards at ``max_items`` (default 10) and reports overflow so the
+    UI can show “… and N more” without slowing large selections.
+    """
     clean: list[int] = []
     seen: set[int] = set()
     for raw in oids:
@@ -228,6 +234,9 @@ def hover_cards_payload(
             "html_lines": one["html_lines"],
             "img": one["img"],
         }
+    limit = max(1, int(max_items))
+    shown = clean[:limit]
+    overflow = max(0, total - len(shown))
     compact = total > 1
     tw = HOVER_MULTI_THUMB_WIDTH if compact else HOVER_THUMB_WIDTH
     th = HOVER_MULTI_THUMB_HEIGHT if compact else HOVER_THUMB_HEIGHT
@@ -240,11 +249,14 @@ def hover_cards_payload(
             thumb_width=tw,
             thumb_height=th,
         )
-        for oid in clean
+        for oid in shown
     ]
+    title = f"{total} selected"
+    if overflow:
+        title = f"{total} selected · showing {len(shown)}"
     return {
         "count": total,
         "items": items,
-        "title": f"{total} selected",
-        "overflow": 0,
+        "title": title,
+        "overflow": overflow,
     }

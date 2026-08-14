@@ -22,6 +22,7 @@ Feature columns and/or fingerprints from a structure source; optional **Selected
 - **Selected Rows Only**.
 - **Standardize features** - zero mean, unit variance.
 - **Color by**, **Spectrum**, color **Min** / **Max**.
+- **Size by**, marker **Min size** / **Max size** (pixels).
 - **n_neighbors**, **min_dist**.
 - **Max points**, **Random seed**.
 - **Run UMAP**.

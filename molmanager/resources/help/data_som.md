@@ -22,6 +22,7 @@ Feature columns and/or fingerprints from a structure source; optional **Selected
 - **Selected Rows Only**.
 - **Standardize features** - zero mean, unit variance.
 - **Color by**, **Spectrum**, color **Min** / **Max**.
+- **Size by**, marker **Min size** / **Max size** (pixels).
 - **Map width**, **Map height**, **Epochs**.
 - **Learning rate**, **Sigma**, **Point jitter**.
 - **Max points**, **Random seed**.

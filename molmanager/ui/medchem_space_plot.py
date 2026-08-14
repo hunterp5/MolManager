@@ -59,18 +59,26 @@ def _scatter_marker(
     colorscale: str = DEFAULT_PLOT_COLORSCALE,
     color_min: float | None = None,
     color_max: float | None = None,
+    size_values: list[Any] | None = None,
+    size_min_px: float | None = None,
+    size_max_px: float | None = None,
 ) -> dict:
     from ..plot_color import scatter_marker_from_column_values
 
-    return scatter_marker_from_column_values(
-        color_values,
-        color_label=color_label,
-        colorscale=colorscale,
-        color_min=color_min,
-        color_max=color_max,
-        point_size=7,
-        opacity=0.88,
-    )
+    kwargs: dict[str, Any] = {
+        "color_label": color_label,
+        "colorscale": colorscale,
+        "color_min": color_min,
+        "color_max": color_max,
+        "size_values": size_values,
+        "point_size": 7,
+        "opacity": 0.88,
+    }
+    if size_min_px is not None:
+        kwargs["size_min_px"] = size_min_px
+    if size_max_px is not None:
+        kwargs["size_max_px"] = size_max_px
+    return scatter_marker_from_column_values(color_values, **kwargs)
 
 
 def _compound_scatter(
@@ -101,6 +109,9 @@ def build_boiled_egg_figure(
     colorscale: str = DEFAULT_PLOT_COLORSCALE,
     color_min: float | None = None,
     color_max: float | None = None,
+    size_values: list[Any] | None = None,
+    size_min_px: float | None = None,
+    size_max_px: float | None = None,
 ) -> go.Figure:
     """TPSA vs LogP with GIA (white) and BBB (yellow) regions."""
     pts = dataset.points
@@ -110,6 +121,9 @@ def build_boiled_egg_figure(
         colorscale=colorscale,
         color_min=color_min,
         color_max=color_max,
+        size_values=size_values,
+        size_min_px=size_min_px,
+        size_max_px=size_max_px,
     )
     fig = go.Figure(
         data=[
@@ -169,6 +183,9 @@ def build_golden_triangle_figure(
     colorscale: str = DEFAULT_PLOT_COLORSCALE,
     color_min: float | None = None,
     color_max: float | None = None,
+    size_values: list[Any] | None = None,
+    size_min_px: float | None = None,
+    size_max_px: float | None = None,
 ) -> go.Figure:
     """MW vs LogP with the golden-triangle drug-likeness region."""
     pts = dataset.points
@@ -178,6 +195,9 @@ def build_golden_triangle_figure(
         colorscale=colorscale,
         color_min=color_min,
         color_max=color_max,
+        size_values=size_values,
+        size_min_px=size_min_px,
+        size_max_px=size_max_px,
     )
     fig = go.Figure(
         data=[

@@ -91,12 +91,12 @@ def test_hover_cards_payload_multi(qapp):  # noqa: ARG001
     assert len(multi["items"]) == 3
     assert all(it["img"].startswith("data:image/png;base64,") for it in multi["items"])
 
-    many_oids = list(range(8))
-    for i in range(3, 8):
+    many_oids = list(range(12))
+    for i in range(3, 12):
         w._table_model.append_row(i, {"SMILES": "C", "Name": f"n{i}"})
         w.mols[i] = Chem.MolFromSmiles("C")
-    w.next_oid = 8
+    w.next_oid = 12
     many = hover_cards_payload(w, many_oids, ["Name"], show_structure=False)
-    assert many["count"] == 8
-    assert len(many["items"]) == 8
-    assert many["overflow"] == 0
+    assert many["count"] == 12
+    assert len(many["items"]) == 10
+    assert many["overflow"] == 2
