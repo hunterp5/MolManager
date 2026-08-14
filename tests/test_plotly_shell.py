@@ -30,6 +30,8 @@ def test_interactive_plot_shell_includes_bridge_handlers():
     assert "molmanagerApply" in html
     assert "molmanagerSetSelection" in html
     assert "applySelectionIndices" in html
+    assert "primarySelectionTraceInfo" in html
+    assert "molmanager_selection_overlay" in html
     assert "pendingSelectionJson" in html
     assert "heatmapCellClicked" in html
     assert "radarTraceClicked" in html
@@ -39,6 +41,7 @@ def test_interactive_plot_shell_includes_bridge_handlers():
     assert "SELECTION_OVERLAY_MAX" in html
     assert "idxs.length > SELECTION_OVERLAY_MAX" in html
     assert 'typeof payloadJson === "string"' in html
+    assert "viewNavBusy || middlePan" in html
 
 
 def test_interactive_plot_shell_bakes_overlay_max_from_config(monkeypatch):

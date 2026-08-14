@@ -34,6 +34,24 @@ from ..plot_color import (
 from .plotly_html import finalize_plot_legend
 
 
+def _equal_aspect_ranges(
+    xs: list[float],
+    ys: list[float],
+    *,
+    pad_frac: float = 0.08,
+) -> tuple[list[float], list[float]]:
+    """Square data window so pan/zoom need not use Plotly ``scaleanchor`` (expensive on SVG/GL)."""
+    if not xs or not ys:
+        return [-1.0, 1.0], [-1.0, 1.0]
+    xmin, xmax = min(xs), max(xs)
+    ymin, ymax = min(ys), max(ys)
+    cx = 0.5 * (xmin + xmax)
+    cy = 0.5 * (ymin + ymax)
+    half = 0.5 * max(xmax - xmin, ymax - ymin, 1e-9)
+    half *= 1.0 + float(pad_frac)
+    return [cx - half, cx + half], [cy - half, cy + half]
+
+
 def build_mmp_neighborhood_figure(
     graph: MmpNetworkGraph,
     *,
@@ -48,8 +66,12 @@ def build_mmp_neighborhood_figure(
     size_min_px: float = DEFAULT_MARKER_SIZE_MIN_PX,
     size_max_px: float = DEFAULT_MARKER_SIZE_MAX_PX,
 ) -> go.Figure:
-    """Node+edge scatter: edge color by signed Δ; nodes color/size by options or defaults."""
-    traces: list[go.Scatter] = []
+    """Node+edge scatter: edge color by signed Δ; nodes color/size by options or defaults.
+
+    Uses ``scattergl`` for edges and nodes so pan/zoom/selection stay responsive on
+    dense MMP networks (SVG path redraw was the main bottleneck).
+    """
+    traces: list[go.Scattergl] = []
 
     improve_x: list[float | None] = []
     improve_y: list[float | None] = []
@@ -71,10 +93,10 @@ def build_mmp_neighborhood_figure(
             flat_x.extend([xa, xb, None])
             flat_y.extend([ya, yb, None])
 
-    def _edge_trace(xs, ys, *, name: str, color: str) -> go.Scatter | None:
+    def _edge_trace(xs, ys, *, name: str, color: str) -> go.Scattergl | None:
         if not xs:
             return None
-        return go.Scatter(
+        return go.Scattergl(
             x=xs,
             y=ys,
             mode="lines",
@@ -99,8 +121,8 @@ def build_mmp_neighborhood_figure(
     custom: list[list[int]] = []
     for oid in graph.node_oids:
         x, y = graph.positions.get(oid, (0.0, 0.0))
-        node_x.append(x)
-        node_y.append(y)
+        node_x.append(float(x))
+        node_y.append(float(y))
         node_color.append(float(graph.activities.get(oid, 0.0)))
         deg = int(graph.degrees.get(oid, 1))
         degree_sizes.append(10.0 + min(18.0, 3.0 * deg))
@@ -153,7 +175,7 @@ def build_mmp_neighborhood_figure(
 
     node_trace_index = len(traces)
     traces.append(
-        go.Scatter(
+        go.Scattergl(
             x=node_x,
             y=node_y,
             mode="markers",
@@ -167,23 +189,31 @@ def build_mmp_neighborhood_figure(
         )
     )
 
+    x_range, y_range = _equal_aspect_ranges(node_x, node_y)
+
     fig = go.Figure(data=traces)
     fig.update_layout(
         title="MMP Pair Network",
         template="plotly_white",
         dragmode="lasso",
         clickmode="event+select",
+        uirevision="mmp-pair-network",
         xaxis={
             "visible": False,
-            "scaleanchor": "y",
-            "scaleratio": 1,
+            "range": x_range,
             "constrain": "domain",
         },
-        yaxis={"visible": False, "constrain": "domain"},
+        yaxis={
+            "visible": False,
+            "range": y_range,
+            "constrain": "domain",
+        },
         margin=dict(l=24, r=24, t=48, b=24),
         legend={"orientation": "h", "yanchor": "bottom", "y": 1.02},
         meta={
             "molmanager_selection_traces": [node_trace_index],
+            # selectedpoints on scattergl; SVG overlay is wrong/expensive with edge traces first.
+            "molmanager_selection_overlay": False,
             "molmanager_hover_persist": False,
         },
     )

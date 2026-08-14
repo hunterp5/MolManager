@@ -109,4 +109,13 @@ def test_build_mmp_network_from_pairs():
     assert set(graph.positions) == set(graph.node_oids)
     fig = build_mmp_neighborhood_figure(graph, activity_column="pIC50")
     assert fig.data
-    assert "molmanager_selection_traces" in (fig.layout.meta or {})
+    meta = fig.layout.meta or {}
+    assert "molmanager_selection_traces" in meta
+    assert meta.get("molmanager_selection_overlay") is False
+    assert all(getattr(tr, "type", None) == "scattergl" for tr in fig.data)
+    assert fig.layout.xaxis.scaleanchor is None
+    assert fig.layout.xaxis.range is not None
+    assert fig.layout.yaxis.range is not None
+    assert abs(fig.layout.xaxis.range[1] - fig.layout.xaxis.range[0] - (
+        fig.layout.yaxis.range[1] - fig.layout.yaxis.range[0]
+    )) < 1e-9

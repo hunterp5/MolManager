@@ -190,11 +190,27 @@ def interactive_plot_shell_html() -> str:
       }}
 
       function setViewNavBusy(on) {{
+        var wasBusy = viewNavBusy;
         viewNavBusy = !!on;
         try {{
           if (viewNavBusy && hoverLayer) hoverLayer.style.visibility = "hidden";
           if (!viewNavBusy && hoverLayer) hoverLayer.style.visibility = "";
         }} catch (_vb) {{}}
+        // Apply deferred selection after pan/zoom so restyle does not fight relayout.
+        if (wasBusy && !viewNavBusy) {{
+          try {{
+            if (pendingSelectionJson !== null && !applyInFlight) {{
+              if (selectionApplyRaf != null) {{
+                try {{ cancelAnimationFrame(selectionApplyRaf); }} catch (_caf) {{}}
+                selectionApplyRaf = null;
+              }}
+              selectionApplyRaf = requestAnimationFrame(function() {{
+                selectionApplyRaf = null;
+                if (!viewNavBusy && !middlePan) flushPendingSelection();
+              }});
+            }}
+          }} catch (_flushNav) {{}}
+        }}
       }}
 
       function axisValueAtPixel(axis, pixelAlongAxis) {{
@@ -902,14 +918,23 @@ def interactive_plot_shell_html() -> str:
           pinnedHoverIndices = [];
         }}
       }};
+      function primarySelectionTraceInfo() {{
+        var selTraces = selectionTracesFromLayout();
+        var ti = (selTraces && selTraces.length) ? Number(selTraces[0]) : 0;
+        if (!Number.isFinite(ti) || ti < 0 || !gd.data || ti >= gd.data.length) ti = 0;
+        return {{ ti: ti, main: (gd.data && gd.data[ti]) || null, selTraces: selTraces }};
+      }}
       function applySelectionIndices(indicesJson) {{
         try {{
           // Clearing Plotly lasso shapes can re-fire plotly_selected; ignore bridge while we paint.
           beginSuppressPlotBridge(500);
           var idxs = parseSelectionIndices(indicesJson);
           if (!gd || !gd.data || !gd.data.length) return;
-          var selTraces = selectionTracesFromLayout();
-          var main = gd.data[0];
+          var resolved = primarySelectionTraceInfo();
+          var selTraces = resolved.selTraces;
+          var main = resolved.main;
+          var selTi = resolved.ti;
+          if (!main) return;
           if (main.type === "scatter3d") {{
             var overlay3dIdx = findSelectedOverlayTraceIndex();
             if (!idxs.length || idxs.length > SELECTION_OVERLAY_MAX) {{
@@ -943,7 +968,13 @@ def interactive_plot_shell_html() -> str:
           }}
           if (main.type === "scatter" || main.type === "scattergl") {{
             var overlayIdx = findSelectedOverlayTraceIndex();
-            var useOverlay = main.type === "scatter"
+            // Overlay must sample the *selection* trace (nodes), not data[0] (often edges).
+            // Skip SVG overlay for WebGL, multi-trace networks, or explicit meta opt-out.
+            var metaSel = (gd.layout && gd.layout.meta) || {{}};
+            var overlayAllowed = metaSel.molmanager_selection_overlay !== false;
+            var useOverlay = overlayAllowed
+              && main.type === "scatter"
+              && selTi === 0
               && idxs.length > 0
               && idxs.length <= SELECTION_OVERLAY_MAX;
             if (useOverlay) {{
@@ -1026,17 +1057,18 @@ def interactive_plot_shell_html() -> str:
       }}
       window.molmanagerSetSelection = function(indicesJson) {{
         pendingSelectionJson = indicesJson;
-        if (applyInFlight) return;
+        // Coalesce while Plotly.react / pan / zoom is in flight.
+        if (applyInFlight || viewNavBusy || middlePan) return;
         if (selectionApplyRaf != null) return;
         try {{
           selectionApplyRaf = requestAnimationFrame(function() {{
             selectionApplyRaf = null;
-            if (applyInFlight) return;
+            if (applyInFlight || viewNavBusy || middlePan) return;
             flushPendingSelection();
           }});
         }} catch (_rafSel) {{
           selectionApplyRaf = null;
-          flushPendingSelection();
+          if (!applyInFlight && !viewNavBusy && !middlePan) flushPendingSelection();
         }}
       }};
       window.molmanagerApply = function(payloadJson) {{
