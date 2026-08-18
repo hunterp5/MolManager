@@ -42,6 +42,13 @@ def test_interactive_plot_shell_includes_bridge_handlers():
     assert "idxs.length > SELECTION_OVERLAY_MAX" in html
     assert 'typeof payloadJson === "string"' in html
     assert "viewNavBusy || middlePan" in html
+    assert "captureAxisView" in html
+    assert "afterSelectionDraw" in html
+    assert "savedViewOnPointerDown" in html
+    assert "xaxis.autorange" in html
+    assert "scene.camera" in html
+    assert "viewForSelectionRestore" in html
+    assert "forgetSavedAxisView" in html
 
 
 def test_interactive_plot_shell_bakes_overlay_max_from_config(monkeypatch):

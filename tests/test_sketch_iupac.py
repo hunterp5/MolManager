@@ -440,6 +440,66 @@ def test_cleanup_and_validation_status(qapp) -> None:  # noqa: ARG001
     dlg.close()
 
 
+def test_cleanup_selected_does_not_move_unselected(qapp) -> None:  # noqa: ARG001
+    from molmanager.ui.sketcher.widget import SketchWidget
+
+    w = SketchWidget()
+    w.resize(700, 500)
+    w.nodes = [
+        {"id": 0, "pos": QPoint(80, 120), "element": "C"},
+        {"id": 1, "pos": QPoint(92, 118), "element": "C"},
+        {"id": 2, "pos": QPoint(160, 140), "element": "O"},
+        {"id": 10, "pos": QPoint(420, 280), "element": "C"},
+        {"id": 11, "pos": QPoint(480, 280), "element": "C"},
+        {"id": 12, "pos": QPoint(540, 280), "element": "C"},
+    ]
+    w.bonds = [
+        _bond_make(0, 1, 1, 0),
+        _bond_make(1, 2, 1, 0),
+        _bond_make(10, 11, 1, 0),
+        _bond_make(11, 12, 1, 0),
+    ]
+    w.next_id = 13
+    w.select_mode = True
+    w.selected_nodes = [0, 1, 2]
+    frozen = {n["id"]: (n["pos"].x(), n["pos"].y()) for n in w.nodes if n["id"] >= 10}
+    old_cx = sum(n["pos"].x() for n in w.nodes if n["id"] < 10) / 3
+    old_cy = sum(n["pos"].y() for n in w.nodes if n["id"] < 10) / 3
+    assert w.cleanup_layout_2d_selected()
+    for n in w.nodes:
+        if n["id"] >= 10:
+            assert (n["pos"].x(), n["pos"].y()) == frozen[n["id"]]
+    new_cx = sum(n["pos"].x() for n in w.nodes if n["id"] < 10) / 3
+    new_cy = sum(n["pos"].y() for n in w.nodes if n["id"] < 10) / 3
+    assert abs(new_cx - old_cx) < 3
+    assert abs(new_cy - old_cy) < 3
+    by = {n["id"]: n["pos"] for n in w.nodes}
+    c_o = math.hypot(by[0].x() - by[1].x(), by[0].y() - by[1].y())
+    assert c_o > 30
+
+
+def test_cleanup_selected_requires_two_atoms(qapp) -> None:  # noqa: ARG001
+    from molmanager.ui.sketcher.widget import SketchWidget
+
+    w = SketchWidget()
+    w.nodes = [
+        {"id": 0, "pos": QPoint(80, 120), "element": "C"},
+        {"id": 1, "pos": QPoint(140, 120), "element": "C"},
+    ]
+    w.bonds = [_bond_make(0, 1, 1, 0)]
+    w.select_mode = True
+    w.selected_nodes = [0]
+    assert w.cleanup_layout_2d_selected() is False
+    from PyQt5.QtWidgets import QMenu
+
+    menu = QMenu()
+    w._add_cleanup_selected_action(menu)
+    assert menu.actions() == []
+    w.selected_nodes = [0, 1]
+    w._add_cleanup_selected_action(menu)
+    assert any(a.text() == "Clean Up Selected" for a in menu.actions())
+
+
 def test_iupac_orientation_heteroatom_right() -> None:
     from molmanager.ui.sketcher.iupac_orient import apply_iupac_orientation
 

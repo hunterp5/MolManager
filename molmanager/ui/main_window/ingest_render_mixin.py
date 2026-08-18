@@ -33,7 +33,13 @@ from PyQt5.QtWidgets import (
 from ...config import load_config
 from ...confs_codec import demote_v1_cell_to_sidecar, mol_has_3d_coordinates, pack_confs_cell
 from ...ingest_text import is_ingest_cell_batch
-from ...display_constants import STRUCTURE_ROW_DEFAULT_HEIGHT
+from ...display_constants import (
+    STRUCTURE_COLUMN_HORIZONTAL_PADDING,
+    structure_column_minimum_width,
+    structure_depiict_height,
+    structure_depiict_width,
+    structure_row_default_height,
+)
 from ...structure_render_store import StructureRenderStore
 from ..structure_pixmap import pixmap_from_structure_render_png
 from ..strings import (
@@ -45,12 +51,7 @@ from ...storage import SqliteTableStore
 from ...workers import (
     SqliteRebuildWorker,
 )
-from ..compound_table_model import (
-    CompoundTableModel,
-    STRUCTURE_COLUMN_HORIZONTAL_PADDING,
-    STRUCTURE_DEPICT_HEIGHT,
-    STRUCTURE_DEPICT_WIDTH,
-)
+from ..compound_table_model import CompoundTableModel
 
 from rdkit import Chem
 
@@ -615,14 +616,65 @@ class IngestRenderMixin:
                 return int(src.row())
         return int(view_row)
 
+    def apply_structure_table_layout(self) -> None:
+        """Sync Structure column row/column chrome to the current depiction size."""
+        if not hasattr(self, "table") or self.table is None:
+            return
+        row_h = structure_row_default_height()
+        col = CompoundTableModel.STRUCTURE_COL
+        vh = self.table.verticalHeader()
+        if vh is not None:
+            vh.setDefaultSectionSize(row_h)
+        zoomed = bool(getattr(self, "zoomed_ids", None))
+        min_col = structure_column_minimum_width(zoomed=zoomed)
+        self.table.set_structure_column_minimum_width(min_col)
+        if int(self.table.columnWidth(col)) < min_col:
+            self.table.setColumnWidth(col, min_col)
+        if hasattr(self, "_table_model") and self._table_model is not None:
+            self._table_model.notify_structure_column_changed()
+        self.table.viewport().update()
+
+    def apply_structure_depiict_size(self, width: int, height: int, *, persist: bool = True) -> None:
+        """Apply depiction size from Settings and optionally re-render the Structure column."""
+        from ...display_constants import set_structure_depiict_size
+
+        set_structure_depiict_size(width, height, persist=persist)
+        self.apply_structure_table_layout()
+        if persist:
+            self.rerender_structure_column_for_new_size()
+
+    def rerender_structure_column_for_new_size(self) -> None:
+        """Re-draw Structure cells after depiction size changed in Settings."""
+        if not hasattr(self, "_table_model") or self._table_model.rowCount() <= 0:
+            if hasattr(self, "_table_model") and self._table_model is not None:
+                self._table_model.notify_structure_column_changed()
+            return
+        if getattr(self, "_render2d_batch_active", False) or self.process_queue.has_running_job():
+            if hasattr(self, "status_label"):
+                self.status_label.setText(
+                    "Structure size saved. Re-draw structures when the current job finishes."
+                )
+            return
+        self.zoomed_ids.clear()
+        w, h = structure_depiict_width(), structure_depiict_height()
+        renders, row_by_oid = self._build_render2d_tasks_in_table_order("Structure", w, h, None)
+        self._table_model.clear_structure_png_store()
+        if not renders:
+            self._table_model.notify_structure_column_changed()
+            return
+        self._start_render_2d_batch(
+            renders,
+            row_by_oid,
+            "Structure",
+            column_pixmap_mode=False,
+            queue_title_prefix="structure resize ",
+        )
+
     def _sync_structure_column_width_for_zoom_state(self) -> None:
         """Set Structure column width from zoom state (O(1), no full-table scan)."""
-        pad = STRUCTURE_COLUMN_HORIZONTAL_PADDING
-        need = (
-            STRUCTURE_DEPICT_WIDTH * 2 + pad
-            if getattr(self, "zoomed_ids", None)
-            else STRUCTURE_DEPICT_WIDTH + pad
-        )
+        zoomed = bool(getattr(self, "zoomed_ids", None))
+        need = structure_column_minimum_width(zoomed=zoomed)
+        self.table.set_structure_column_minimum_width(need)
         col = CompoundTableModel.STRUCTURE_COL
         if int(self.table.columnWidth(col)) != need:
             self.table.setColumnWidth(col, need)
@@ -637,7 +689,7 @@ class IngestRenderMixin:
         current = self._table_model.structure_pixmap_for_oid(oid)
         if current is None or current.isNull():
             return None
-        w, h = STRUCTURE_DEPICT_WIDTH, STRUCTURE_DEPICT_HEIGHT
+        w, h = structure_depiict_width(), structure_depiict_height()
         if current.width() <= w and current.height() <= h:
             return current
         return current.scaled(w, h, Qt.KeepAspectRatio, Qt.SmoothTransformation)
@@ -648,7 +700,7 @@ class IngestRenderMixin:
         if pm is None or pm.isNull():
             return False
         self._table_model.set_structure_pixmap(oid, pm)
-        self.table.setRowHeight(int(view_row), STRUCTURE_DEPICT_HEIGHT)
+        self.table.setRowHeight(int(view_row), structure_depiict_height())
         self._sync_structure_column_width_for_zoom_state()
         return True
 
@@ -661,6 +713,8 @@ class IngestRenderMixin:
         cur = int(self.table.columnWidth(col))
         if need > cur:
             self.table.setColumnWidth(col, need)
+        if need > self.table.structure_column_minimum_width():
+            self.table.set_structure_column_minimum_width(need)
 
     def _sync_data_pixmap_column_width(self, header_name: str, pm: QPixmap | None, fallback_w: int) -> None:
         try:
@@ -766,14 +820,14 @@ class IngestRenderMixin:
     def _resize_columns_after_render2d(self, pix_target: str | None) -> None:
         """Set structure / pixmap column width from depict size (O(1), safe for huge tables)."""
         pad = STRUCTURE_COLUMN_HORIZONTAL_PADDING
-        need = max(1, int(STRUCTURE_DEPICT_WIDTH) + pad)
+        need = max(1, int(structure_depiict_width()) + pad)
         try:
             if pix_target:
                 col = self.headers.index(pix_target)
                 if self.table.columnWidth(col) < need:
                     self.table.setColumnWidth(col, need)
             else:
-                self._sync_structure_column_width_for_pixmap(None, STRUCTURE_DEPICT_WIDTH)
+                self._sync_structure_column_width_for_pixmap(None, structure_depiict_width())
         except Exception:
             pass
 
@@ -925,7 +979,7 @@ class IngestRenderMixin:
         if queue and not pix_target:
             self._table_model.notify_structure_column_changed()
         if getattr(self, "_render2d_eager_uniform_height", False):
-            default_rh = STRUCTURE_ROW_DEFAULT_HEIGHT
+            default_rh = structure_row_default_height()
             vh = self.table.verticalHeader()
             try:
                 vh.setSectionResizeMode(vh.Fixed)
@@ -959,8 +1013,8 @@ class IngestRenderMixin:
             self.zoomed_ids.remove(oid)
             if self._try_restore_structure_zoom_out(oid, view_row):
                 return
-            w, h = STRUCTURE_DEPICT_WIDTH, STRUCTURE_DEPICT_HEIGHT
+            w, h = structure_depiict_width(), structure_depiict_height()
         else:
             self.zoomed_ids.add(oid)
-            w, h = STRUCTURE_DEPICT_WIDTH * 2, STRUCTURE_DEPICT_HEIGHT * 2
+            w, h = structure_depiict_width() * 2, structure_depiict_height() * 2
         self.start_render_worker(oid, mol, w, h)

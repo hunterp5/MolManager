@@ -167,6 +167,20 @@ class LayoutPreviewTile(QWidget):
             fill_rect(QRectF(rect.left(), rect.top() + hh + gap, ww, hh), plot, "P")
             fill_rect(QRectF(rect.left() + ww + gap, rect.top() + hh + gap, ww, hh), plot, "P")
             return
+        if lid == "table_grid":
+            ww = (rect.width() - 2 * gap) / 3
+            hh = (rect.height() - gap) / 2
+            fill_rect(QRectF(rect.left(), rect.top(), ww, hh), table, "T")
+            fill_rect(QRectF(rect.left() + ww + gap, rect.top(), ww, hh), plot, "P")
+            fill_rect(QRectF(rect.left() + 2 * (ww + gap), rect.top(), ww, hh), plot, "P")
+            y1 = rect.top() + hh + gap
+            for col in range(3):
+                fill_rect(
+                    QRectF(rect.left() + col * (ww + gap), y1, ww, hh),
+                    plot,
+                    "P",
+                )
+            return
         fill_rect(rect, table, "?")
 
 

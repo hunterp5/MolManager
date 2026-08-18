@@ -27,10 +27,12 @@ from PyQt5.QtWidgets import QApplication, QLabel, QWidget
 from molmanager.ui.main_window.workspace_layout import (
     DEFAULT_LAYOUT_ID,
     LAYOUT_QUADRANTS,
+    LAYOUT_TABLE_GRID,
     LAYOUT_TABLE_ONLY,
     LAYOUT_TABLE_SIDE,
     LAYOUT_TABLE_SINGLE,
     LAYOUT_TABLE_STACK,
+    PlotPane,
     WorkspaceLayoutManager,
 )
 
@@ -65,6 +67,8 @@ def test_apply_layout_pane_counts(qapp):
     assert len(mgr.plot_panes()) == 2
     mgr.apply_layout(LAYOUT_QUADRANTS, preserve_plots=False)
     assert len(mgr.plot_panes()) == 3
+    mgr.apply_layout(LAYOUT_TABLE_GRID, preserve_plots=False)
+    assert len(mgr.plot_panes()) == 5
     mgr.apply_layout(LAYOUT_TABLE_STACK, preserve_plots=False)
     assert len(mgr.plot_panes()) == 2
 
@@ -142,3 +146,96 @@ def test_preferred_pane_tracks_activation(qapp):
     assert mgr.preferred_pane() is p1
     mgr.dock_into_pane(p0, QLabel("x"))
     assert mgr.preferred_pane() is p0
+
+
+def test_dock_appends_and_paginates_in_same_pane(qapp):
+    mgr = _manager(qapp)
+    pane = mgr.plot_panes()[0]
+    w0 = QLabel("first")
+    w0._window_title = "Alpha"
+    w1 = QLabel("second")
+    w1._window_title = "Beta"
+    mgr.dock_into_pane(pane, w0)
+    mgr.dock_into_pane(pane, w1)
+    assert pane.plot_widgets() == [w0, w1]
+    assert pane.plot_widget() is w1
+    assert pane.page_count() == 2
+    assert pane.page_index() == 1
+    assert not pane._pager.isHidden()
+    assert "2 / 2" in pane._page_label.text()
+    assert pane.display_title() == "Beta"
+    pane.show_previous_page()
+    assert pane.plot_widget() is w0
+    assert pane.page_index() == 0
+    pane.show_next_page()
+    assert pane.plot_widget() is w1
+    assert mgr.pane_for_widget(w0) is pane
+    assert list(mgr.iter_docked_widgets()) == [w0, w1]
+
+
+def test_release_one_page_keeps_the_other(qapp):
+    mgr = _manager(qapp)
+    pane = mgr.plot_panes()[0]
+    w0 = QLabel("a")
+    w1 = QLabel("b")
+    mgr.dock_into_pane(pane, w0)
+    mgr.dock_into_pane(pane, w1)
+    assert mgr.release_widget(w1) is True
+    assert pane.plot_widget() is w0
+    assert pane.page_count() == 1
+    assert pane.plot_widgets() == [w0]
+    assert not pane.is_empty()
+
+
+def test_move_widget_between_panes_keeps_other_pages(qapp):
+    mgr = _manager(qapp)
+    p0, p1 = mgr.plot_panes()
+    a = QLabel("a")
+    b = QLabel("b")
+    c = QLabel("c")
+    mgr.dock_into_pane(p0, a)
+    mgr.dock_into_pane(p0, b)
+    mgr.dock_into_pane(p1, c)
+    mgr.dock_into_pane(p1, b)
+    assert p0.plot_widgets() == [a]
+    assert p1.plot_widgets() == [c, b]
+    assert p1.plot_widget() is b
+
+
+def test_plot_pane_refresh_theme_reapplies_selection_outline(qapp):
+    del qapp
+    pane = PlotPane("pane_test")
+    pane.set_active(True)
+    assert "palette(highlight)" in pane.styleSheet()
+    pane.set_active(False)
+    assert "palette(mid)" in pane.styleSheet()
+    pane.set_active(True)
+    pane.refresh_theme()
+    assert pane._active is True
+    assert "palette(highlight)" in pane.styleSheet()
+
+
+def test_workspace_layout_refresh_theme_preserves_preferred_pane(qapp):
+    mgr = _manager(qapp)
+    p0, p1 = mgr.plot_panes()
+    mgr.set_preferred_pane(p1)
+    mgr.refresh_theme()
+    assert p1._active is True
+    assert p0._active is False
+
+
+def test_apply_layout_preserves_pane_stacks(qapp):
+    mgr = _manager(qapp)
+    p0, p1 = mgr.plot_panes()
+    a = QLabel("a")
+    b = QLabel("b")
+    c = QLabel("c")
+    mgr.dock_into_pane(p0, a)
+    mgr.dock_into_pane(p0, b)
+    mgr.dock_into_pane(p1, c)
+    extras = mgr.apply_layout(LAYOUT_TABLE_STACK, preserve_plots=True)
+    assert extras == []
+    panes = mgr.plot_panes()
+    assert panes[0].plot_widgets() == [a, b]
+    assert panes[0].plot_widget() is b
+    assert panes[1].plot_widgets() == [c]

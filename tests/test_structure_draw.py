@@ -60,3 +60,39 @@ def test_render_molecule_png_native_resolution() -> None:
 
 def test_table_bond_line_width_constant() -> None:
     assert STRUCTURE_DEPICT_BOND_LINE_WIDTH < 2.0
+
+
+def test_structure_column_minimum_width() -> None:
+    from molmanager.display_constants import (
+        DEFAULT_STRUCTURE_DEPICT_HEIGHT,
+        DEFAULT_STRUCTURE_DEPICT_WIDTH,
+        STRUCTURE_COLUMN_HORIZONTAL_PADDING,
+        set_structure_depiict_size,
+        structure_column_minimum_width,
+    )
+
+    set_structure_depiict_size(
+        DEFAULT_STRUCTURE_DEPICT_WIDTH,
+        DEFAULT_STRUCTURE_DEPICT_HEIGHT,
+        persist=False,
+    )
+    assert (
+        structure_column_minimum_width()
+        == DEFAULT_STRUCTURE_DEPICT_WIDTH + STRUCTURE_COLUMN_HORIZONTAL_PADDING
+    )
+    assert (
+        structure_column_minimum_width(zoomed=True)
+        == DEFAULT_STRUCTURE_DEPICT_WIDTH * 2 + STRUCTURE_COLUMN_HORIZONTAL_PADDING
+    )
+
+
+def test_compound_table_view_clamps_structure_column_width(qapp) -> None:  # noqa: ARG001
+    from molmanager.ui.compound_table_model import CompoundTableModel, CompoundTableView
+
+    model = CompoundTableModel(["ID", "Structure", "SMILES"])
+    view = CompoundTableView()
+    view.set_compound_model(model)
+    col = CompoundTableModel.STRUCTURE_COL
+    min_w = view.structure_column_minimum_width()
+    view.setColumnWidth(col, min_w - 40)
+    assert view.columnWidth(col) == min_w

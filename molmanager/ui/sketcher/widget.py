@@ -1943,6 +1943,47 @@ class SketchWidget(SketchWidgetEventsMixin, SketchWidgetPaintMixin, SketchWidget
             act.triggered.connect(self._run_group_selection_menu)
             menu.addAction(act)
 
+    def _add_cleanup_selected_action(
+        self, menu: QMenu, *, hit_ids: set[int] | None = None
+    ) -> None:
+        """Add Clean Up Selected when the selection includes *hit_ids* (if given)."""
+        ids = self._atoms_for_selection_move()
+        if len(ids) < 2:
+            return
+        if hit_ids is not None and not (ids & hit_ids):
+            return
+        menu.addSeparator()
+        act = QAction("Clean Up Selected", self)
+        act.setToolTip("Re-layout only the selected atoms (same IUPAC Clean Up as the full sketch).")
+        act.triggered.connect(self._menu_cleanup_selected)
+        menu.addAction(act)
+
+    def _menu_cleanup_selected(self) -> None:
+        ok = self.cleanup_layout_2d_selected()
+        dlg = self._sketcher_dialog_if()
+        parent_w = dlg if dlg is not None else self
+        if not ok:
+            QMessageBox.information(
+                parent_w,
+                "Clean Up Selected",
+                "Could not re-layout the selection. Select at least two connected atoms, "
+                "or try fixing valence issues first.",
+            )
+            return
+        if dlg is not None:
+            dlg._update_sketch_status()
+        issues = self.refresh_iupac_validation()
+        if issues:
+            from molmanager.ui.sketcher.iupac_validate import format_iupac_issues
+
+            summary = format_iupac_issues(issues, limit=5)
+            QMessageBox.information(
+                parent_w,
+                "Clean Up Selected",
+                f"Selection layout updated. IUPAC notes:\n{summary}",
+            )
+            self.update()
+
     def _add_copy_selected_smiles_action(
         self, menu: QMenu, *, hit_ids: set[int] | None = None
     ) -> None:

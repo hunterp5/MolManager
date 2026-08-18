@@ -22,10 +22,14 @@ from typing import Callable
 
 from PyQt5.QtCore import QEvent, QObject, Qt, pyqtSignal
 from PyQt5.QtWidgets import (
+    QApplication,
     QFrame,
+    QHBoxLayout,
     QLabel,
+    QPushButton,
     QSizePolicy,
     QSplitter,
+    QStackedWidget,
     QVBoxLayout,
     QWidget,
 )
@@ -37,6 +41,7 @@ LAYOUT_TABLE_SINGLE = "table_single"
 LAYOUT_TABLE_STACK = "table_stack"
 LAYOUT_TABLE_SIDE = "table_side"
 LAYOUT_QUADRANTS = "quadrants"
+LAYOUT_TABLE_GRID = "table_grid"
 DEFAULT_LAYOUT_ID = LAYOUT_TABLE_STACK
 
 LAYOUT_PRESETS: tuple[tuple[str, str], ...] = (
@@ -45,6 +50,7 @@ LAYOUT_PRESETS: tuple[tuple[str, str], ...] = (
     (LAYOUT_TABLE_STACK, "Table | 2 stacked plots"),
     (LAYOUT_TABLE_SIDE, "Table | 2 side-by-side plots"),
     (LAYOUT_QUADRANTS, "Quadrants (table upper-left)"),
+    (LAYOUT_TABLE_GRID, "Grid 2×3 (table upper-left)"),
 )
 
 
@@ -62,14 +68,14 @@ class _PaneActivateFilter(QObject):
 
 
 class PlotPane(QFrame):
-    """Host for one docked plot widget, or an empty placeholder."""
+    """Host for one or more docked plot widgets, with pager chrome when stacked."""
 
     activated = pyqtSignal(object)  # PlotPane
 
     def __init__(self, pane_id: str, parent: QWidget | None = None):
         super().__init__(parent)
         self.pane_id = pane_id
-        self._plot_widget: QWidget | None = None
+        self._pages: list[QWidget] = []
         self._activate_filter = _PaneActivateFilter(self)
         self.setObjectName("PlotPane")
         # Border width is owned by the stylesheet; avoid QFrame chrome fighting it.
@@ -79,26 +85,121 @@ class PlotPane(QFrame):
         self._root = QVBoxLayout(self)
         self._root.setContentsMargins(2, 2, 2, 2)
         self._root.setSpacing(0)
+
+        self._pager = QWidget()
+        self._pager.setObjectName("PlotPanePager")
+        pager_ly = QHBoxLayout(self._pager)
+        pager_ly.setContentsMargins(4, 2, 4, 2)
+        pager_ly.setSpacing(4)
+        self._prev_btn = QPushButton("‹")
+        self._next_btn = QPushButton("›")
+        for btn in (self._prev_btn, self._next_btn):
+            btn.setFixedWidth(28)
+            btn.setAutoDefault(False)
+            btn.setDefault(False)
+            btn.setFocusPolicy(Qt.NoFocus)
+            btn.setToolTip("Switch plots in this pane")
+        self._prev_btn.setToolTip("Previous plot in this pane")
+        self._next_btn.setToolTip("Next plot in this pane")
+        self._page_label = QLabel("1 / 1")
+        self._page_label.setMinimumWidth(36)
+        self._page_label.setAlignment(Qt.AlignCenter)
+        self._title_label = QLabel("")
+        self._title_label.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
+        self._title_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        self._prev_btn.clicked.connect(self.show_previous_page)
+        self._next_btn.clicked.connect(self.show_next_page)
+        pager_ly.addWidget(self._prev_btn)
+        pager_ly.addWidget(self._page_label)
+        pager_ly.addWidget(self._next_btn)
+        pager_ly.addWidget(self._title_label, 1)
+        self._pager.hide()
+
+        self._stack = QStackedWidget()
+        self._stack.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        self._stack.currentChanged.connect(self._on_stack_current_changed)
+        self._stack.hide()
+
         self._placeholder = QLabel("Plot pane\n(Add to Main Window…)")
         self._placeholder.setAlignment(Qt.AlignCenter)
         self._placeholder.setWordWrap(True)
         self._placeholder.setStyleSheet("color: palette(mid); padding: 12px;")
+        self._root.addWidget(self._pager)
+        self._root.addWidget(self._stack, 1)
         self._root.addWidget(self._placeholder, 1)
+        self._active = False
         self._set_active_style(False)
 
+    def refresh_theme(self) -> None:
+        """Re-apply palette-backed chrome after a GUI theme or application font change."""
+        self._set_active_style(self._active)
+        self._placeholder.setStyleSheet("color: palette(mid); padding: 12px;")
+        app = QApplication.instance()
+        if app is not None:
+            font = app.font()
+            pal = app.palette()
+            self.setPalette(pal)
+            for widget in (
+                self._pager,
+                self._prev_btn,
+                self._next_btn,
+                self._page_label,
+                self._title_label,
+                self._placeholder,
+            ):
+                widget.setPalette(pal)
+                widget.setFont(font)
+                style = widget.style()
+                if style is not None:
+                    style.unpolish(widget)
+                    style.polish(widget)
+                widget.update()
+        self.update()
+
     def plot_widget(self) -> QWidget | None:
-        return self._plot_widget
+        """Currently visible plot in this pane."""
+        if not self._pages:
+            return None
+        current = self._stack.currentWidget()
+        if current in self._pages:
+            return current
+        return self._pages[-1]
+
+    def plot_widgets(self) -> list[QWidget]:
+        """All plots hosted in this pane (visible first is not required)."""
+        return list(self._pages)
+
+    def page_count(self) -> int:
+        return len(self._pages)
+
+    def page_index(self) -> int:
+        if not self._pages:
+            return -1
+        idx = int(self._stack.currentIndex())
+        if 0 <= idx < len(self._pages):
+            return idx
+        return len(self._pages) - 1
 
     def is_empty(self) -> bool:
-        return self._plot_widget is None
+        return not self._pages
 
     def display_title(self) -> str:
-        w = self._plot_widget
+        return self._title_for_widget(self.plot_widget())
+
+    @staticmethod
+    def _title_for_widget(w: QWidget | None) -> str:
         if w is None:
             return "empty"
         title = getattr(w, "_window_title", None)
         if isinstance(title, str) and title.strip():
             return title.strip()
+        win_title = ""
+        try:
+            win_title = str(w.windowTitle() or "").strip()
+        except RuntimeError:
+            win_title = ""
+        if win_title:
+            return win_title
         name = w.__class__.__name__
         if name.endswith("PlotPanel"):
             return name[: -len("PlotPanel")] or name
@@ -107,21 +208,131 @@ class PlotPane(QFrame):
         return name
 
     def set_plot_widget(self, widget: QWidget | None) -> QWidget | None:
-        """Place ``widget`` in this pane; return the previous occupant (detached)."""
-        previous = self._plot_widget
-        if previous is not None:
-            self._uninstall_activate_filter(previous)
-            self._root.removeWidget(previous)
-            previous.setParent(None)
-            self._plot_widget = None
-        if widget is not None:
-            self._placeholder.hide()
-            self._root.addWidget(widget, 1)
-            self._plot_widget = widget
-            self._install_activate_filter(widget)
-        else:
+        """Replace this pane's stack with ``widget`` (or clear when ``None``)."""
+        previous = self.plot_widget()
+        if widget is None:
+            self.set_plot_widgets([])
+            return previous
+        self.set_plot_widgets([widget])
+        return previous if previous is not widget else None
+
+    def set_plot_widgets(self, widgets: list[QWidget], *, current: int | None = None) -> None:
+        """Replace the page stack. Detaches previous pages without deleting them."""
+        current_id = None
+        if current is None and self._pages:
+            cur = self.plot_widget()
+            current_id = id(cur) if cur is not None else None
+        self._stack.blockSignals(True)
+        try:
+            for old in list(self._pages):
+                self._uninstall_activate_filter(old)
+                self._stack.removeWidget(old)
+                old.setParent(None)
+            self._pages = []
+            for widget in widgets:
+                if widget is None:
+                    continue
+                self._pages.append(widget)
+                self._stack.addWidget(widget)
+                self._install_activate_filter(widget)
+            if self._pages:
+                idx = 0
+                if current is not None:
+                    idx = max(0, min(int(current), len(self._pages) - 1))
+                elif current_id is not None:
+                    for i, w in enumerate(self._pages):
+                        if id(w) == current_id:
+                            idx = i
+                            break
+                self._stack.setCurrentIndex(idx)
+        finally:
+            self._stack.blockSignals(False)
+        self._refresh_pager()
+        self._sync_visible_footer()
+
+    def add_plot_widget(self, widget: QWidget) -> None:
+        """Append ``widget`` and show it. If it is already here, just show it."""
+        if widget in self._pages:
+            self._stack.setCurrentWidget(widget)
+            self._refresh_pager()
+            self._sync_visible_footer()
+            return
+        self._pages.append(widget)
+        self._stack.addWidget(widget)
+        self._install_activate_filter(widget)
+        self._stack.setCurrentWidget(widget)
+        self._refresh_pager()
+        self._sync_visible_footer()
+
+    def remove_plot_widget(self, widget: QWidget) -> bool:
+        """Detach ``widget`` from this pane. Returns True if it was present."""
+        if widget not in self._pages:
+            return False
+        idx = self._pages.index(widget)
+        self._uninstall_activate_filter(widget)
+        self._pages.remove(widget)
+        self._stack.removeWidget(widget)
+        try:
+            widget.setParent(None)
+        except RuntimeError:
+            pass
+        if self._pages:
+            self._stack.setCurrentIndex(min(idx, len(self._pages) - 1))
+        self._refresh_pager()
+        self._sync_visible_footer()
+        return True
+
+    def show_previous_page(self) -> None:
+        n = len(self._pages)
+        if n < 2:
+            return
+        self._stack.setCurrentIndex((self.page_index() - 1) % n)
+        self.activated.emit(self)
+
+    def show_next_page(self) -> None:
+        n = len(self._pages)
+        if n < 2:
+            return
+        self._stack.setCurrentIndex((self.page_index() + 1) % n)
+        self.activated.emit(self)
+
+    def set_page(self, index: int) -> None:
+        if not self._pages:
+            return
+        self._stack.setCurrentIndex(max(0, min(int(index), len(self._pages) - 1)))
+
+    def _on_stack_current_changed(self, _index: int) -> None:
+        self._refresh_pager()
+        self._sync_visible_footer()
+
+    def _sync_visible_footer(self) -> None:
+        w = self.plot_widget()
+        if w is None:
+            return
+        sync = getattr(w, "_sync_footer_chrome", None)
+        if callable(sync):
+            try:
+                sync()
+            except RuntimeError:
+                pass
+
+    def _refresh_pager(self) -> None:
+        n = len(self._pages)
+        if n == 0:
+            self._pager.hide()
+            self._stack.hide()
             self._placeholder.show()
-        return previous
+            return
+        self._placeholder.hide()
+        self._stack.show()
+        self._pager.show()
+        i = self.page_index()
+        self._page_label.setText(f"{i + 1} / {n}")
+        self._title_label.setText(self._title_for_widget(self.plot_widget()))
+        self._title_label.setToolTip(self._title_label.text())
+        enabled = n > 1
+        self._prev_btn.setEnabled(enabled)
+        self._next_btn.setEnabled(enabled)
 
     def _install_activate_filter(self, widget: QWidget) -> None:
         widget.installEventFilter(self._activate_filter)
@@ -143,10 +354,16 @@ class PlotPane(QFrame):
             pass
 
     def clear_plot_widget(self) -> QWidget | None:
-        return self.set_plot_widget(None)
+        """Remove the currently visible plot; other pages stay."""
+        current = self.plot_widget()
+        if current is None:
+            return None
+        self.remove_plot_widget(current)
+        return current
 
     def set_active(self, active: bool) -> None:
-        self._set_active_style(active)
+        self._active = bool(active)
+        self._set_active_style(self._active)
 
     def _set_active_style(self, active: bool) -> None:
         # Keep border width identical so activating a pane does not resize Plotly.
@@ -203,19 +420,24 @@ class WorkspaceLayoutManager(QWidget):
         for p in self._panes:
             p.set_active(p is pane)
 
+    def refresh_theme(self) -> None:
+        """Refresh plot pane selection outlines and pager fonts for the current GUI theme."""
+        pref = self.preferred_pane()
+        for pane in self._panes:
+            pane.refresh_theme()
+            pane.set_active(pane is pref)
+
     def pane_for_widget(self, widget: QWidget | None) -> PlotPane | None:
         if widget is None:
             return None
         for p in self._panes:
-            if p.plot_widget() is widget:
+            if widget in p.plot_widgets():
                 return p
         return None
 
     def iter_docked_widgets(self):
         for p in self._panes:
-            w = p.plot_widget()
-            if w is not None:
-                yield w
+            yield from p.plot_widgets()
 
     def find_pane(self, pane_id: str) -> PlotPane | None:
         for p in self._panes:
@@ -224,21 +446,20 @@ class WorkspaceLayoutManager(QWidget):
         return None
 
     def dock_into_pane(self, pane: PlotPane, widget: QWidget) -> QWidget | None:
-        """Dock ``widget`` into ``pane``. Returns previous occupant if any."""
-        # Detach from any other pane first.
+        """Dock ``widget`` into ``pane`` (appends; does not replace other plots)."""
+        previous = pane.plot_widget()
         other = self.pane_for_widget(widget)
         if other is not None and other is not pane:
-            other.clear_plot_widget()
-        previous = pane.set_plot_widget(widget)
+            other.remove_plot_widget(widget)
+        pane.add_plot_widget(widget)
         self.set_preferred_pane(pane)
-        return previous
+        return previous if previous is not widget else None
 
     def release_widget(self, widget: QWidget) -> bool:
         pane = self.pane_for_widget(widget)
         if pane is None:
             return False
-        pane.clear_plot_widget()
-        return True
+        return pane.remove_plot_widget(widget)
 
     def collect_splitter_sizes(self) -> dict:
         """Serializable nested splitter sizes for the current layout."""
@@ -280,14 +501,18 @@ class WorkspaceLayoutManager(QWidget):
         if layout_id not in {p[0] for p in LAYOUT_PRESETS}:
             layout_id = DEFAULT_LAYOUT_ID
 
-        kept: list[QWidget] = []
+        kept_stacks: list[tuple[list[QWidget], int]] = []
         if preserve_plots:
-            kept = [w for w in self.iter_docked_widgets()]
+            for pane in self._panes:
+                widgets = pane.plot_widgets()
+                if widgets:
+                    kept_stacks.append((widgets, pane.page_index()))
 
         # Detach table and plots before destroying the tree.
         self._table_area.setParent(None)
-        for w in kept:
-            w.setParent(None)
+        for widgets, _idx in kept_stacks:
+            for w in widgets:
+                w.setParent(None)
         for p in self._panes:
             p.set_plot_widget(None)
 
@@ -305,6 +530,8 @@ class WorkspaceLayoutManager(QWidget):
             root = self._build_table_only()
         elif layout_id == LAYOUT_QUADRANTS:
             root = self._build_quadrants()
+        elif layout_id == LAYOUT_TABLE_GRID:
+            root = self._build_table_grid()
         elif layout_id == LAYOUT_TABLE_SIDE:
             root = self._build_table_with_plot_area(Qt.Horizontal, 2)
         elif layout_id == LAYOUT_TABLE_SINGLE:
@@ -316,16 +543,14 @@ class WorkspaceLayoutManager(QWidget):
         self._root_ly.addWidget(root, 1)
 
         extras: list[QWidget] = []
-        for i, widget in enumerate(kept):
+        for i, (widgets, idx) in enumerate(kept_stacks):
             if i < len(self._panes):
-                self._panes[i].set_plot_widget(widget)
-                sync = getattr(widget, "_sync_footer_chrome", None)
-                if callable(sync):
-                    sync()
+                self._panes[i].set_plot_widgets(widgets, current=idx)
             else:
-                extras.append(widget)
+                extras.extend(widgets)
                 if on_extra_plot is not None:
-                    on_extra_plot(widget)
+                    for widget in widgets:
+                        on_extra_plot(widget)
 
         pref = self.preferred_pane()
         self.set_preferred_pane(pref)
@@ -410,6 +635,38 @@ class WorkspaceLayoutManager(QWidget):
         bottom.setStretchFactor(0, 1)
         bottom.setStretchFactor(1, 1)
         bottom.setSizes([600, 600])
+
+        outer.addWidget(top)
+        outer.addWidget(bottom)
+        outer.setStretchFactor(0, 1)
+        outer.setStretchFactor(1, 1)
+        outer.setSizes([450, 450])
+        return outer
+
+    def _build_table_grid(self) -> QWidget:
+        """Table upper-left; five plot panes in the other cells of a 2×3 grid."""
+        outer = self._track_splitter(QSplitter(Qt.Vertical))
+        outer.setHandleWidth(6)
+        outer.setChildrenCollapsible(False)
+
+        top = self._track_splitter(QSplitter(Qt.Horizontal))
+        top.setHandleWidth(6)
+        top.setChildrenCollapsible(False)
+        top.addWidget(self._table_area)
+        top.addWidget(self._new_pane(0))
+        top.addWidget(self._new_pane(1))
+        top.setStretchFactor(0, 1)
+        top.setStretchFactor(1, 1)
+        top.setStretchFactor(2, 1)
+        top.setSizes([500, 400, 400])
+
+        bottom = self._track_splitter(QSplitter(Qt.Horizontal))
+        bottom.setHandleWidth(6)
+        bottom.setChildrenCollapsible(False)
+        for i in range(3):
+            bottom.addWidget(self._new_pane(i + 2))
+            bottom.setStretchFactor(i, 1)
+        bottom.setSizes([400, 400, 400])
 
         outer.addWidget(top)
         outer.addWidget(bottom)

@@ -100,6 +100,32 @@ class GuiSettingsMixin:
         if hasattr(self, "status_label"):
             self.status_label.setText("Hotkeys updated.")
 
+    def open_structure_settings_dialog(self) -> None:
+        from ..display_constants import structure_depiict_height, structure_depiict_width
+        from .dialogs.structure_settings import StructureSettingsDialog
+
+        prev_w = structure_depiict_width()
+        prev_h = structure_depiict_height()
+        dlg = StructureSettingsDialog(prev_w, prev_h, self)
+        if hasattr(self, "apply_structure_table_layout"):
+            dlg.size_previewed.connect(self._preview_structure_depiict_size)
+        if dlg.exec_() == QDialog.Accepted:
+            self._apply_structure_depiict_size(dlg.selected_width(), dlg.selected_height(), persist=True)
+        elif hasattr(self, "apply_structure_depiict_size"):
+            self._apply_structure_depiict_size(prev_w, prev_h, persist=False)
+        if hasattr(self, "status_label"):
+            self.status_label.setText(
+                f"Structure image size — {structure_depiict_width()}×{structure_depiict_height()} px"
+            )
+
+    def _preview_structure_depiict_size(self, width: int, height: int) -> None:
+        if hasattr(self, "apply_structure_depiict_size"):
+            self.apply_structure_depiict_size(width, height, persist=False)
+
+    def _apply_structure_depiict_size(self, width: int, height: int, *, persist: bool = True) -> None:
+        if hasattr(self, "apply_structure_depiict_size"):
+            self.apply_structure_depiict_size(width, height, persist=persist)
+
     def open_font_dialog(self) -> None:
         from .dialogs.font_settings import FontSettingsDialog
 
@@ -124,6 +150,7 @@ class GuiSettingsMixin:
         self._gui_menu = settings_menu.addMenu("&GUI")
         self._rebuild_gui_theme_menu()
         settings_menu.addSeparator()
+        settings_menu.addAction(QAction("&Structure…", self, triggered=self.open_structure_settings_dialog))
         settings_menu.addAction(QAction("&Font…", self, triggered=self.open_font_dialog))
         settings_menu.addAction(QAction("&Hotkeys…", self, triggered=self.open_hotkeys_dialog))
 
@@ -198,9 +225,18 @@ class GuiSettingsMixin:
         self._refresh_filter_card_styles()
         self._refresh_structure_delegate_theme()
         self._apply_table_font()
+        self._refresh_workspace_pane_theme()
         table = getattr(self, "table", None)
         if table is not None:
             table.viewport().update()
+
+    def _refresh_workspace_pane_theme(self) -> None:
+        layout_mgr = getattr(self, "_workspace_layout", None)
+        if layout_mgr is None:
+            return
+        refresh = getattr(layout_mgr, "refresh_theme", None)
+        if callable(refresh):
+            refresh()
 
     def _set_gui_theme(self, theme: str) -> None:
         theme = apply_application_theme(QApplication.instance(), theme)
@@ -221,6 +257,7 @@ class GuiSettingsMixin:
         if persist:
             save_app_font_pt(self._app_font_pt)
         self._apply_table_font()
+        self._refresh_workspace_pane_theme()
 
     def _apply_table_font(self) -> None:
         """Set the table font point size on the view and its headers (theme-independent)."""

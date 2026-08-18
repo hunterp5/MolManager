@@ -1,0 +1,76 @@
+# This file is part of MolManager.
+# Copyright (C) 2026 Hunter Picard
+#
+# MolManager is free software: you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation, either version 3 of the License, or
+# (at your option) any later version.
+#
+# MolManager is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License
+# along with MolManager.  If not, see <https://www.gnu.org/licenses/>.
+
+"""Tests for Structure column depiction size settings."""
+
+from __future__ import annotations
+
+import pytest
+
+pytest.importorskip("PyQt5.QtWidgets")
+
+from molmanager.display_constants import (
+    DEFAULT_STRUCTURE_DEPICT_HEIGHT,
+    DEFAULT_STRUCTURE_DEPICT_WIDTH,
+    MAX_STRUCTURE_DEPICT_HEIGHT,
+    MAX_STRUCTURE_DEPICT_WIDTH,
+    MIN_STRUCTURE_DEPICT_HEIGHT,
+    MIN_STRUCTURE_DEPICT_WIDTH,
+    set_structure_depiict_size,
+    structure_column_minimum_width,
+    structure_depiict_height,
+    structure_depiict_width,
+    structure_row_default_height,
+)
+
+
+@pytest.fixture(autouse=True)
+def _reset_structure_size():
+    set_structure_depiict_size(
+        DEFAULT_STRUCTURE_DEPICT_WIDTH,
+        DEFAULT_STRUCTURE_DEPICT_HEIGHT,
+        persist=False,
+    )
+    yield
+    set_structure_depiict_size(
+        DEFAULT_STRUCTURE_DEPICT_WIDTH,
+        DEFAULT_STRUCTURE_DEPICT_HEIGHT,
+        persist=False,
+    )
+
+
+def test_set_structure_depiict_size_clamps_and_updates_runtime() -> None:
+    w, h = set_structure_depiict_size(9999, 10, persist=False)
+    assert w == MAX_STRUCTURE_DEPICT_WIDTH
+    assert h == MIN_STRUCTURE_DEPICT_HEIGHT
+    assert structure_depiict_width() == MAX_STRUCTURE_DEPICT_WIDTH
+    assert structure_depiict_height() == MIN_STRUCTURE_DEPICT_HEIGHT
+
+
+def test_structure_row_default_height_tracks_depiction_height() -> None:
+    set_structure_depiict_size(180, 150, persist=False)
+    assert structure_row_default_height() == 150 + (212 - 202)
+
+
+def test_structure_column_minimum_width_uses_runtime_size() -> None:
+    set_structure_depiict_size(300, 250, persist=False)
+    assert structure_column_minimum_width() == 300 + 28
+    assert structure_column_minimum_width(zoomed=True) == 600 + 28
+
+
+def test_structure_column_minimum_width_tracks_runtime_size() -> None:
+    set_structure_depiict_size(300, 250, persist=False)
+    assert structure_column_minimum_width() == 300 + 28

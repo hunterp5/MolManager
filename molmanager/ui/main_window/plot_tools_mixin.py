@@ -21,7 +21,7 @@ from __future__ import annotations
 import logging
 
 from PyQt5.QtCore import Qt, QTimer
-from PyQt5.QtWidgets import QDialog, QMessageBox
+from PyQt5.QtWidgets import QDialog
 
 logger = logging.getLogger(__name__)
 
@@ -429,21 +429,6 @@ class PlotToolsMixin:
         if pane is None:
             return False
 
-        previous = pane.plot_widget()
-        if previous is not None and previous is not plot_widget:
-            reply = QMessageBox.question(
-                self,
-                "Replace plot",
-                f"Pane already has “{pane.display_title()}”. Replace it?\n"
-                "The current plot will move to a floating window.",
-                QMessageBox.Yes | QMessageBox.No,
-                QMessageBox.No,
-            )
-            if reply != QMessageBox.Yes:
-                return False
-            self._release_plot_widget_from_panel_host(previous)
-            self._float_released_plot_widget(previous)
-
         prior_teardown = getattr(plot_widget, "_scope_sync_disconnect", None)
         if callable(prior_teardown):
             prior_teardown()
@@ -462,7 +447,14 @@ class PlotToolsMixin:
         kind = "Viewer" if getattr(plot_widget, "dockable_in_workspace", False) and not getattr(
             plot_widget, "only_selected_cb", None
         ) else "Plot"
-        self.status_label.setText(f"{kind}: docked in pane {mgr.plot_panes().index(pane) + 1}.")
+        pane_n = mgr.plot_panes().index(pane) + 1
+        n_pages = pane.page_count()
+        if n_pages > 1:
+            self.status_label.setText(
+                f"{kind}: docked in pane {pane_n} ({pane.page_index() + 1}/{n_pages})."
+            )
+        else:
+            self.status_label.setText(f"{kind}: docked in pane {pane_n}.")
         return True
 
     def _float_released_plot_widget(self, plot_widget) -> None:
@@ -555,16 +547,14 @@ class PlotToolsMixin:
         if mgr is None:
             return
         for pane in mgr.plot_panes():
-            w = pane.plot_widget()
-            if w is None:
-                continue
-            try:
-                from PyQt5 import sip
+            for w in list(pane.plot_widgets()):
+                try:
+                    from PyQt5 import sip
 
-                if sip.isdeleted(w):
-                    pane.clear_plot_widget()
-            except Exception:
-                pass
+                    if sip.isdeleted(w):
+                        pane.remove_plot_widget(w)
+                except Exception:
+                    pass
 
     def close_plot_panel_keep_plot(self) -> None:
         """Hide/collapse the plot region; docked widgets are preserved."""

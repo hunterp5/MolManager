@@ -288,6 +288,12 @@ class SketcherDialog(QDialog):
         self._act_canvas_cleanup.setShortcut(QKeySequence("Ctrl+K"))
         self._act_canvas_cleanup.setShortcutContext(Qt.WindowShortcut)
 
+        self._act_canvas_cleanup_selected = QAction("Clean Up Selected", self)
+        self._act_canvas_cleanup_selected.setToolTip(
+            "Re-layout only the currently selected atoms; the rest of the sketch stays put."
+        )
+        self._act_canvas_cleanup_selected.triggered.connect(self._on_cleanup_layout_selected)
+
         self._act_canvas_add_hs = QAction("Implicit Hydrogens", self)
         self._act_canvas_add_hs.setCheckable(True)
         self._act_canvas_add_hs.setToolTip(
@@ -669,6 +675,10 @@ class SketcherDialog(QDialog):
         menu.addAction(self._act_canvas_ungroup)
         menu.addAction(self._act_canvas_clear)
         menu.addAction(self._act_canvas_cleanup)
+        self._act_canvas_cleanup_selected.setEnabled(
+            len(self.canvas._atoms_for_selection_move()) >= 2
+        )
+        menu.addAction(self._act_canvas_cleanup_selected)
         menu.addAction(self._act_canvas_add_hs)
         menu.exec_(global_pos)
 
@@ -1645,6 +1655,35 @@ class SketcherDialog(QDialog):
                 f"Layout updated. IUPAC notes:\n{summary}",
             )
             self.canvas.update()
+
+    def _on_cleanup_layout_selected(self) -> None:
+        if len(self.canvas._atoms_for_selection_move()) < 2:
+            QMessageBox.information(
+                self,
+                "Clean Up Selected",
+                "Select at least two atoms (or a bond) first.",
+            )
+            return
+        ok = self.canvas.cleanup_layout_2d_selected()
+        if not ok:
+            QMessageBox.information(
+                self,
+                "Clean Up Selected",
+                "Could not re-layout the selection. Try fixing valence or connectivity issues first.",
+            )
+            return
+        issues = self.canvas.refresh_iupac_validation()
+        if issues:
+            from molmanager.ui.sketcher.iupac_validate import format_iupac_issues
+
+            summary = format_iupac_issues(issues, limit=5)
+            QMessageBox.information(
+                self,
+                "Clean Up Selected",
+                f"Selection layout updated. IUPAC notes:\n{summary}",
+            )
+            self.canvas.update()
+        self._update_sketch_status()
 
     def _copy_smiles(self):
         smi = self.canvas.to_smiles()

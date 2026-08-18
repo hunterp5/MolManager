@@ -1879,10 +1879,74 @@ class SketchWidgetRdkitMixin:
             else:
                 _apply_ring_offsets(ring, offsets, reflect=False)
 
-    def cleanup_layout_2d(self) -> bool:
-        """Reposition all atoms using RDKit 2D coords with IUPAC-oriented post-pass."""
-        ids = {n["id"] for n in self.nodes}
-        if not ids:
+    def _align_cleaned_coords_to_selection(
+        self,
+        sk2rd: dict[int, int],
+        conf,
+        scale: float,
+        ids: set[int],
+    ) -> dict[int, QPoint]:
+        """Rigid-map cleaned chemistry coords onto the selection's original pose (screen pixels)."""
+        pairs: list[tuple[int, float, float, float, float]] = []
+        for n in self.nodes:
+            nid = int(n["id"])
+            if nid not in ids:
+                continue
+            rd_idx = sk2rd.get(nid)
+            if rd_idx is None:
+                continue
+            po = conf.GetAtomPosition(int(rd_idx))
+            pairs.append(
+                (
+                    nid,
+                    float(n["pos"].x()),
+                    float(n["pos"].y()),
+                    float(po.x) * scale,
+                    -float(po.y) * scale,
+                )
+            )
+        if not pairs:
+            return {}
+        n_pts = len(pairs)
+        old_cx = sum(p[1] for p in pairs) / n_pts
+        old_cy = sum(p[2] for p in pairs) / n_pts
+        new_cx = sum(p[3] for p in pairs) / n_pts
+        new_cy = sum(p[4] for p in pairs) / n_pts
+        dot = 0.0
+        cross = 0.0
+        for _nid, ox, oy, qx, qy in pairs:
+            px, py = ox - old_cx, oy - old_cy
+            rx, ry = qx - new_cx, qy - new_cy
+            dot += rx * px + ry * py
+            cross += rx * py - ry * px
+        mag = math.hypot(dot, cross)
+        ca, sa = (1.0, 0.0) if mag < 1e-9 else (dot / mag, cross / mag)
+        out: dict[int, QPoint] = {}
+        for nid, _ox, _oy, qx, qy in pairs:
+            rx, ry = qx - new_cx, qy - new_cy
+            out[nid] = QPoint(
+                int(round(rx * ca - ry * sa + old_cx)),
+                int(round(rx * sa + ry * ca + old_cy)),
+            )
+        return out
+
+    def cleanup_layout_2d_selected(self) -> bool:
+        """IUPAC Clean Up for the current selection only; unselected atoms stay put."""
+        return self.cleanup_layout_2d(atom_ids=self._atoms_for_selection_move())
+
+    def cleanup_layout_2d(self, atom_ids: set[int] | None = None) -> bool:
+        """Reposition atoms using RDKit 2D coords with IUPAC-oriented post-pass.
+
+        When *atom_ids* is given, only those atoms move; the cleaned fragment is
+        rigid-aligned to its original place so unselected atoms stay put.
+        """
+        selected_only = atom_ids is not None
+        if selected_only:
+            valid = {int(n["id"]) for n in self.nodes}
+            ids = {int(i) for i in atom_ids} & valid
+        else:
+            ids = {n["id"] for n in self.nodes}
+        if not ids or (selected_only and len(ids) < 2):
             return False
         try:
             out = self._mol_from_node_ids(ids, return_idmap=True)
@@ -1921,37 +1985,48 @@ class SketchWidgetRdkitMixin:
                 lens.append(math.hypot(pa.x - pb.x, pa.y - pb.y))
             med = sorted(lens)[len(lens) // 2] if lens else 1.5
             scale = float(SKETCH_MEDIAN_BOND_PX) / max(med, 0.01)
-            xs = [conf.GetAtomPosition(i).x for i in range(mol.GetNumAtoms())]
-            ys = [conf.GetAtomPosition(i).y for i in range(mol.GetNumAtoms())]
-            mx, my = sum(xs) / len(xs), sum(ys) / len(ys)
-            wc = self.rect().center()
+            if selected_only:
+                new_by_id = self._align_cleaned_coords_to_selection(sk2rd, conf, scale, ids)
+            else:
+                xs = [conf.GetAtomPosition(i).x for i in range(mol.GetNumAtoms())]
+                ys = [conf.GetAtomPosition(i).y for i in range(mol.GetNumAtoms())]
+                mx, my = sum(xs) / len(xs), sum(ys) / len(ys)
+                wc = self.rect().center()
+                new_by_id = {}
+                for n in self.nodes:
+                    nid = n["id"]
+                    if nid not in sk2rd:
+                        continue
+                    po = conf.GetAtomPosition(sk2rd[nid])
+                    new_by_id[nid] = QPoint(
+                        int(round(wc.x() + (po.x - mx) * scale)),
+                        int(round(wc.y() - (po.y - my) * scale)),
+                    )
             moves: list[tuple[int, QPoint, QPoint]] = []
             for n in self.nodes:
                 nid = n["id"]
-                if nid not in sk2rd:
+                newp = new_by_id.get(nid)
+                if newp is None:
                     continue
-                i = sk2rd[nid]
-                po = conf.GetAtomPosition(i)
-                nx = int(round(wc.x() + (po.x - mx) * scale))
-                ny = int(round(wc.y() - (po.y - my) * scale))
                 oldp = n["pos"]
-                newp = QPoint(nx, ny)
                 if oldp.x() != newp.x() or oldp.y() != newp.y():
                     moves.append((nid, QPoint(oldp.x(), oldp.y()), newp))
             if moves:
+                by_id = {n["id"]: n for n in self.nodes}
                 for nid, _oldp, newp in moves:
-                    node = next((x for x in self.nodes if x["id"] == nid), None)
+                    node = by_id.get(nid)
                     if node:
                         node["pos"] = newp
                 self._push_undo("move_nodes", moves)
-            try:
-                self._apply_hex_macrocycles_to_sketch()
-            except Exception:
-                pass
-            try:
-                self._reorient_sketch_iupac()
-            except Exception:
-                pass
+            if not selected_only:
+                try:
+                    self._apply_hex_macrocycles_to_sketch()
+                except Exception:
+                    pass
+                try:
+                    self._reorient_sketch_iupac()
+                except Exception:
+                    pass
             # Sync wedge/hash from re-wedged mol after layout.
             try:
                 self._rewedge_sketch_from_mol(mol, {v: k for k, v in sk2rd.items()}, stereo_tags)
@@ -1961,7 +2036,8 @@ class SketchWidgetRdkitMixin:
             self.bonds = sanitize_sketch_stereo_bonds(
                 self.bonds, chiral_center_ids=getattr(self, "_chiral_center_ids", set()) or set()
             )
-            self.ensure_sketch_fits_viewport(refresh=False)
+            if not selected_only:
+                self.ensure_sketch_fits_viewport(refresh=False)
             self._after_sketch_edit()
             return True
         except Exception:

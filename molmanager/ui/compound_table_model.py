@@ -40,6 +40,10 @@ from ..display_constants import (
     STRUCTURE_DEPICT_HEIGHT,
     STRUCTURE_DEPICT_WIDTH,
     STRUCTURE_ROW_DEFAULT_HEIGHT,
+    structure_column_minimum_width,
+    structure_depiict_height,
+    structure_depiict_width,
+    structure_row_default_height,
 )
 from ..structure_render_store import StructureRenderStore
 from ..utils import safe_float
@@ -57,6 +61,10 @@ __all__ = [
     "STRUCTURE_DEPICT_HEIGHT",
     "STRUCTURE_DEPICT_WIDTH",
     "STRUCTURE_ROW_DEFAULT_HEIGHT",
+    "structure_column_minimum_width",
+    "structure_depiict_height",
+    "structure_depiict_width",
+    "structure_row_default_height",
 ]
 
 # Packed multi-conformer / alignment payloads — not numeric filter columns (avoids scanning huge cells).
@@ -589,7 +597,7 @@ class CompoundTableModel(QAbstractTableModel):
             if role == Qt.SizeHintRole:
                 if has_pix:
                     return QSize(pix.width(), pix.height())
-                return QSize(STRUCTURE_DEPICT_WIDTH, STRUCTURE_DEPICT_HEIGHT)
+                return QSize(structure_depiict_width(), structure_depiict_height())
             if role == Qt.ToolTipRole:
                 if has_pix:
                     return None
@@ -610,7 +618,7 @@ class CompoundTableModel(QAbstractTableModel):
                 pix = self._extra_pixmaps.get((oid, h))
                 if pix is not None and not pix.isNull():
                     return QSize(pix.width(), pix.height())
-                return QSize(STRUCTURE_DEPICT_WIDTH, STRUCTURE_DEPICT_HEIGHT)
+                return QSize(structure_depiict_width(), structure_depiict_height())
             return None
 
         cell_pix = self._extra_pixmaps.get((oid, h))
@@ -1629,7 +1637,7 @@ class StructureDelegate(QStyledItemDelegate):
         pix = index.data(Qt.DecorationRole)
         if isinstance(pix, QPixmap) and not pix.isNull():
             return QSize(max(sh.width(), pix.width() + 8), max(sh.height(), pix.height() + 8))
-        return QSize(STRUCTURE_DEPICT_WIDTH, max(sh.height(), STRUCTURE_DEPICT_HEIGHT))
+        return QSize(structure_depiict_width(), max(sh.height(), structure_depiict_height()))
 
 
 class CompoundTableView(QTableView):
@@ -1643,7 +1651,7 @@ class CompoundTableView(QTableView):
         self.setAlternatingRowColors(True)
         self.setSelectionBehavior(QTableView.SelectItems)
         self.setSelectionMode(QTableView.ExtendedSelection)
-        self.verticalHeader().setDefaultSectionSize(STRUCTURE_ROW_DEFAULT_HEIGHT)
+        self.verticalHeader().setDefaultSectionSize(structure_row_default_height())
         self.verticalHeader().setSectionsMovable(True)
         self.verticalHeader().setDefaultAlignment(Qt.AlignCenter)
         hh = self.horizontalHeader()
@@ -1652,6 +1660,39 @@ class CompoundTableView(QTableView):
         hh.setSectionResizeMode(QHeaderView.Interactive)
         self.setSortingEnabled(False)
         self._compound_model: CompoundTableModel | None = None
+        self._structure_column_min_width = structure_column_minimum_width()
+        hh.sectionResized.connect(self._on_horizontal_section_resized)
+
+    def structure_column_minimum_width(self) -> int:
+        return self._structure_column_min_width
+
+    def set_structure_column_minimum_width(self, width: int) -> None:
+        """Keep the Structure column at least wide enough for depictions (+ padding)."""
+        w = max(1, int(width))
+        if w == self._structure_column_min_width:
+            return
+        self._structure_column_min_width = w
+        col = CompoundTableModel.STRUCTURE_COL
+        if self.columnWidth(col) < w:
+            hh = self.horizontalHeader()
+            hh.blockSignals(True)
+            try:
+                self.setColumnWidth(col, w)
+            finally:
+                hh.blockSignals(False)
+
+    def _on_horizontal_section_resized(self, logical_index: int, _old_size: int, new_size: int) -> None:
+        if logical_index != CompoundTableModel.STRUCTURE_COL:
+            return
+        min_w = self._structure_column_min_width
+        if new_size >= min_w:
+            return
+        hh = self.horizontalHeader()
+        hh.blockSignals(True)
+        try:
+            self.setColumnWidth(logical_index, min_w)
+        finally:
+            hh.blockSignals(False)
 
     def set_compound_model(self, model: CompoundTableModel) -> None:
         self._compound_model = model

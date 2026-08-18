@@ -39,7 +39,7 @@ from ...workers import (
     FragmentRecompositionWorker,
     RGroupDecompositionWorker,
 )
-from ..compound_table_model import STRUCTURE_DEPICT_HEIGHT, STRUCTURE_DEPICT_WIDTH
+from ..compound_table_model import structure_depiict_height, structure_depiict_width
 
 logger = logging.getLogger(__name__)
 
@@ -215,7 +215,7 @@ class FragmentToolsMixin:
         # Uses pixmap-only columns (hide SMILES text) and queues the renders so the GUI stays responsive.
         if do_render and tool_title in (TOOL_BRICS_DECOMP, TOOL_RECAP_DECOMP) and written:
             try:
-                base_w, base_h = STRUCTURE_DEPICT_WIDTH, STRUCTURE_DEPICT_HEIGHT
+                base_w, base_h = structure_depiict_width(), structure_depiict_height()
                 for h in written:
                     if h not in self.headers:
                         continue

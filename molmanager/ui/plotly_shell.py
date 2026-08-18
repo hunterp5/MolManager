@@ -159,6 +159,13 @@ def interactive_plot_shell_html() -> str:
         if (e && e.buttons) refreshShiftHeld(e);
       }}, true);
       window.addEventListener('mouseup', function(e) {{ refreshShiftHeld(e); }}, true);
+      // Snapshot zoom/pan before lasso/click select so restyle cannot reset axis ranges.
+      window.addEventListener('mousedown', function(e) {{
+        try {{
+          if (!e || e.button !== 0 || middlePan) return;
+          snapshotAxisView();
+        }} catch (_sv) {{}}
+      }}, true);
       // Do not clear shiftHeld on blur — Qt focus steals otherwise break Shift+lasso.
       // Middle-mouse pan + wheel zoom for 2D cartesian plots.
       // Pan: update axis ranges (rAF + in-flight coalesce) so the data view moves in-place.
@@ -171,6 +178,93 @@ def interactive_plot_shell_html() -> str:
       var zoomRafPending = false;
       var zoomPending = null; // {{x, y, factor}}
       var viewNavBusy = false;
+      var savedViewOnPointerDown = null;
+      var savedViewAt = 0;
+
+      function captureAxisView() {{
+        try {{
+          if (!gd || !gd._fullLayout) return null;
+          var fl = gd._fullLayout;
+          var patch = {{}};
+          function takeRange(axisName, axis) {{
+            if (!axis || !axis.range || axis.range.length < 2) return;
+            patch[axisName + ".range"] = [axis.range[0], axis.range[1]];
+            patch[axisName + ".autorange"] = false;
+          }}
+          takeRange("xaxis", fl.xaxis);
+          takeRange("yaxis", fl.yaxis);
+          if (fl.scene) {{
+            takeRange("scene.xaxis", fl.scene.xaxis);
+            takeRange("scene.yaxis", fl.scene.yaxis);
+            takeRange("scene.zaxis", fl.scene.zaxis);
+            if (fl.scene.camera) {{
+              try {{
+                patch["scene.camera"] = JSON.parse(JSON.stringify(fl.scene.camera));
+              }} catch (_cam) {{}}
+            }}
+          }}
+          return Object.keys(patch).length ? patch : null;
+        }} catch (_cap) {{
+          return null;
+        }}
+      }}
+
+      function snapshotAxisView() {{
+        savedViewOnPointerDown = captureAxisView();
+        savedViewAt = Date.now();
+        return savedViewOnPointerDown;
+      }}
+
+      function forgetSavedAxisView() {{
+        savedViewOnPointerDown = null;
+        savedViewAt = 0;
+      }}
+
+      function viewForSelectionRestore() {{
+        if (savedViewOnPointerDown && (Date.now() - savedViewAt) < 2000) {{
+          return savedViewOnPointerDown;
+        }}
+        return captureAxisView();
+      }}
+
+      function freezeAxisAutorange() {{
+        try {{
+          if (!gd || !gd.layout) return;
+          if (gd.layout.xaxis) gd.layout.xaxis.autorange = false;
+          if (gd.layout.yaxis) gd.layout.yaxis.autorange = false;
+          if (gd.layout.scene) {{
+            if (gd.layout.scene.xaxis) gd.layout.scene.xaxis.autorange = false;
+            if (gd.layout.scene.yaxis) gd.layout.scene.yaxis.autorange = false;
+            if (gd.layout.scene.zaxis) gd.layout.scene.zaxis.autorange = false;
+          }}
+        }} catch (_fz) {{}}
+      }}
+
+      function restoreCapturedView(view, extra) {{
+        var patch = extra ? Object.assign({{}}, extra) : {{}};
+        var src = view || viewForSelectionRestore();
+        if (src) {{
+          for (var k in src) {{
+            if (Object.prototype.hasOwnProperty.call(src, k) && patch[k] === undefined) {{
+              patch[k] = src[k];
+            }}
+          }}
+        }}
+        if (!Object.keys(patch).length) return Promise.resolve();
+        try {{
+          return Plotly.relayout(gd, patch);
+        }} catch (_rv) {{
+          return Promise.resolve();
+        }}
+      }}
+
+      function afterSelectionDraw(op, view) {{
+        freezeAxisAutorange();
+        var v = view || viewForSelectionRestore();
+        return Promise.resolve(op).then(function() {{
+          return restoreCapturedView(v, {{selections: []}});
+        }}).catch(function() {{}});
+      }}
 
       function isCartesian2dNavigable() {{
         try {{
@@ -361,6 +455,7 @@ def interactive_plot_shell_html() -> str:
 
       function onWheelZoom(ev) {{
         if (!isCartesian2dNavigable()) return;
+        forgetSavedAxisView();
         if (middlePan) {{
           try {{ ev.preventDefault(); }} catch (_p0) {{}}
           return;
@@ -409,6 +504,7 @@ def interactive_plot_shell_html() -> str:
               yr0: Number(ya.range[0]),
               yr1: Number(ya.range[1])
             }};
+            forgetSavedAxisView();
             panLastClient = {{ x: ev.clientX, y: ev.clientY }};
             document.body.style.cursor = "grabbing";
             setViewNavBusy(true);
@@ -460,7 +556,7 @@ def interactive_plot_shell_html() -> str:
       function clearSelectionShapes() {{
         try {{
           if (!gd || !gd.layout) return;
-          Plotly.relayout(gd, {{selections: []}});
+          restoreCapturedView(viewForSelectionRestore(), {{selections: []}});
         }} catch (_clrSel) {{}}
       }}
       function beginSuppressPlotBridge(ms) {{
@@ -928,6 +1024,11 @@ def interactive_plot_shell_html() -> str:
         try {{
           // Clearing Plotly lasso shapes can re-fire plotly_selected; ignore bridge while we paint.
           beginSuppressPlotBridge(500);
+          freezeAxisAutorange();
+          var view = viewForSelectionRestore();
+          function keepView(op) {{
+            return afterSelectionDraw(op, view);
+          }}
           var idxs = parseSelectionIndices(indicesJson);
           if (!gd || !gd.data || !gd.data.length) return;
           var resolved = primarySelectionTraceInfo();
@@ -939,7 +1040,7 @@ def interactive_plot_shell_html() -> str:
             var overlay3dIdx = findSelectedOverlayTraceIndex();
             if (!idxs.length || idxs.length > SELECTION_OVERLAY_MAX) {{
               if (overlay3dIdx >= 0) {{
-                try {{ Plotly.deleteTraces(gd, [overlay3dIdx]); }} catch (_del3d) {{}}
+                keepView(Plotly.deleteTraces(gd, [overlay3dIdx]));
               }}
               return;
             }}
@@ -953,16 +1054,16 @@ def interactive_plot_shell_html() -> str:
             }}
             if (overlay3dIdx >= 0) {{
               if (sx.length) {{
-                Plotly.restyle(gd, {{x: [sx], y: [sy], z: [sz]}}, [overlay3dIdx]);
+                keepView(Plotly.restyle(gd, {{x: [sx], y: [sy], z: [sz]}}, [overlay3dIdx]));
               }} else {{
-                Plotly.deleteTraces(gd, [overlay3dIdx]);
+                keepView(Plotly.deleteTraces(gd, [overlay3dIdx]));
               }}
             }} else if (sx.length) {{
-              Plotly.addTraces(gd, {{
+              keepView(Plotly.addTraces(gd, {{
                 type: "scatter3d", x: sx, y: sy, z: sz, mode: "markers",
                 marker: {{size: 7, opacity: 1.0, color: "#d62828"}},
                 name: "Selected", showlegend: false, hoverinfo: "skip"
-              }});
+              }}));
             }}
             return;
           }}
@@ -996,20 +1097,21 @@ def interactive_plot_shell_html() -> str:
                 showlegend: false,
                 hoverinfo: "skip",
               }};
-              if (overlayIdx >= 0) {{
-                Plotly.restyle(gd, {{x: [sx], y: [sy]}}, [overlayIdx]);
-              }} else {{
-                Plotly.addTraces(gd, overlay);
-              }}
+              var overlayOp = (overlayIdx >= 0)
+                ? Plotly.restyle(gd, {{x: [sx], y: [sy]}}, [overlayIdx])
+                : Plotly.addTraces(gd, overlay);
               var dimPatch = {{"unselected.marker.opacity": [], selectedpoints: []}};
               for (var di = 0; di < selTraces.length; di++) {{
                 dimPatch["unselected.marker.opacity"].push(0.35);
                 dimPatch.selectedpoints.push([]);
               }}
-              Plotly.restyle(gd, dimPatch, selTraces);
+              keepView(Promise.resolve(overlayOp).then(function() {{
+                return Plotly.restyle(gd, dimPatch, selTraces);
+              }}));
             }} else {{
+              var scatterOp = Promise.resolve();
               if (overlayIdx >= 0) {{
-                try {{ Plotly.deleteTraces(gd, [overlayIdx]); }} catch (_delOv) {{}}
+                try {{ scatterOp = Plotly.deleteTraces(gd, [overlayIdx]); }} catch (_delOv) {{}}
               }}
               if (!idxs.length) {{
                 var clearPatchSc = {{selectedpoints: [], "unselected.marker.opacity": []}};
@@ -1017,17 +1119,20 @@ def interactive_plot_shell_html() -> str:
                   clearPatchSc.selectedpoints.push(null);
                   clearPatchSc["unselected.marker.opacity"].push(0.85);
                 }}
-                Plotly.restyle(gd, clearPatchSc, selTraces);
+                keepView(Promise.resolve(scatterOp).then(function() {{
+                  return Plotly.restyle(gd, clearPatchSc, selTraces);
+                }}));
               }} else {{
                 var selPatchSc = {{selectedpoints: [], "unselected.marker.opacity": []}};
                 for (var siSc = 0; siSc < selTraces.length; siSc++) {{
                   selPatchSc.selectedpoints.push(idxs);
                   selPatchSc["unselected.marker.opacity"].push(0.35);
                 }}
-                Plotly.restyle(gd, selPatchSc, selTraces);
+                keepView(Promise.resolve(scatterOp).then(function() {{
+                  return Plotly.restyle(gd, selPatchSc, selTraces);
+                }}));
               }}
             }}
-            clearSelectionShapes();
             return;
           }}
           if (!idxs.length) {{
@@ -1036,8 +1141,7 @@ def interactive_plot_shell_html() -> str:
               clearPatch.selectedpoints.push(null);
               clearPatch["unselected.marker.opacity"].push(0.85);
             }}
-            Plotly.restyle(gd, clearPatch, selTraces);
-            clearSelectionShapes();
+            keepView(Plotly.restyle(gd, clearPatch, selTraces));
             return;
           }}
           var selPatch = {{selectedpoints: [], "unselected.marker.opacity": []}};
@@ -1045,8 +1149,7 @@ def interactive_plot_shell_html() -> str:
             selPatch.selectedpoints.push(idxs);
             selPatch["unselected.marker.opacity"].push(0.35);
           }}
-          Plotly.restyle(gd, selPatch, selTraces);
-          clearSelectionShapes();
+          keepView(Plotly.restyle(gd, selPatch, selTraces));
         }} catch (_selVis) {{}}
       }}
       function flushPendingSelection() {{
@@ -1104,6 +1207,7 @@ def interactive_plot_shell_html() -> str:
             }} catch (_mid) {{}}
             try {{
               gd.removeAllListeners('plotly_click');
+              gd.removeAllListeners('plotly_selecting');
               gd.removeAllListeners('plotly_selected');
               gd.removeAllListeners('plotly_deselect');
               gd.removeAllListeners('plotly_hover');
@@ -1168,6 +1272,13 @@ def interactive_plot_shell_html() -> str:
                 refreshShiftHeld(clickEv);
                 bridge.pointClicked(pn, isAdditiveEvent(clickEv));
               }} catch (_clickErr) {{}}
+            }});
+            gd.on('plotly_selecting', function() {{
+              try {{
+                if (!savedViewOnPointerDown || (Date.now() - savedViewAt) >= 2000) {{
+                  snapshotAxisView();
+                }}
+              }} catch (_seling) {{}}
             }});
             gd.on('plotly_selected', function(ev) {{
               try {{

@@ -53,9 +53,10 @@ from ..compound_table_model import (
     CompoundTableView,
     StructureDelegate,
     STRUCTURE_COLUMN_HORIZONTAL_PADDING,
-    STRUCTURE_DEPICT_HEIGHT,
-    STRUCTURE_DEPICT_WIDTH,
-    STRUCTURE_ROW_DEFAULT_HEIGHT,
+    structure_column_minimum_width,
+    structure_depiict_height,
+    structure_depiict_width,
+    structure_row_default_height,
 )
 from ..filter_proxy_model import FilterProxyModel
 from ..filters.cards import FilterCardsHost
@@ -447,9 +448,9 @@ class ChemicalTableApp(
     ):
         """Queue 2D structure rendering on the render-only thread pool."""
         if w is None:
-            w = STRUCTURE_DEPICT_WIDTH
+            w = structure_depiict_width()
         if h is None:
-            h = STRUCTURE_DEPICT_HEIGHT
+            h = structure_depiict_height()
         self._render_threadpool.start(
             RenderWorker(
                 oid,
@@ -483,7 +484,7 @@ class ChemicalTableApp(
         self.table.setColumnHidden(0, True)
         self.table.setAlternatingRowColors(True)
         vh = self.table.verticalHeader()
-        vh.setDefaultSectionSize(STRUCTURE_ROW_DEFAULT_HEIGHT)
+        vh.setDefaultSectionSize(structure_row_default_height())
         vh.setDefaultAlignment(Qt.AlignCenter)
         vh.setContextMenuPolicy(Qt.CustomContextMenu)
         vh.customContextMenuRequested.connect(self.show_row_header_menu)
@@ -498,8 +499,9 @@ class ChemicalTableApp(
         self.table.horizontalHeader().sectionClicked.connect(self._on_horizontal_header_section_clicked)
         self.table.setColumnWidth(
             CompoundTableModel.STRUCTURE_COL,
-            STRUCTURE_DEPICT_WIDTH + STRUCTURE_COLUMN_HORIZONTAL_PADDING,
+            structure_depiict_width() + STRUCTURE_COLUMN_HORIZONTAL_PADDING,
         )
+        self.table.set_structure_column_minimum_width(structure_column_minimum_width())
         self.table.setContextMenuPolicy(Qt.CustomContextMenu)
         self.table.customContextMenuRequested.connect(self.show_table_menu)
         self.table.doubleClicked.connect(self._on_table_double_clicked)

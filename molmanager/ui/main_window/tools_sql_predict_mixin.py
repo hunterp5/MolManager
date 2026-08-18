@@ -30,7 +30,7 @@ from rdkit import Chem
 
 from ...config import load_config
 from ...services.sql_load_policy import engine_kwargs_for_sql_load, sql_looks_destructive
-from ..compound_table_model import STRUCTURE_DEPICT_HEIGHT, STRUCTURE_DEPICT_WIDTH
+from ..compound_table_model import structure_depiict_height, structure_depiict_width
 from ...utils import redact_sqlalchemy_url, safe_float
 from ..singleton_modeless_dialog import reuse_or_show_modeless_singleton
 from ..strings import (
@@ -533,7 +533,7 @@ class ToolsSqlPredictMixin:
         idx = int(getattr(self, "_external_append_render_index", 0))
         chunk = 64
         slice_oids = oids[idx : idx + chunk]
-        base_w, base_h = STRUCTURE_DEPICT_WIDTH, STRUCTURE_DEPICT_HEIGHT
+        base_w, base_h = structure_depiict_width(), structure_depiict_height()
         tasks, row_map = self._build_render2d_tasks_for_oids(slice_oids, base_w, base_h)
         self._external_append_render_tasks.extend(tasks)
         self._external_append_render_row_by_oid.update(row_map)
