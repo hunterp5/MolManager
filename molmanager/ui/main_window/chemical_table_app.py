@@ -536,6 +536,7 @@ class ChemicalTableApp(
         from .workspace_layout import WorkspaceLayoutManager
 
         self._workspace_layout = WorkspaceLayoutManager(self._table_area, cw)
+        self._workspace_layout.pane_close_requested.connect(self.close_plot_pane)
         self._workspace_layout.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
 
         # Search spans the full workspace width (above table+plots), stopping at the filter panel.

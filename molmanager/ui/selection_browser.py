@@ -14,13 +14,13 @@
 # You should have received a copy of the GNU General Public License
 # along with MolManager.  If not, see <https://www.gnu.org/licenses/>.
 
-"""Modeless dialog: step through selected table rows with structure preview."""
+"""Selection browser panel: step through table rows with structure preview."""
 
 from __future__ import annotations
 
 from typing import Any
 
-from PyQt5.QtCore import QItemSelectionModel, Qt, QTimer
+from PyQt5.QtCore import QItemSelectionModel, Qt, QTimer, QEvent
 from PyQt5.QtGui import QImage, QKeySequence, QPixmap
 from PyQt5.QtWidgets import (
     QAbstractItemView,
@@ -32,6 +32,7 @@ from PyQt5.QtWidgets import (
     QShortcut,
     QSizePolicy,
     QVBoxLayout,
+    QWidget,
 )
 
 from ..display_constants import (
@@ -44,21 +45,26 @@ from .qt_widget_utils import make_window_minimizable
 from .table_selection import item_selection_for_view_rows
 
 
-class SelectionBrowserDialog(QDialog):
+class SelectionBrowserWidget(QWidget):
     """Forward/back through the current selection or entire table; shows a structure preview."""
 
-    def __init__(self, parent: Any = None):
+    dockable_in_workspace = True
+
+    def __init__(self, parent_app: Any = None, parent: QWidget | None = None):
         super().__init__(parent)
-        self._app = parent
-        self.setWindowTitle("Browser")
-        self.resize(480, 520)
+        self.parent_app = parent_app
+        self._app = parent_app
+        self._window_title = "Browser"
 
         self._rows: list[int] = []
         self._idx = 0
         self._preview_pix_cache: dict[tuple[int, int, int], QPixmap] = {}  # (oid, w_px, h_px) -> pixmap
 
         root = QVBoxLayout(self)
-        self._cb_only_selected = QCheckBox("Browse Only Selected")
+        root.setContentsMargins(8, 8, 8, 8)
+        root.setSpacing(6)
+
+        self._cb_only_selected = QCheckBox("Browse Selected")
         self._cb_only_selected.setToolTip(
             "When checked, Browser walks only the current selection.\n"
             "When unchecked, Browser walks the entire table."
@@ -77,9 +83,15 @@ class SelectionBrowserDialog(QDialog):
         )
         root.addWidget(self._struct_label, 1)
 
-        self._prop_panel = PropertyColumnsPanel(self)
+        self._options_host = QWidget(self)
+        options_ly = QVBoxLayout(self._options_host)
+        options_ly.setContentsMargins(0, 0, 0, 0)
+        options_ly.setSpacing(0)
+        self._prop_panel = PropertyColumnsPanel(self._options_host)
         self._prop_panel.bind_app(self._app)
-        root.addWidget(self._prop_panel)
+        options_ly.addWidget(self._prop_panel)
+        root.addWidget(self._options_host)
+        self._options_visible = True
 
         row_btns = QHBoxLayout()
         self._btn_first = QPushButton("<<")
@@ -90,16 +102,42 @@ class SelectionBrowserDialog(QDialog):
         self._btn_fwd.setToolTip("Next eligible row (→)")
         self._btn_last = QPushButton(">>")
         self._btn_last.setToolTip("Last eligible row in scope (End)")
-        self._btn_toggle_select = QPushButton("Select")
-        self._btn_toggle_select.setToolTip("Select or deselect this row in the table")
         row_btns.addWidget(self._btn_first)
         row_btns.addWidget(self._btn_back)
         row_btns.addWidget(self._btn_fwd)
         row_btns.addWidget(self._btn_last)
-        row_btns.addWidget(self._cb_only_selected)
-        row_btns.addWidget(self._btn_toggle_select)
         row_btns.addStretch()
         root.addLayout(row_btns)
+
+        self._btn_toggle_select = QPushButton("Select")
+        self._btn_toggle_select.setToolTip("Select or deselect this row in the table")
+
+        foot = QHBoxLayout()
+        foot.setContentsMargins(0, 4, 0, 0)
+        self._add_to_main_btn = QPushButton("Add to Main Window")
+        self._add_to_main_btn.setToolTip("Dock this browser beside the compound table.")
+        self._add_to_main_btn.clicked.connect(self._add_to_main_window)
+        foot.addWidget(self._add_to_main_btn)
+        self._send_window_btn = QPushButton("Send to New Window")
+        self._send_window_btn.setToolTip("Open this docked browser in a separate floating window.")
+        self._send_window_btn.clicked.connect(self._send_to_new_window)
+        foot.addWidget(self._send_window_btn)
+        self._close_btn = QPushButton("Close Browser")
+        self._close_btn.setToolTip("Close this docked browser and remove it from the workspace pane.")
+        self._close_btn.clicked.connect(self._close_docked_browser)
+        foot.addWidget(self._close_btn)
+        foot.addWidget(self._cb_only_selected)
+        foot.addWidget(self._btn_toggle_select)
+        self._toggle_options_btn = QPushButton("Hide Options")
+        self._toggle_options_btn.setAutoDefault(False)
+        self._toggle_options_btn.setDefault(False)
+        self._toggle_options_btn.setToolTip(
+            "Hide column pickers so only the structure preview and navigation controls are shown."
+        )
+        self._toggle_options_btn.clicked.connect(self._toggle_options_visible)
+        foot.addWidget(self._toggle_options_btn)
+        foot.addStretch()
+        root.addLayout(foot)
 
         self._btn_first.clicked.connect(self._go_first)
         self._btn_back.clicked.connect(lambda: self._step(-1))
@@ -120,7 +158,6 @@ class SelectionBrowserDialog(QDialog):
             lambda: self.refresh_from_app(preserve_position=True)
         )
 
-        # Default to "only selected" when there *is* a selection; otherwise browse whole table.
         try:
             has_sel = bool(self._app._selected_logical_rows())
         except Exception:
@@ -128,7 +165,94 @@ class SelectionBrowserDialog(QDialog):
         self._cb_only_selected.setChecked(has_sel)
         self.refresh_from_app()
         self._wire_table_updates()
-        make_window_minimizable(self)
+        self._sync_footer_chrome()
+        self._sync_options_chrome()
+        self.setMinimumWidth(self.embedded_minimum_width())
+
+    def rebind_parent_app(self, parent_app: Any | None) -> None:
+        """Update the host app after dock/undock."""
+        self.parent_app = parent_app
+        self._app = parent_app
+        self._prop_panel.bind_app(parent_app)
+
+    def embedded_minimum_width(self) -> int:
+        return max(360, BROWSER_STRUCTURE_PREVIEW_MIN_WIDTH // 2)
+
+    def embedded_preferred_width(self) -> int:
+        return max(self.embedded_minimum_width(), 480)
+
+    def create_floating_dialog(self, parent_app) -> "SelectionBrowserDialog":
+        """Re-open this browser in a floating window after undocking from the main table."""
+        self.show()
+        return SelectionBrowserDialog(parent_app, panel=self)
+
+    def _add_to_main_window(self) -> None:
+        if self.parent_app is None:
+            return
+        dock = getattr(self.parent_app, "dock_plot_widget", None)
+        if not callable(dock):
+            return
+        dlg = self.window()
+        if not dock(self):
+            return
+        if isinstance(dlg, SelectionBrowserDialog):
+            dlg._panel = None
+            dlg._force_close = True
+            dlg.close()
+
+    def _send_to_new_window(self) -> None:
+        if self.parent_app is not None:
+            undock = getattr(self.parent_app, "undock_plot_to_window", None)
+            if callable(undock):
+                undock(self)
+
+    def _close_docked_browser(self) -> None:
+        if self.parent_app is not None:
+            close_fn = getattr(self.parent_app, "close_docked_plot", None)
+            if callable(close_fn):
+                close_fn(self)
+
+    def _is_docked_in_main_window(self) -> bool:
+        app = self.parent_app
+        if app is None:
+            return False
+        check = getattr(app, "is_plot_docked", None)
+        if callable(check):
+            return bool(check(self))
+        return False
+
+    def _sync_footer_chrome(self) -> None:
+        floating = isinstance(self.window(), SelectionBrowserDialog)
+        docked = self._is_docked_in_main_window()
+        self._add_to_main_btn.setVisible(floating)
+        self._send_window_btn.setVisible(docked)
+        self._close_btn.setVisible(docked)
+
+    def _sync_options_chrome(self) -> None:
+        """Show or hide property column pickers; keep the toggle button visible."""
+        visible = bool(getattr(self, "_options_visible", True))
+        host = getattr(self, "_options_host", None)
+        if host is not None:
+            host.setVisible(visible)
+        btn = getattr(self, "_toggle_options_btn", None)
+        if btn is not None:
+            if visible:
+                btn.setText("Hide Options")
+                btn.setToolTip(
+                    "Hide column pickers so only the structure preview and navigation controls are shown."
+                )
+            else:
+                btn.setText("Show Options")
+                btn.setToolTip("Show customizable property column pickers.")
+
+    def _toggle_options_visible(self) -> None:
+        self._options_visible = not bool(getattr(self, "_options_visible", True))
+        self._sync_options_chrome()
+
+    def event(self, event) -> bool:  # noqa: N802 — Qt API
+        if event.type() == QEvent.ParentChange:
+            self._sync_footer_chrome()
+        return super().event(event)
 
     def _wire_table_updates(self) -> None:
         """Keep Browser in sync when the table, filters, or selection change."""
@@ -143,7 +267,6 @@ class SelectionBrowserDialog(QDialog):
             self._auto_refresh_timer.start()
 
         def _on_data_changed(top_left, bottom_right, roles=()) -> None:
-            # Ignore structure-column paint while scrolling (same as plot replot filter).
             structure_col = CompoundTableModel.STRUCTURE_COL
             if (
                 top_left.isValid()
@@ -176,7 +299,7 @@ class SelectionBrowserDialog(QDialog):
             sm.selectionChanged.connect(_schedule_refresh)
         self._table_updates_wired = True
 
-    def resizeEvent(self, event) -> None:
+    def resizeEvent(self, event) -> None:  # noqa: N802 — Qt API
         super().resizeEvent(event)
         if self._rows and 0 <= self._idx < len(self._rows):
             self._update_preview(self._rows[self._idx])
@@ -271,7 +394,6 @@ class SelectionBrowserDialog(QDialog):
             self._focus_row(self._rows[0])
             return
         nxt = (self._idx + delta) % n
-        # Prefer skipping rows hidden by filters so the main table view matches.
         start = nxt
         for _ in range(n):
             r = self._rows[nxt]
@@ -305,8 +427,6 @@ class SelectionBrowserDialog(QDialog):
         view_ix = self._view_index_for_source_row(logical_row)
         if view_ix is None:
             return
-        # Update the current cell only; do not replace the user's multi-selection
-        # (plain setCurrentIndex behaves like navigating to another row).
         sm = tbl.selectionModel()
         if sm is not None:
             sm.setCurrentIndex(view_ix, QItemSelectionModel.Current)
@@ -321,7 +441,6 @@ class SelectionBrowserDialog(QDialog):
         self._update_property_values()
 
     def _refresh_property_columns(self) -> None:
-        """Populate column pickers from current table headers."""
         self._prop_panel.refresh_columns()
 
     def _current_row(self) -> int | None:
@@ -372,7 +491,6 @@ class SelectionBrowserDialog(QDialog):
         mode = QItemSelectionModel.Deselect if already else QItemSelectionModel.Select
         sm.select(sel, mode | QItemSelectionModel.Rows)
 
-        # If browsing Selected Rows Only, selection changes affect scope.
         if self._cb_only_selected.isChecked():
             try:
                 oid = int(app._table_model.row_oid(r))
@@ -417,14 +535,12 @@ class SelectionBrowserDialog(QDialog):
         return m.data(ix, Qt.DecorationRole)
 
     def _preview_pixel_size(self) -> tuple[int, int, float]:
-        """Device-pixel width/height for a crisp Browser preview (matches label size)."""
         dpr = max(1.0, float(self.devicePixelRatioF()))
         lw = max(self._struct_label.width(), BROWSER_STRUCTURE_PREVIEW_MIN_WIDTH)
         lh = max(self._struct_label.height(), BROWSER_STRUCTURE_PREVIEW_MIN_HEIGHT)
         return int(lw * dpr), int(lh * dpr), dpr
 
     def _render_preview_pixmap(self, logical_row: int, pw: int, ph: int) -> QPixmap | None:
-        """High-resolution 2D depiction for Browser (do not upscale the table column pixmap)."""
         try:
             from rdkit.Chem.Draw import rdMolDraw2D
         except Exception:
@@ -484,7 +600,7 @@ class SelectionBrowserDialog(QDialog):
         if n == 0:
             if self._cb_only_selected.isChecked():
                 self._meta.setText(
-                    "No rows selected — uncheck “Browse Only Selected” or select rows in the table."
+                    "No rows selected — uncheck “Browse Selected” or select rows in the table."
                 )
             else:
                 self._meta.setText("Table is empty.")
@@ -498,6 +614,43 @@ class SelectionBrowserDialog(QDialog):
         if scroll_table:
             self._focus_row(r)
         else:
-            # Auto-refresh: update caption/preview without yanking the main table scroll.
             self._sync_caption(r)
             self._update_preview(r)
+
+
+class SelectionBrowserDialog(QDialog):
+    """Floating window hosting a :class:`SelectionBrowserWidget`."""
+
+    def __init__(self, parent: Any = None, *, panel: SelectionBrowserWidget | None = None):
+        super().__init__(parent)
+        self.parent_app = parent
+        self.setWindowTitle("Browser")
+        self.setModal(False)
+        self.setWindowModality(Qt.NonModal)
+        self.resize(480, 520)
+        self._force_close = False
+
+        if panel is not None:
+            self._panel = panel
+            self._panel.setParent(self)
+            self._panel.rebind_parent_app(parent)
+            self._panel.show()
+        else:
+            self._panel = SelectionBrowserWidget(parent, self)
+
+        root = QVBoxLayout(self)
+        root.setContentsMargins(0, 0, 0, 0)
+        root.addWidget(self._panel, 1)
+        self._panel._sync_footer_chrome()
+        self._panel._sync_options_chrome()
+        make_window_minimizable(self)
+
+    def refresh_from_app(self, *, preserve_position: bool = False) -> None:
+        self._panel.refresh_from_app(preserve_position=preserve_position)
+
+    def closeEvent(self, event) -> None:  # noqa: N802 — Qt API
+        if self._force_close:
+            self._force_close = False
+        elif getattr(self, "_panel", None) is not None and self._panel.parent() is not self:
+            self._panel = None
+        event.accept()

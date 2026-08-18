@@ -2034,7 +2034,20 @@ class TableUIMixin(TableSearchMixin, FilterPanelMixin):
 
     def open_selection_browser(self) -> None:
         """Open modeless dialog to walk selected rows with structure preview."""
-        from ..selection_browser import SelectionBrowserDialog
+        from ..selection_browser import SelectionBrowserDialog, SelectionBrowserWidget
+
+        for w in self.iter_docked_plot_widgets():
+            if isinstance(w, SelectionBrowserWidget):
+                mgr = self._workspace()
+                if mgr is not None:
+                    pane = mgr.pane_for_widget(w)
+                    if pane is not None:
+                        mgr.set_preferred_pane(pane)
+                self.show_docked_plot_panel()
+                w.refresh_from_app(preserve_position=True)
+                w.raise_()
+                self.status_label.setText("Browser: focused in workspace pane.")
+                return
 
         def _factory():
             return SelectionBrowserDialog(self)

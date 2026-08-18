@@ -202,6 +202,31 @@ def test_move_widget_between_panes_keeps_other_pages(qapp):
     assert p1.plot_widget() is b
 
 
+def test_plot_pane_has_close_button(qapp):
+    del qapp
+    pane = PlotPane("pane_test")
+    assert pane._close_btn.text() == "×"
+
+
+def test_remove_pane_reduces_pane_count(qapp):
+    mgr = _manager(qapp)
+    assert len(mgr.plot_panes()) == 2
+    p1 = mgr.plot_panes()[1]
+    assert mgr.remove_pane(p1) is True
+    assert len(mgr.plot_panes()) == 1
+    assert p1 not in mgr.plot_panes()
+
+
+def test_remove_last_pane_switches_to_table_only(qapp):
+    mgr = _manager(qapp)
+    mgr.apply_layout(LAYOUT_TABLE_SINGLE, preserve_plots=False)
+    assert len(mgr.plot_panes()) == 1
+    p0 = mgr.plot_panes()[0]
+    assert mgr.remove_pane(p0) is True
+    assert mgr.layout_id == LAYOUT_TABLE_ONLY
+    assert mgr.plot_panes() == []
+
+
 def test_plot_pane_refresh_theme_reapplies_selection_outline(qapp):
     del qapp
     pane = PlotPane("pane_test")

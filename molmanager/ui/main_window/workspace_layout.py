@@ -71,6 +71,7 @@ class PlotPane(QFrame):
     """Host for one or more docked plot widgets, with pager chrome when stacked."""
 
     activated = pyqtSignal(object)  # PlotPane
+    close_requested = pyqtSignal(object)  # PlotPane
 
     def __init__(self, pane_id: str, parent: QWidget | None = None):
         super().__init__(parent)
@@ -85,6 +86,24 @@ class PlotPane(QFrame):
         self._root = QVBoxLayout(self)
         self._root.setContentsMargins(2, 2, 2, 2)
         self._root.setSpacing(0)
+
+        self._header = QWidget()
+        self._header.setObjectName("PlotPaneHeader")
+        header_ly = QHBoxLayout(self._header)
+        header_ly.setContentsMargins(2, 0, 2, 0)
+        header_ly.setSpacing(0)
+        header_ly.addStretch(1)
+        self._close_btn = QPushButton("×")
+        self._close_btn.setObjectName("PlotPaneClose")
+        self._close_btn.setFixedSize(22, 22)
+        self._close_btn.setFlat(True)
+        self._close_btn.setFocusPolicy(Qt.NoFocus)
+        self._close_btn.setAutoDefault(False)
+        self._close_btn.setDefault(False)
+        self._close_btn.setToolTip("Close this plot pane")
+        self._close_btn.clicked.connect(lambda *_a: self.close_requested.emit(self))
+        header_ly.addWidget(self._close_btn)
+        self._root.addWidget(self._header)
 
         self._pager = QWidget()
         self._pager.setObjectName("PlotPanePager")
@@ -140,6 +159,8 @@ class PlotPane(QFrame):
             pal = app.palette()
             self.setPalette(pal)
             for widget in (
+                self._header,
+                self._close_btn,
                 self._pager,
                 self._prev_btn,
                 self._next_btn,
@@ -381,6 +402,7 @@ class WorkspaceLayoutManager(QWidget):
     """Owns the content splitter tree: table region + plot panes."""
 
     layout_changed = pyqtSignal(str)
+    pane_close_requested = pyqtSignal(object)  # PlotPane
 
     def __init__(self, table_area: QWidget, parent: QWidget | None = None):
         super().__init__(parent)
@@ -555,17 +577,88 @@ class WorkspaceLayoutManager(QWidget):
         pref = self.preferred_pane()
         self.set_preferred_pane(pref)
         for p in self._panes:
-            p.activated.connect(self._on_pane_activated)
+            self._wire_pane(p)
 
         self.layout_changed.emit(self._layout_id)
         return extras
 
+    def _splitter_containing(self, widget: QWidget) -> QSplitter | None:
+        for splitter in self._splitters:
+            for i in range(splitter.count()):
+                if splitter.widget(i) is widget:
+                    return splitter
+        return None
+
+    def remove_pane(self, pane: PlotPane) -> bool:
+        """Remove a plot pane from the splitter tree (plots must already be detached)."""
+        if pane not in self._panes:
+            return False
+        if len(self._panes) <= 1:
+            pane.set_plot_widgets([])
+            self._panes.remove(pane)
+            if self._preferred_pane_id == pane.pane_id:
+                self._preferred_pane_id = None
+            pane.setParent(None)
+            pane.deleteLater()
+            self.apply_layout(LAYOUT_TABLE_ONLY, preserve_plots=False)
+            return True
+
+        splitter = self._splitter_containing(pane)
+        if splitter is None:
+            return False
+
+        index = -1
+        for i in range(splitter.count()):
+            if splitter.widget(i) is pane:
+                index = i
+                break
+        if index < 0:
+            return False
+
+        old_sizes = [int(s) for s in splitter.sizes()]
+        removed_size = old_sizes[index] if index < len(old_sizes) else 0
+
+        if self._preferred_pane_id == pane.pane_id:
+            self._preferred_pane_id = None
+
+        pane.set_plot_widgets([])
+        self._panes.remove(pane)
+        pane.setParent(None)
+        pane.deleteLater()
+
+        remaining = splitter.count()
+        if remaining > 0 and removed_size > 0:
+            new_sizes = [int(s) for s in splitter.sizes()]
+            target = min(index, remaining - 1)
+            new_sizes[target] = max(0, new_sizes[target] + removed_size)
+            splitter.setSizes(new_sizes)
+
+        pref = self.preferred_pane()
+        self.set_preferred_pane(pref)
+        return True
+
     def _on_pane_activated(self, pane: PlotPane) -> None:
         self.set_preferred_pane(pane)
+
+    def _on_pane_close_requested(self, pane: PlotPane) -> None:
+        self.pane_close_requested.emit(pane)
+
+    def _wire_pane(self, pane: PlotPane) -> None:
+        try:
+            pane.activated.disconnect(self._on_pane_activated)
+        except TypeError:
+            pass
+        try:
+            pane.close_requested.disconnect(self._on_pane_close_requested)
+        except TypeError:
+            pass
+        pane.activated.connect(self._on_pane_activated)
+        pane.close_requested.connect(self._on_pane_close_requested)
 
     def _new_pane(self, index: int) -> PlotPane:
         pane = PlotPane(f"pane_{index}", self)
         self._panes.append(pane)
+        self._wire_pane(pane)
         return pane
 
     def _track_splitter(self, splitter: QSplitter) -> QSplitter:

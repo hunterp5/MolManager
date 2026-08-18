@@ -30,6 +30,17 @@ class PlotToolsMixin:
     def _workspace(self):
         return getattr(self, "_workspace_layout", None)
 
+    @staticmethod
+    def _docked_widget_kind(plot_widget) -> str:
+        title = getattr(plot_widget, "_window_title", None)
+        if title:
+            return str(title)
+        if getattr(plot_widget, "dockable_in_workspace", False) and not getattr(
+            plot_widget, "only_selected_cb", None
+        ):
+            return "Viewer"
+        return "Plot"
+
     def iter_docked_plot_widgets(self):
         mgr = self._workspace()
         if mgr is None:
@@ -444,9 +455,7 @@ class PlotToolsMixin:
         sync_footer = getattr(plot_widget, "_sync_footer_chrome", None)
         if callable(sync_footer):
             sync_footer()
-        kind = "Viewer" if getattr(plot_widget, "dockable_in_workspace", False) and not getattr(
-            plot_widget, "only_selected_cb", None
-        ) else "Plot"
+        kind = self._docked_widget_kind(plot_widget)
         pane_n = mgr.plot_panes().index(pane) + 1
         n_pages = pane.page_count()
         if n_pages > 1:
@@ -473,7 +482,17 @@ class PlotToolsMixin:
                 if isinstance(dlg, PlotDialog):
                     self._register_plot_dialog(dlg)
                 else:
-                    self._register_floating_result_dialog(dlg)
+                    from ..selection_browser import SelectionBrowserDialog
+
+                    if isinstance(dlg, SelectionBrowserDialog):
+                        self._selection_browser_dialog = dlg
+                        try:
+                            dlg.destroyed.connect(self._on_selection_browser_dialog_destroyed)
+                        except Exception:
+                            pass
+                    else:
+                        self._register_floating_result_dialog(dlg)
+                plot_widget.show()
                 dlg.show()
                 dlg.raise_()
                 dlg.activateWindow()
@@ -588,6 +607,41 @@ class PlotToolsMixin:
             pass
         self.status_label.setText("Plot closed.")
 
+    def close_plot_pane(self, pane=None) -> None:
+        """Close a workspace plot pane and delete every plot it contains."""
+        mgr = self._workspace()
+        if mgr is None:
+            return
+        if pane is None:
+            pane = mgr.preferred_pane()
+        if pane is None:
+            self.status_label.setText("No plot pane to close.")
+            return
+
+        widgets = list(pane.plot_widgets())
+        for plot_widget in widgets:
+            self._release_plot_widget_from_panel_host(plot_widget)
+            try:
+                plot_widget.setParent(None)
+                plot_widget.deleteLater()
+            except RuntimeError:
+                pass
+
+        if not mgr.remove_pane(pane):
+            self.status_label.setText("Could not close plot pane.")
+            return
+
+        self._apply_plot_panel_minimum_width()
+        remaining = len(mgr.plot_panes())
+        if remaining:
+            self.status_label.setText(
+                f"Plot pane closed ({len(widgets)} plot(s) removed). {remaining} pane(s) remain."
+            )
+        else:
+            self.status_label.setText(
+                f"Plot pane closed ({len(widgets)} plot(s) removed). Table-only layout."
+            )
+
     def _release_plot_widget_from_panel_host(self, plot_widget) -> None:
         mgr = self._workspace()
         if mgr is not None:
@@ -628,12 +682,25 @@ class PlotToolsMixin:
             self._prepare_tool_dialog(dlg)
             if isinstance(dlg, PlotDialog):
                 self._register_plot_dialog(dlg)
+            else:
+                from ..selection_browser import SelectionBrowserDialog
+
+                if isinstance(dlg, SelectionBrowserDialog):
+                    self._selection_browser_dialog = dlg
+                    try:
+                        dlg.destroyed.connect(self._on_selection_browser_dialog_destroyed)
+                    except Exception:
+                        pass
+                else:
+                    self._register_floating_result_dialog(dlg)
+            plot_widget.show()
             dlg.show()
             dlg.raise_()
             dlg.activateWindow()
-            kind = "Viewer" if getattr(plot_widget, "dockable_in_workspace", False) and not getattr(
-                plot_widget, "only_selected_cb", None
-            ) else "Plot"
+            sync_footer = getattr(plot_widget, "_sync_footer_chrome", None)
+            if callable(sync_footer):
+                sync_footer()
+            kind = self._docked_widget_kind(plot_widget)
             self.status_label.setText(f"{kind}: moved to separate window.")
             return True
 
