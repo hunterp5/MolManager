@@ -78,16 +78,8 @@ class PrepareStructuresMixin:
         if self._abort_if_only_selected_but_empty(only_selected, allowed, "Protonate"):
             return
 
-        # Ensure output column exists.
-        if out_col not in self.headers:
-            nc = self._table_model.columnCount()
-            self.headers.append(out_col)
-            self._table_model.insert_column_at(nc, out_col, None)
+        # Columns are created in on_calc_finished (unique names if they already exist).
         pct_col = "% Protomer"
-        if pct_col not in self.headers:
-            nc = self._table_model.columnCount()
-            self.headers.append(pct_col)
-            self._table_model.insert_column_at(nc, pct_col, None)
 
         data: list[tuple[int, Chem.Mol | None]] = []
         oids_walk = self._all_oids_in_table_order()
@@ -145,12 +137,14 @@ class PrepareStructuresMixin:
             self.status_label.setText("Protonate: no results.")
             return
 
-        # Write column values.
+        # Write column values (unique names if Protonated / % Protomer already exist).
         res = [
             (int(oid), {out_col: str(smi), pct_col: f"{float(pct):.2f}"})
             for oid, smi, pct in rows
         ]
-        self.on_calc_finished(res, [out_col, pct_col], progress_label="Protonate")
+        written = self.on_calc_finished(res, [out_col, pct_col], progress_label="Protonate")
+        if written:
+            out_col = written[0]
 
         if not render_2d:
             return

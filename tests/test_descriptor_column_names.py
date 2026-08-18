@@ -30,3 +30,32 @@ def test_unique_table_column_names_skips_existing() -> None:
     host = _Host(["ID_HIDDEN", "Structure", "LogP", "LogP (1)"])
     names = host._unique_table_column_names(["LogP", "TPSA"])
     assert names == ["LogP (2)", "TPSA"]
+
+
+def test_unique_table_column_names_dedupes_batch() -> None:
+    host = _Host(["ID_HIDDEN", "Structure"])
+    names = host._unique_table_column_names(["Score", "Score", "Other"])
+    assert names == ["Score", "Score (1)", "Other"]
+
+
+def test_on_calc_finished_does_not_replace_existing_column(qapp):  # noqa: ARG001
+    from molmanager.ui.main_window import ChemicalTableApp
+
+    w = ChemicalTableApp()
+    w.headers = ["ID_HIDDEN", "Structure", "LogP"]
+    w._table_model.set_headers(list(w.headers))
+    w._table_model.append_row(0, {"LogP": "1.23"})
+    w.mols = {}
+    w.next_oid = 1
+
+    written = w.on_calc_finished(
+        [(0, {"LogP": "9.99"})],
+        ["LogP"],
+        finish_progress=False,
+    )
+    assert written == ["LogP (1)"]
+    assert "LogP" in w.headers
+    assert "LogP (1)" in w.headers
+    assert w._table_model.value_for_header(0, "LogP") == "1.23"
+    assert w._table_model.value_for_header(0, "LogP (1)") == "9.99"
+    w.close()

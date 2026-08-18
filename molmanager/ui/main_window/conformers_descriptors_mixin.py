@@ -1076,9 +1076,43 @@ class ConformersDescriptorsMixin:
         if callable(refresh_search):
             refresh_search()
 
-    def on_calc_finished(self, res, calc_h, *, finish_progress: bool = True, progress_label: str | None = None):
+    def on_calc_finished(
+        self,
+        res,
+        calc_h,
+        *,
+        finish_progress: bool = True,
+        progress_label: str | None = None,
+    ) -> list[str]:
+        """Write tool results into the table, adding columns as needed.
+
+        Never overwrites an existing column: colliding names are rewritten to
+        ``Name (1)``, ``Name (2)``, … via :meth:`_unique_table_column_names`.
+        Returns the final header list that was written (after uniquify).
+        """
         if finish_progress:
             self._finish_tool_progress(progress_label, status_message=None)
+        calc_h = [str(h) for h in (calc_h or [])]
+        if not calc_h:
+            self.status_label.setText(self._consume_partial_results_notice() or "Done.")
+            return []
+
+        unique_h = self._unique_table_column_names(calc_h)
+        if unique_h != calc_h:
+            rename = {old: new for old, new in zip(calc_h, unique_h) if old != new}
+            if rename:
+                remapped: list[tuple[int, dict]] = []
+                for oid, row_d in res:
+                    row_d = row_d or {}
+                    remapped.append(
+                        (
+                            int(oid),
+                            {rename.get(str(k), str(k)): v for k, v in row_d.items()},
+                        )
+                    )
+                res = remapped
+            calc_h = unique_h
+
         self.table.setSortingEnabled(False)
         try:
             self.table.setUpdatesEnabled(False)
@@ -1091,7 +1125,9 @@ class ConformersDescriptorsMixin:
                 col_at = len(self.headers)
                 self.headers.extend(new_h)
                 self._table_model.insert_columns_at(col_at, new_h, None)
-            bulk_rows = [(int(oid), {h: str(row_d.get(h, "N/A")) for h in calc_h}) for oid, row_d in res]
+            bulk_rows = [
+                (int(oid), {h: str(row_d.get(h, "N/A")) for h in calc_h}) for oid, row_d in res
+            ]
             if bulk_rows:
                 if len(calc_h) == 1:
                     hdr = calc_h[0]
@@ -1119,3 +1155,4 @@ class ConformersDescriptorsMixin:
             except Exception:
                 pass
         self.status_label.setText(self._consume_partial_results_notice() or "Done.")
+        return list(calc_h)

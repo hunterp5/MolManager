@@ -55,7 +55,7 @@ class RandomNumberDialogParams:
 
 
 class RandomNumberDialog(QDialog):
-    """Fill a new or existing column with random numbers for in-scope rows."""
+    """Fill a new column with random numbers for in-scope rows (unique name if needed)."""
 
     def __init__(self, selected_row_count: int = 0, parent=None):
         super().__init__(parent)
@@ -73,7 +73,10 @@ class RandomNumberDialog(QDialog):
         self.name_input = QLineEdit()
         self.name_input.setText("Random")
         self.name_input.setPlaceholderText("Column name")
-        self.name_input.setToolTip("Values are written to this column (created if missing).")
+        self.name_input.setToolTip(
+            "Values are written to a new column with this name. "
+            "If the name already exists, a suffix like (1) is added so the existing column is kept."
+        )
         form.addRow("Column name:", self.name_input)
 
         self.dist_combo = QComboBox()

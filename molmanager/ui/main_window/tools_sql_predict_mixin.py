@@ -54,6 +54,7 @@ class ToolsSqlPredictMixin:
         if not self.new_c:
             QMessageBox.warning(self, TOOL_CALCULATOR, "Enter a name for the new column.")
             return
+        self.new_c = self._unique_table_column_names([self.new_c])[0]
         expr = dlg.expr_input.text().strip()
         if not expr:
             QMessageBox.warning(self, TOOL_CALCULATOR, "Enter an expression to evaluate.")
@@ -140,9 +141,11 @@ class ToolsSqlPredictMixin:
             QMessageBox.warning(self, TOOL_RANDOM_NUMBER, str(exc) or "Invalid random-number settings.")
             return
         rows = [(int(oid), {col: text}) for oid, text in zip(oids, values)]
-        self.on_calc_finished(rows, [col], progress_label=TOOL_RANDOM_NUMBER)
-        self.status_label.setText(f'{TOOL_RANDOM_NUMBER}: column "{col}" updated ({len(rows)} row(s)).')
-
+        written = self.on_calc_finished(rows, [col], progress_label=TOOL_RANDOM_NUMBER)
+        final_col = written[0] if written else col
+        self.status_label.setText(
+            f'{TOOL_RANDOM_NUMBER}: column "{final_col}" updated ({len(rows)} row(s)).'
+        )
     def open_calculator(self):
         if not self.headers:
             return

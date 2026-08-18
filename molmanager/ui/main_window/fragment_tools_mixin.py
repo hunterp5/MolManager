@@ -208,15 +208,15 @@ class FragmentToolsMixin:
 
     def on_fragment_decomp_finished(self, res, col_headers: list, tool_title: str) -> None:
         self._finish_tool_progress(tool_title)
-        self.on_calc_finished(res, col_headers, finish_progress=False)
+        written = self.on_calc_finished(res, col_headers, finish_progress=False)
         do_render = bool(getattr(self, "_fragment_decomp_render_2d_after", False))
         self._fragment_decomp_render_2d_after = False
         # Optionally render new fragment SMILES columns so the user can see the pieces immediately.
         # Uses pixmap-only columns (hide SMILES text) and queues the renders so the GUI stays responsive.
-        if do_render and tool_title in (TOOL_BRICS_DECOMP, TOOL_RECAP_DECOMP) and col_headers:
+        if do_render and tool_title in (TOOL_BRICS_DECOMP, TOOL_RECAP_DECOMP) and written:
             try:
                 base_w, base_h = STRUCTURE_DEPICT_WIDTH, STRUCTURE_DEPICT_HEIGHT
-                for h in col_headers:
+                for h in written:
                     if h not in self.headers:
                         continue
                     renders, row_by_oid = self._build_render2d_tasks_in_table_order(
