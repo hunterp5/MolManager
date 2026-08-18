@@ -106,6 +106,7 @@ from ..plot_color import (
 )
 from ..medchem_space import snapshot_scope_row_indices
 from ..plot_heatmap import build_heatmap_figure, oids_in_heatmap_cell, summarize_heatmap
+from ..plot_labels import add_fit_formula_annotation, apply_plotly_label_overrides
 from ..plot_radar import (
     MAX_RADAR_DISPLAY_ENTRIES,
     MAX_RADAR_TRACES,
@@ -545,6 +546,13 @@ class PlotWidget(QWidget):
         self._refresh_fit_combo_items()
         self.fit_combo.currentIndexChanged.connect(self._on_fit_option_changed)
         analysis_row.addWidget(self.fit_combo)
+        self.show_fit_formula_cb = QCheckBox("Show formula on plot")
+        self.show_fit_formula_cb.setChecked(False)
+        self.show_fit_formula_cb.setToolTip(
+            "Draw the fit equation on the graph (also shown in the statistics panel)."
+        )
+        self.show_fit_formula_cb.stateChanged.connect(self._schedule_plot)
+        analysis_row.addWidget(self.show_fit_formula_cb)
         trunc_bound_w = 64
         self._trunc_lower_label = QLabel("Trunc lower:")
         self._trunc_lower_label.setToolTip("Lower truncation bound (empty = no lower bound).")
@@ -569,6 +577,45 @@ class PlotWidget(QWidget):
 
         self._axes_group = gb_axes
         ctrl_root.addWidget(gb_axes)
+
+        gb_labels = QGroupBox("Titles")
+        labels_l = QVBoxLayout(gb_labels)
+        labels_l.setSpacing(4)
+        title_row = QHBoxLayout()
+        title_row.setSpacing(6)
+        title_row.addWidget(QLabel("Plot title:"))
+        self.plot_title_edit = QLineEdit()
+        self.plot_title_edit.setPlaceholderText("Optional (empty = no title)")
+        self.plot_title_edit.setToolTip("Overall figure title. Leave blank for no title.")
+        self.plot_title_edit.editingFinished.connect(self._schedule_plot)
+        title_row.addWidget(self.plot_title_edit, 1)
+        labels_l.addLayout(title_row)
+        axis_title_row = QHBoxLayout()
+        axis_title_row.setSpacing(6)
+        axis_title_row.addWidget(QLabel("X title:"))
+        self.xaxis_title_edit = QLineEdit()
+        self.xaxis_title_edit.setPlaceholderText("Auto (column name)")
+        self.xaxis_title_edit.setToolTip("Override the X-axis title. Empty keeps the column name.")
+        self.xaxis_title_edit.editingFinished.connect(self._schedule_plot)
+        axis_title_row.addWidget(self.xaxis_title_edit, 1)
+        axis_title_row.addWidget(QLabel("Y title:"))
+        self.yaxis_title_edit = QLineEdit()
+        self.yaxis_title_edit.setPlaceholderText("Auto (column name)")
+        self.yaxis_title_edit.setToolTip("Override the Y-axis title. Empty keeps the column name.")
+        self.yaxis_title_edit.editingFinished.connect(self._schedule_plot)
+        axis_title_row.addWidget(self.yaxis_title_edit, 1)
+        self._z_title_label = QLabel("Z title:")
+        axis_title_row.addWidget(self._z_title_label)
+        self.zaxis_title_edit = QLineEdit()
+        self.zaxis_title_edit.setPlaceholderText("Auto (column name)")
+        self.zaxis_title_edit.setToolTip(
+            "Override the Z-axis title (3D scatter). Empty keeps the column name."
+        )
+        self.zaxis_title_edit.editingFinished.connect(self._schedule_plot)
+        axis_title_row.addWidget(self.zaxis_title_edit, 1)
+        labels_l.addLayout(axis_title_row)
+        self._labels_group = gb_labels
+        ctrl_root.addWidget(gb_labels)
 
         self._radar_host = QWidget()
         radar_ly = QVBoxLayout(self._radar_host)
@@ -661,7 +708,9 @@ class PlotWidget(QWidget):
         self._close_plot_btn.clicked.connect(self._close_docked_plot)
         foot.addWidget(self._close_plot_btn)
         self._opts_btn = QPushButton("Plot Options")
-        self._opts_btn.setToolTip("Configure plot type, axes, color, fit, and statistics.")
+        self._opts_btn.setToolTip(
+            "Configure plot type, axes, titles, color, fit, and statistics."
+        )
         self._opts_btn.clicked.connect(self._open_plot_options)
         foot.addWidget(self._opts_btn)
         foot.addStretch(1)
@@ -709,7 +758,7 @@ class PlotWidget(QWidget):
             model.headerDataChanged.connect(self._on_table_header_data_changed)
 
     def _open_plot_options(self) -> None:
-        """Open the plot configuration dialog (axes, color, fit, statistics)."""
+        """Open the plot configuration dialog (axes, titles, color, fit, statistics)."""
         show_plot_options_dialog(self._opts_dialog)
 
     def _add_to_main_window(self) -> None:
@@ -1193,7 +1242,9 @@ class PlotWidget(QWidget):
             return None
         xs, ys, name = fit
         self._add_fit_line_trace(fig, xs, ys)
-        return self._fit_summary_from_name(name)
+        summary = self._fit_summary_from_name(name)
+        self._maybe_annotate_fit_formula(fig, summary)
+        return summary
 
     def _add_histogram_fit_trace(
         self,
@@ -1218,13 +1269,34 @@ class PlotWidget(QWidget):
             return None
         xs, ys, name = fit
         self._add_fit_line_trace(fig, xs, ys)
-        return self._fit_summary_from_name(name)
+        summary = self._fit_summary_from_name(name)
+        self._maybe_annotate_fit_formula(fig, summary)
+        return summary
+
+    def _maybe_annotate_fit_formula(self, fig: go.Figure, fit_summary: str | None) -> None:
+        if not fit_summary:
+            return
+        cb = getattr(self, "show_fit_formula_cb", None)
+        if cb is None or not cb.isChecked():
+            return
+        add_fit_formula_annotation(fig, fit_summary)
+
+    def _apply_user_plot_labels(self, fig: go.Figure) -> None:
+        apply_plotly_label_overrides(
+            fig,
+            title=self.plot_title_edit.text() if hasattr(self, "plot_title_edit") else "",
+            x_title=self.xaxis_title_edit.text() if hasattr(self, "xaxis_title_edit") else "",
+            y_title=self.yaxis_title_edit.text() if hasattr(self, "yaxis_title_edit") else "",
+            z_title=self.zaxis_title_edit.text() if hasattr(self, "zaxis_title_edit") else "",
+        )
 
     def _update_analysis_controls(self) -> None:
         self._refresh_fit_combo_items()
         fit_ok = self._analysis_supports_fit()
         self._fit_label.setEnabled(fit_ok)
         self.fit_combo.setEnabled(fit_ok)
+        if hasattr(self, "show_fit_formula_cb"):
+            self.show_fit_formula_cb.setEnabled(fit_ok)
         trunc_on = fit_ok and self._uses_truncated_gaussian_fit()
         for widget in (
             self._trunc_lower_label,
@@ -1594,6 +1666,7 @@ class PlotWidget(QWidget):
     def _push_plotly_figure(self, fig: go.Figure) -> None:
         from .plotly_html import figure_payload_json
 
+        self._apply_user_plot_labels(fig)
         self._oid_point_index = build_oid_point_index(self._plotted_oids)
         self._last_pushed_selection_key = None
         self._annotate_scatter_selection_meta(fig)
@@ -2364,12 +2437,21 @@ class PlotWidget(QWidget):
         self._ensure_scatter_y_axis()
         self._on_axis_change()
 
+    def _set_z_title_visible(self, visible: bool) -> None:
+        lbl = getattr(self, "_z_title_label", None)
+        edit = getattr(self, "zaxis_title_edit", None)
+        if lbl is not None:
+            lbl.setVisible(visible)
+        if edit is not None:
+            edit.setVisible(visible)
+
     def _on_axis_change(self):
         ptype = self._current_plot_type()
         radar = ptype == PLOT_TYPE_RADAR
         self._axes_group.setVisible(not radar)
         self._radar_host.setVisible(radar)
         if radar:
+            self._set_z_title_visible(False)
             self._update_color_controls()
             self._schedule_plot()
             return
@@ -2378,6 +2460,7 @@ class PlotWidget(QWidget):
             self._x_axis_row.setVisible(True)
             self._y_axis_row.setVisible(True)
             self._z_axis_row.setVisible(True)
+            self._set_z_title_visible(True)
             self.hist_bin_width_label.setVisible(False)
             self.hist_bin_width.setVisible(False)
             self.heatmap_y_bin_width_label.setVisible(False)
@@ -2386,6 +2469,7 @@ class PlotWidget(QWidget):
             self._x_axis_row.setVisible(True)
             self._y_axis_row.setVisible(False)
             self._z_axis_row.setVisible(False)
+            self._set_z_title_visible(False)
             self.hist_bin_width_label.setText("Bin width:")
             self.hist_bin_width_label.setVisible(True)
             self.hist_bin_width.setVisible(True)
@@ -2395,6 +2479,7 @@ class PlotWidget(QWidget):
             self._x_axis_row.setVisible(True)
             self._y_axis_row.setVisible(True)
             self._z_axis_row.setVisible(False)
+            self._set_z_title_visible(False)
             self.hist_bin_width_label.setText("X bin width:")
             self.hist_bin_width_label.setVisible(True)
             self.hist_bin_width.setVisible(True)
@@ -2411,6 +2496,7 @@ class PlotWidget(QWidget):
             single_col = self._is_single_column_plot()
             self._y_axis_row.setVisible(not single_col)
             self._z_axis_row.setVisible(is3d)
+            self._set_z_title_visible(is3d)
             show_x_bw = self._shows_x_bin_width()
             self.hist_bin_width_label.setText("Bin width:")
             self.hist_bin_width_label.setVisible(show_x_bw)
