@@ -142,3 +142,43 @@ def test_render_sketch_bond_width_stable_as_atoms_removed(qapp) -> None:  # noqa
         assert rendered is not None
     for stroke in strokes:
         assert abs(stroke - target) < 0.75
+
+
+def test_thiotepa_sketcher_paints_heteroatom_labels(qapp) -> None:  # noqa: ARG001
+    """RDKit bond pixmap alone drops P/N/S glyphs; ACS overlays must restore them."""
+    from PyQt5.QtGui import QColor, QImage, QPainter
+
+    from molmanager.ui.sketcher.widget import SketchWidget
+
+    mol = Chem.MolFromSmiles("S=P(N1CC1)(N1CC1)N1CC1")
+    assert mol is not None
+    w = SketchWidget()
+    w.resize(700, 500)
+    assert w.load_from_rdkit_mol(mol)
+    assert w._should_paint_sketch_with_rdkit()
+    w.ensure_sketch_fits_viewport()
+    w._invalidate_rdkit_sketch_paint_cache()
+
+    img = QImage(700, 500, QImage.Format_ARGB32)
+    img.fill(QColor("white"))
+    painter = QPainter(img)
+    w.render(painter)
+    painter.end()
+
+    # Colored ACS element labels (P orange, N blue, S yellow-ish) must appear.
+    colored = 0
+    for y in range(0, img.height(), 2):
+        for x in range(0, img.width(), 2):
+            c = img.pixelColor(x, y)
+            if c.red() == c.green() == c.blue():
+                continue
+            colored += 1
+    assert colored >= 40, f"expected heteroatom label ink, found {colored} colored pixels"
+
+
+def test_sketch_rdkit_paint_disables_cairo_atom_labels(qapp) -> None:  # noqa: ARG001
+    from molmanager.ui.sketcher.sketch_rdkit_paint import _configure_sketch_drawer_style
+
+    drawer = rdMolDraw2D.MolDraw2DCairo(200, 200)
+    _configure_sketch_drawer_style(drawer, bond_scale_px=60.0, model_per_drawer_scale=0.4)
+    assert drawer.drawOptions().noAtomLabels is True

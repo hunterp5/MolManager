@@ -139,6 +139,13 @@ def _configure_sketch_drawer_style(
         opts.multipleBondOffset = max(0.12, style.double_bond_offset_px / max(style.median_bond_px, 1.0))
     except Exception:
         log_swallowed_exception(logger, "multipleBondOffset unavailable for sketcher draw options")
+    # Atom symbols are painted by the sketcher (ACS labels) after this pixmap is placed.
+    # Cairo labels in a supersampled bitmap become illegible under the affine downscale —
+    # heteroatoms like P/N/S then vanish (e.g. Thiotepa looks like a carbon skeleton).
+    try:
+        opts.noAtomLabels = True
+    except Exception:
+        log_swallowed_exception(logger, "noAtomLabels unavailable for sketcher draw options")
     font_px = max(8, int(round(style.label_font_pt / sx_eff)))
     opts.minFontSize = font_px
     opts.maxFontSize = font_px + 2

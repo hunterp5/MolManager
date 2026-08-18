@@ -111,6 +111,70 @@ def test_prepare_mol_3d_keeps_heteroarene_planar_from_kekule_sketch():
     assert float(np.max(np.abs(dist))) < 0.05
 
 
+def _sf5_ligand_distances(mol: Chem.Mol) -> list[tuple[str, float]]:
+    import math
+
+    s_idx = next(a.GetIdx() for a in mol.GetAtoms() if a.GetSymbol() == "S")
+    conf = mol.GetConformer()
+    sp = conf.GetAtomPosition(s_idx)
+    out: list[tuple[str, float]] = []
+    for a in mol.GetAtoms():
+        if mol.GetBondBetweenAtoms(s_idx, a.GetIdx()) is None:
+            continue
+        p = conf.GetAtomPosition(a.GetIdx())
+        d = math.sqrt((sp.x - p.x) ** 2 + (sp.y - p.y) ** 2 + (sp.z - p.z) ** 2)
+        out.append((a.GetSymbol(), d))
+    return out
+
+
+def test_prepare_mol_3d_sf5_octahedral_not_uff_destroyed():
+    """–SF5 must keep ~1.56 Å S–F (UFF S_6+6 otherwise stretches to ~4 Å)."""
+    import numpy as np
+
+    m = Chem.MolFromSmiles("Fc1ccc(S(F)(F)(F)(F)F)cc1")
+    m3 = prepare_mol_3d(m)
+    assert m3 is not None
+    dists = _sf5_ligand_distances(m3)
+    f_dists = [d for sym, d in dists if sym == "F"]
+    c_dists = [d for sym, d in dists if sym == "C"]
+    assert len(f_dists) == 5
+    assert all(1.45 <= d <= 1.70 for d in f_dists)
+    assert c_dists and all(1.65 <= d <= 1.95 for d in c_dists)
+
+    s_idx = next(a.GetIdx() for a in m3.GetAtoms() if a.GetSymbol() == "S")
+    f_idxs = [
+        a.GetIdx()
+        for a in m3.GetAtoms()
+        if a.GetSymbol() == "F" and m3.GetBondBetweenAtoms(s_idx, a.GetIdx())
+    ]
+    conf = m3.GetConformer()
+    sp = conf.GetAtomPosition(s_idx)
+
+    def unit(i: int):
+        p = conf.GetAtomPosition(i)
+        v = np.array([p.x - sp.x, p.y - sp.y, p.z - sp.z], dtype=float)
+        return v / np.linalg.norm(v)
+
+    angles = []
+    for i in range(len(f_idxs)):
+        for j in range(i + 1, len(f_idxs)):
+            ang = float(np.degrees(np.arccos(np.clip(np.dot(unit(f_idxs[i]), unit(f_idxs[j])), -1, 1))))
+            angles.append(ang)
+    # Octahedral F–S–F: four ~90° and one ~180° among the five fluorines.
+    assert any(abs(a - 180.0) < 8.0 for a in angles)
+    near_90 = sum(1 for a in angles if abs(a - 90.0) < 8.0)
+    assert near_90 >= 4
+
+
+def test_prepare_mol_3d_methyl_sf5_embeds():
+    m = Chem.MolFromSmiles("CS(F)(F)(F)(F)F")
+    m3 = prepare_mol_3d(m)
+    assert m3 is not None
+    f_dists = [d for sym, d in _sf5_ligand_distances(m3) if sym == "F"]
+    assert len(f_dists) == 5
+    assert all(1.45 <= d <= 1.70 for d in f_dists)
+
+
 def test_flat_viewer_html_sets_orthographic():
     m = Chem.MolFromSmiles("C")
     m2 = prepare_mol_2d(m)

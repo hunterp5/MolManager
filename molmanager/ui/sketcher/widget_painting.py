@@ -1547,7 +1547,10 @@ class SketchWidgetPaintMixin:
             self._draw_bond(p, ni, nj, order, stereo, ink)
 
         self._paint_sketch_atom_overlays(p, style)
+        self._paint_sketch_element_labels(p, style)
 
+    def _paint_sketch_element_labels(self, p: QPainter, style) -> None:
+        """Draw atom symbols / contracted labels (ACS path and RDKit-bond path)."""
         for n in self.nodes:
             pos = n["pos"]
             el = n["element"]
@@ -1627,6 +1630,8 @@ class SketchWidgetPaintMixin:
     def _paint_sketch_structure(self, p: QPainter, style) -> None:
         if self._try_paint_rdkit_sketch_structure(p):
             self._paint_sketch_bond_highlights(p, style)
+            # RDKit pixmap is drawn with noAtomLabels; paint crisp ACS heteroatom labels here.
+            self._paint_sketch_element_labels(p, style)
             self._paint_sketch_atom_overlays(p, style)
             return
         self._paint_sketch_structure_acs(p, style)
